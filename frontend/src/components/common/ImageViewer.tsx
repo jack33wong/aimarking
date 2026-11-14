@@ -17,7 +17,7 @@ import {
     ArrowDown,
     AlertCircle,
     Sparkles,
-    Send,
+    SendHorizontal,
     ChevronDown,
     ChevronUp
 } from 'lucide-react';
@@ -686,7 +686,7 @@ const ImageViewer: React.FC<ImageViewerProps> = ({
                             disabled={!mobileInputText.trim() || isProcessingFollowUp}
                             aria-label="Send question"
                         >
-                            <Send size={15} />
+                            <SendHorizontal size={20} />
                         </button>
                     </div>
                 </form>
