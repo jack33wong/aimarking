@@ -1102,7 +1102,9 @@ export const MarkingPageProvider = ({
 
   const handleMultiImageAnalysis = useCallback(async (files = [], customText = null, extraParams = null) => {
     if (!files || files.length === 0) return;
-    lastUploadedStudentFilesRef.current = Array.from(files);
+    if (!extraParams?.isPaperGroupSubset) {
+      lastUploadedStudentFilesRef.current = Array.from(files);
+    }
 
     trackFunnelEvent('upload_initiated', {
       mode: 'multi',
@@ -1578,9 +1580,27 @@ export const MarkingPageProvider = ({
           studentFiles = fetchedPdfs.filter(Boolean);
         }
         if (studentFiles.length === 0 && Array.isArray(lastUserMsg.imageDataArray) && lastUserMsg.imageDataArray.length > 0) {
-          studentFiles = lastUserMsg.imageDataArray
-            .map((item, idx) => dataUrlToFile(typeof item === 'string' ? item : item?.url, `student-page-${idx + 1}.jpg`))
-            .filter(Boolean);
+          const reconstructedImgs = await Promise.all(
+            lastUserMsg.imageDataArray.map(async (item, idx) => {
+              const url = typeof item === 'string' ? item : item?.url;
+              const name = (typeof item === 'object' && item?.originalFileName) || `student-page-${idx + 1}.jpg`;
+              if (url && url.startsWith('data:')) {
+                return dataUrlToFile(url, name);
+              }
+              if (url) {
+                try {
+                  const resp = await fetch(url);
+                  if (!resp.ok) return null;
+                  const blob = await resp.blob();
+                  return new File([blob], name, { type: blob.type || 'image/jpeg' });
+                } catch {
+                  return null;
+                }
+              }
+              return null;
+            })
+          );
+          studentFiles = reconstructedImgs.filter(Boolean);
         } else if (studentFiles.length === 0 && lastUserMsg.imageData) {
           const singleReconstructed = dataUrlToFile(lastUserMsg.imageData, lastUserMsg.fileName || 'student-page-1.jpg');
           if (singleReconstructed) studentFiles = [singleReconstructed];
@@ -1589,6 +1609,59 @@ export const MarkingPageProvider = ({
     }
     return studentFiles;
   }, [chatMessages]);
+
+  const gradeSelectedPaperGroup = useCallback(async (group) => {
+    if (!group) return false;
+    let allFiles = await reconstructStudentFiles();
+    const fileIndices = Array.isArray(group.fileIndices) ? group.fileIndices : [];
+    const maxFileIdx = fileIndices.length > 0 ? Math.max(...fileIndices) : -1;
+
+    let selectedFiles = [];
+    if (allFiles.length > 0 && maxFileIdx >= 0 && maxFileIdx < allFiles.length) {
+      selectedFiles = fileIndices.map(idx => allFiles[idx]).filter(Boolean);
+    } else if (Array.isArray(group.storageUrls) && group.storageUrls.length > 0) {
+      const fetched = await Promise.all(
+        group.storageUrls.map(async (url, idx) => {
+          try {
+            const resp = await fetch(url);
+            if (!resp.ok) return null;
+            const blob = await resp.blob();
+            const isPdf = blob.type === 'application/pdf' || url.toLowerCase().includes('.pdf');
+            return new File(
+              [blob],
+              `${(group.label || 'paper').replace(/[^a-zA-Z0-9_-]/g, '_')}-page-${idx + 1}.${isPdf ? 'pdf' : 'jpg'}`,
+              { type: blob.type || (isPdf ? 'application/pdf' : 'image/jpeg') }
+            );
+          } catch {
+            return null;
+          }
+        })
+      );
+      selectedFiles = fetched.filter(Boolean);
+    } else if (allFiles.length > 0) {
+      selectedFiles = allFiles;
+    }
+
+    if (selectedFiles.length === 0) {
+      console.warn('No files available for selected paper group:', group);
+      return false;
+    }
+
+    const isSameFileSubsetByPage =
+      allFiles.length > 0 &&
+      selectedFiles.length === allFiles.length &&
+      Array.isArray(group.rawPageIndices) &&
+      group.rawPageIndices.length > 0;
+
+    return handleMultiImageAnalysis(
+      selectedFiles,
+      `Grading ${group.label} (${group.pageCount} pages).`,
+      {
+        isPaperGroupSubset: true,
+        ...(isSameFileSubsetByPage ? { selectedRawPageIndices: JSON.stringify(group.rawPageIndices) } : {})
+      }
+    );
+  }, [reconstructStudentFiles, handleMultiImageAnalysis]);
 
   const gradeWithGeneralRubric = useCallback(async () => {
     const studentFiles = await reconstructStudentFiles();
@@ -1630,6 +1703,7 @@ export const MarkingPageProvider = ({
     onFollowUpMultiImage: handleMultiImageAnalysis,
     attachMarkingSchemeAndRetry,
     gradeWithGeneralRubric,
+    gradeSelectedPaperGroup,
     remarkWithOfficialPaper,
     getImageSrc,
     startAIThinking,
@@ -1661,7 +1735,7 @@ export const MarkingPageProvider = ({
     onSendMessage, addMessage, chatContainerRef,
     isHistoryLoading,
     scrollToBottom, showScrollButton, hasNewResponse, scrollToNewResponse, scrollToMessage,
-    handleMultiImageAnalysis, attachMarkingSchemeAndRetry, gradeWithGeneralRubric, remarkWithOfficialPaper, progressProps, getImageSrc, startAIThinking,
+    handleMultiImageAnalysis, attachMarkingSchemeAndRetry, gradeWithGeneralRubric, gradeSelectedPaperGroup, remarkWithOfficialPaper, progressProps, getImageSrc, startAIThinking,
     splitModeImages, activeImageIndex, enterSplitMode, exitSplitMode, setActiveImageIndex,
     activeQuestionId, setActiveQuestionId, isQuestionTableVisible, setQuestionTableVisibility,
     isContextFilterActive, setContextFilterActive,

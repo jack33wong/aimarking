@@ -478,37 +478,47 @@ ${funnelText}
 
       const dateStr = new Date().toISOString().split('T')[0];
       const timestamp = Date.now();
+      const UPLOAD_CONCURRENCY = 5;
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        if (!file?.buffer || file.buffer.length === 0) continue;
+      for (let batchStart = 0; batchStart < files.length; batchStart += UPLOAD_CONCURRENCY) {
+        const batch = files.slice(batchStart, batchStart + UPLOAD_CONCURRENCY);
+        const batchResults = await Promise.all(
+          batch.map(async (file, offset) => {
+            const i = batchStart + offset;
+            if (!file?.buffer || file.buffer.length === 0) return null;
 
-        const sanitizedName = (file.originalname || `upload_${i}.dat`).replace(/[^a-zA-Z0-9._-]/g, '_');
-        const gcsPath = `${gcsPrefix}/${dateStr}/${timestamp}_${i}_${sanitizedName}`;
-        const fileRef = bucket.file(gcsPath);
+            const sanitizedName = (file.originalname || `upload_${i}.dat`).replace(/[^a-zA-Z0-9._-]/g, '_');
+            const gcsPath = `${gcsPrefix}/${dateStr}/${timestamp}_${i}_${sanitizedName}`;
+            const fileRef = bucket.file(gcsPath);
 
-        await fileRef.save(file.buffer, {
-          contentType: file.mimetype || 'application/octet-stream',
-          metadata: {
-            metadata: {
-              uploadedBy: userId,
-              originalName: file.originalname || 'unknown',
-              uploadedAt: new Date().toISOString(),
-            }
-          }
-        });
+            await fileRef.save(file.buffer, {
+              contentType: file.mimetype || 'application/octet-stream',
+              metadata: {
+                metadata: {
+                  uploadedBy: userId,
+                  originalName: file.originalname || 'unknown',
+                  uploadedAt: new Date().toISOString(),
+                }
+              }
+            });
 
-        // 7-day signed download URL
-        const [signedUrl] = await fileRef.getSignedUrl({
-          action: 'read',
-          expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7 days
-        });
+            // 7-day signed download URL
+            const [signedUrl] = await fileRef.getSignedUrl({
+              action: 'read',
+              expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7 days
+            });
 
-        uploadedLinks.push({
-          filename: file.originalname || sanitizedName,
-          signedUrl,
-          sizeBytes: file.size || file.buffer.length,
-        });
+            return {
+              filename: file.originalname || sanitizedName,
+              signedUrl,
+              sizeBytes: file.size || file.buffer.length,
+            };
+          })
+        );
+
+        for (const item of batchResults) {
+          if (item) uploadedLinks.push(item);
+        }
       }
     } catch (storageErr) {
       console.error(`⚠️ [ADMIN-ALERT] Failed to upload ${gcsPrefix} files to GCS:`, storageErr);

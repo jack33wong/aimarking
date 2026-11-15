@@ -3,9 +3,10 @@
  * This is the definitive version with fixes for all rendering and state bugs.
  */
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import './ChatMessage.css';
 import YourWorkSection from './YourWorkSection';
-import { Brain, ChevronDown, ChevronUp, Lock, Paperclip, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { Brain, ChevronDown, ChevronUp, Lock, Paperclip, Sparkles, ThumbsUp, ThumbsDown } from 'lucide-react';
 import MarkingFeedbackModal from '../modals/MarkingFeedbackModal';
 import EventManager, { EVENT_TYPES } from '../../utils/eventManager';
 import { useAuth } from '../../contexts/AuthContext';
@@ -68,8 +69,9 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [isImageModeOpen, setIsImageModeOpen] = useState<boolean>(false);
   const { getAuthToken, user } = useAuth();
+  const navigate = useNavigate();
   const { logEvent } = useTelemetry();
-  const { activeQuestionId, setActiveQuestionId, isContextFilterActive, isNegative, setShowCreditsModal, attachMarkingSchemeAndRetry, gradeWithGeneralRubric, remarkWithOfficialPaper, onRatingChange } = useMarkingPage();
+  const { activeQuestionId, setActiveQuestionId, isContextFilterActive, isNegative, setShowCreditsModal, attachMarkingSchemeAndRetry, gradeWithGeneralRubric, gradeSelectedPaperGroup, remarkWithOfficialPaper, onRatingChange } = useMarkingPage();
   const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
   const [showFeedbackToast, setShowFeedbackToast] = useState<boolean>(false);
 
@@ -659,6 +661,63 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
                       YourWorkSection={YourWorkSection}
                       isYourWork={false}
                     />
+                    {!isUser && (Boolean((message as any).requiresUpgrade) || (Array.isArray((message as any).detectedPaperGroups) && (message as any).detectedPaperGroups.length > 0)) && (
+                      <div style={{ marginTop: '14px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '10px' }}>
+                        {Array.isArray((message as any).detectedPaperGroups) && (message as any).detectedPaperGroups.length > 0 && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                            {(message as any).detectedPaperGroups.map((group: any, gIdx: number) => (
+                              <button
+                                key={group.paperIndex ?? gIdx}
+                                type="button"
+                                disabled={isAnyMessageProcessing || group.canGradeOnFree === false}
+                                onClick={() => {
+                                  logEvent('telemetry_events', {
+                                    event: 'paper_group_selected_from_limit_error',
+                                    paperLabel: group.label,
+                                    pageCount: group.pageCount
+                                  });
+                                  gradeSelectedPaperGroup?.(group);
+                                }}
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '6px',
+                                  padding: '8px 14px',
+                                  borderRadius: '8px',
+                                  fontSize: '13px',
+                                  fontWeight: 600,
+                                  cursor: isAnyMessageProcessing ? 'not-allowed' : 'pointer',
+                                  opacity: isAnyMessageProcessing ? 0.6 : 1,
+                                  background: 'rgba(99, 102, 241, 0.14)',
+                                  border: '1px solid rgba(99, 102, 241, 0.45)',
+                                  color: 'var(--text-primary, #e2e8f0)',
+                                  transition: 'all 0.15s ease'
+                                }}
+                              >
+                                <span>Grade {group.label}</span>
+                                <span style={{ opacity: 0.75, fontWeight: 500 }}>({group.pageCount} pages{group.hasMarkScheme ? ' + MS' : ''})</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {Boolean((message as any).requiresUpgrade) && (
+                          <div style={{ marginLeft: 'auto' }}>
+                            <button
+                              type="button"
+                              className="paywall-unlock-btn"
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}
+                              onClick={() => {
+                                logEvent('telemetry_events', { event: 'subscription_clicked', source: 'page_limit_chat_cta' });
+                                navigate('/pricing', { state: { fromApp: true, source: 'page_limit_chat_cta' } });
+                              }}
+                            >
+                              <Sparkles size={16} />
+                              Upgrade to Pro
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

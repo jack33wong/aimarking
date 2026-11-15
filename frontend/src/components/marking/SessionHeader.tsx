@@ -293,15 +293,30 @@ const SessionHeader: React.FC = () => {
     const predictedGradeValue = messageWithGradeData?.predictedGrade;
 
     if (detectedQuestion && detectedQuestion.found) {
-      let examBoard, subject, examCode, examSeries, tier;
+      let examBoard: any, subject: any, examCode: any, examSeries: any, tier: any;
 
       if (detectedQuestion.examPapers && Array.isArray(detectedQuestion.examPapers) && detectedQuestion.examPapers.length > 0) {
-        const firstExamPaper = detectedQuestion.examPapers[0];
-        examBoard = firstExamPaper.examBoard;
-        subject = firstExamPaper.subject;
-        examCode = firstExamPaper.examCode;
-        examSeries = firstExamPaper.examSeries || firstExamPaper.year;
-        tier = firstExamPaper.tier;
+        const papers = detectedQuestion.examPapers;
+        const validPapers = papers.filter((ep: any) =>
+          ep.examCode &&
+          !['Generic Question', 'Unknown', 'N/A'].includes(ep.examCode) &&
+          ep.examBoard &&
+          !['Unknown', 'N/A'].includes(ep.examBoard)
+        );
+        const targetPapers = validPapers.length > 0 ? validPapers : papers;
+        examBoard = Array.from(new Set(targetPapers.map((ep: any) => ep.examBoard).filter(Boolean))).join(' / ');
+        subject = Array.from(new Set(targetPapers.map((ep: any) => ep.subject).filter(Boolean))).join(' & ');
+        examCode = Array.from(new Set(
+          targetPapers
+            .map((ep: any) => ep.examCode)
+            .filter((c: any) => c && !['Generic Question', 'Unknown', 'N/A'].includes(c) && !/^P\d+$/i.test(String(c)))
+        )).join(', ');
+        examSeries = Array.from(new Set(targetPapers.map((ep: any) => ep.examSeries || ep.year).filter(Boolean))).join(' / ');
+        tier = Array.from(new Set(
+          targetPapers
+            .map((ep: any) => ep.tier)
+            .filter((t: any) => t && !['N/A', 'Unknown', 'None'].includes(t))
+        )).join(' / ');
       } else {
         examBoard = detectedQuestion.examBoard;
         subject = detectedQuestion.subject;
@@ -310,16 +325,16 @@ const SessionHeader: React.FC = () => {
         tier = detectedQuestion.tier;
       }
 
-      const isGeneric = 
-        examCode === 'Generic Question' || 
-        subject === 'Generic Question' || 
-        examBoard === 'Unknown' || 
+      const isGeneric =
+        examCode === 'Generic Question' ||
+        subject === 'Generic Question' ||
+        examBoard === 'Unknown' ||
         examBoard === 'N/A' ||
         examCode === 'Unknown' ||
         examCode === 'N/A';
 
-      const baseMainTitle = (examBoard && subject && examCode && !isGeneric)
-        ? `${examBoard} ${subject} ${examCode}`
+      const baseMainTitle = (examBoard && subject && !isGeneric)
+        ? [examBoard, subject, examCode].filter(Boolean).join(' ')
         : sessionTitle;
       const mainTitle = (detectedQuestion.isModifiedPaper && baseMainTitle && !/^modified\b/i.test(baseMainTitle))
         ? `Modified ${baseMainTitle}`
@@ -456,17 +471,30 @@ const SessionHeader: React.FC = () => {
                     const detectedQuestion = getDetectedQuestion();
                     if (detectedQuestion && detectedQuestion.found) {
                       // Extract fields from new structure (examPapers[]) or use old flat structure
-                      let examBoard, subject, examCode, examSeries, tier;
+                      let examBoard: any, subject: any, examCode: any, examSeries: any, tier: any;
 
                       if (detectedQuestion.examPapers && Array.isArray(detectedQuestion.examPapers) && detectedQuestion.examPapers.length > 0) {
-                        // New structure: extract from first exam paper
-                        const firstExamPaper = detectedQuestion.examPapers[0];
-                        examBoard = firstExamPaper.examBoard;
-                        subject = firstExamPaper.subject;
-                        examCode = firstExamPaper.examCode;
-                        // Support both examSeries and year during migration
-                        examSeries = firstExamPaper.examSeries || firstExamPaper.year;
-                        tier = firstExamPaper.tier;
+                        const papers = detectedQuestion.examPapers;
+                        const validPapers = papers.filter((ep: any) =>
+                          ep.examCode &&
+                          !['Generic Question', 'Unknown', 'N/A'].includes(ep.examCode) &&
+                          ep.examBoard &&
+                          !['Unknown', 'N/A'].includes(ep.examBoard)
+                        );
+                        const targetPapers = validPapers.length > 0 ? validPapers : papers;
+                        examBoard = Array.from(new Set(targetPapers.map((ep: any) => ep.examBoard).filter(Boolean))).join(' / ');
+                        subject = Array.from(new Set(targetPapers.map((ep: any) => ep.subject).filter(Boolean))).join(' & ');
+                        examCode = Array.from(new Set(
+                          targetPapers
+                            .map((ep: any) => ep.examCode)
+                            .filter((c: any) => c && !['Generic Question', 'Unknown', 'N/A'].includes(c) && !/^P\d+$/i.test(String(c)))
+                        )).join(', ');
+                        examSeries = Array.from(new Set(targetPapers.map((ep: any) => ep.examSeries || ep.year).filter(Boolean))).join(' / ');
+                        tier = Array.from(new Set(
+                          targetPapers
+                            .map((ep: any) => ep.tier)
+                            .filter((t: any) => t && !['N/A', 'Unknown', 'None'].includes(t))
+                        )).join(' / ');
                       } else {
                         // Old flat structure (for backward compatibility)
                         examBoard = detectedQuestion.examBoard;

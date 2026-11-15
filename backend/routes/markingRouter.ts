@@ -15,7 +15,7 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: 100 * 1024 * 1024, // 100MB limit per file
-    files: 100 // Maximum 100 files
+    files: 500 // High ceiling so Pro and Ultra users have no page limit on multi-image uploads
   }
 });
 

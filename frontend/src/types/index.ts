@@ -10,8 +10,23 @@ import type { components } from './api';
 export type { components };
 
 export type DetectedQuestion = components['schemas']['DetectedQuestion'];
+export interface DetectedPaperGroup {
+    paperIndex: number;
+    label: string;
+    subject?: string;
+    pageCount: number;
+    fileIndices: number[];
+    rawPageIndices: number[];
+    canGradeOnFree: boolean;
+    hasMarkScheme?: boolean;
+    markSchemeCount?: number;
+    storageUrls?: string[];
+}
+
 export type UnifiedMessage = components['schemas']['UnifiedMessage'] & {
     contextQuestionId?: string;
+    requiresUpgrade?: boolean;
+    detectedPaperGroups?: DetectedPaperGroup[];
 };
 export type UnifiedSession = components['schemas']['UnifiedSession'] & {
     lastMessagePreview?: {

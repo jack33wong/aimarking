@@ -782,23 +782,26 @@ export function formatGroupedStudentWork(
  * Convert question numbers to sortable numeric values for page sorting
  * Handles complex nesting: "3" → 3.0, "3a" → 3.01, "3ai" → 3.0101, "3aii" → 3.0102, "12bii" → 12.0202
  */
-export function getQuestionSortValue(questionNumber: string | null | undefined): number {
+export function getQuestionSortValue(questionNumber: string | number | null | undefined): number {
   if (!questionNumber) return Infinity;
 
   const str = String(questionNumber).trim().toLowerCase();
+  const paperMatch = str.match(/^p(\d+)[·.\-]\s*q?/i);
+  const paperOffset = paperMatch ? (parseInt(paperMatch[1], 10) - 1) * 1000 : 0;
+  const cleanQStr = paperMatch ? str.slice(paperMatch[0].length).trim() : str;
 
   // 🛑 THE FIX: Find the first occurrence of a number to handle "q5", "Question 2.8", etc.
-  const baseMatch = str.match(/(\d+(?:\.\d+)?)/);
+  const baseMatch = cleanQStr.match(/(\d+(?:\.\d+)?)/);
   if (!baseMatch) return Infinity;
   const baseNum = parseFloat(baseMatch[1]);
 
-  let remaining = str.substring(baseMatch.index! + baseMatch[1].length).replace(/[\(\)\[\]]/g, '').trim();
+  let remaining = cleanQStr.substring(baseMatch.index! + baseMatch[1].length).replace(/[\(\)\[\]]/g, '').trim();
   let weight = baseNum;
 
   // 🛡️ [GENERIC OFFSET]: Pure numbers (e.g. "2") are continuations. 
   // ⚠️ [WARNING]: This is now handled in the MarkingPipelineService via Density-Aware sorting.
   // We keep weights standard here to avoid breaking GCSE stem hierarchy.
-  if (!remaining) return weight;
+  if (!remaining) return paperOffset + weight;
 
   // 2. Extract Alpha Part (e.g. "a" from "ai")
   // Only extract as alpha if it's NOT a standalone roman numeral
@@ -810,7 +813,7 @@ export function getQuestionSortValue(questionNumber: string | null | undefined):
     remaining = remaining.substring(alphaMatch[1].length);
   }
 
-  if (!remaining) return weight;
+  if (!remaining) return paperOffset + weight;
 
   // 3. Extract Secondary Part (Roman Numerals or Numeric)
   // Roman numerals: i, ii, iii...
@@ -829,7 +832,7 @@ export function getQuestionSortValue(questionNumber: string | null | undefined):
     }
   }
 
-  return weight;
+  return paperOffset + weight;
 }
 
 /**

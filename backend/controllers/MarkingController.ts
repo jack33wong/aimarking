@@ -415,32 +415,12 @@ export class MarkingController {
         } catch (error: any) {
             console.error(`❌ [CONTROLLER] Marking request failed: ${error.message}`);
 
-            if (capturedMarkingLogs) {
-                const resolvedUid = finalUserId || (req as any).user?.uid || `guest:${req.ip || '0.0.0.0'}`;
-                let uploadedFiles: any[] = [];
-                if (files?.length > 0) {
-                    uploadedFiles = await Promise.race([
-                        AdminAlertService.uploadFilesForLog(files, resolvedUid),
-                        new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 2500)),
-                    ]);
-                }
-                await AdminAlertService.notifyMarkingLog({
-                    submissionId,
-                    sessionId: finalSessionId || sessionId,
-                    userId: resolvedUid,
-                    userEmail: (req as any).user?.email,
-                    model: finalModel || 'auto',
-                    isRemark: false,
-                    turnType: 'MARKING',
-                    error,
-                    userInput: req.body?.customText || undefined,
-                    uploadedFiles,
-                    ...(capturedMarkingLogs as { logsText: string; lineCount: number; durationMs: number; truncated: boolean }),
-                });
-            }
-            
             const isCreditExhausted = error.message?.includes('exhausted your credits');
+            const isOverdraftLimit =
+                (error instanceof UserFacingError && error.code === 'OVERDRAFT_LIMIT_EXCEEDED') ||
+                error.message?.includes('safety limit for overdrafts');
             const isLegacyUserFixable =
+                isOverdraftLimit ||
                 error.message?.includes('PDF_UNREADABLE') ||
                 error.message?.includes('Postscript delegate failed') ||
                 error.message?.includes('exceeds the maximum limit') ||
@@ -457,6 +437,22 @@ export class MarkingController {
             }
 
             if (isCreditExhausted) {
+                if (capturedMarkingLogs) {
+                    const resolvedUid = finalUserId || (req as any).user?.uid || `guest:${req.ip || '0.0.0.0'}`;
+                    await AdminAlertService.notifyMarkingLog({
+                        submissionId,
+                        sessionId: finalSessionId || sessionId,
+                        userId: resolvedUid,
+                        userEmail: (req as any).user?.email,
+                        model: finalModel || 'auto',
+                        isRemark: false,
+                        turnType: 'MARKING',
+                        error,
+                        userInput: req.body?.customText || undefined,
+                        uploadedFiles: [],
+                        ...(capturedMarkingLogs as { logsText: string; lineCount: number; durationMs: number; truncated: boolean }),
+                    });
+                }
                 if (!res.headersSent) {
                     res.setHeader('Content-Type', 'text/event-stream');
                     res.setHeader('Cache-Control', 'no-cache');
@@ -488,20 +484,34 @@ export class MarkingController {
                 displayMessage = error.message.replace(/^PDF_PAGE_LIMIT_EXCEEDED:\s*/i, '');
             }
 
+            const requiresUpgrade =
+                (error instanceof UserFacingError && error.requiresUpgrade) ||
+                error.message?.includes('Upgrade to Pro') ||
+                isOverdraftLimit;
+
+            const detectedPaperGroups =
+                error instanceof UserFacingError && Array.isArray(error.detectedPaperGroups) && error.detectedPaperGroups.length > 0
+                    ? error.detectedPaperGroups
+                    : undefined;
+
             const userTimestamp = new Date().toISOString();
             const aiTimestamp = new Date(Date.now() + 50).toISOString();
-            const aiErrorMessage = {
+            const aiErrorMessage: any = {
                 id: aiMessageId,
                 role: 'assistant',
                 content: displayMessage,
                 timestamp: aiTimestamp,
                 type: 'text',
                 isProcessing: false,
+                ...(requiresUpgrade ? { requiresUpgrade: true } : {}),
+                ...(detectedPaperGroups ? { detectedPaperGroups } : {}),
                 processingStats: {
                     apiUsed: 'System Validation',
                     modelUsed: 'Pre-flight Check'
                 }
             };
+
+            let persistedOriginalLinks: string[] = [];
 
             // Persist the failed upload attempt (with PDF/image attachment metadata) + friendly error to Firestore
             if (finalUserId && finalUserId !== 'anonymous' && resolvedSessionId) {
@@ -512,6 +522,15 @@ export class MarkingController {
                         resolvedSessionId,
                         true
                     );
+                    persistedOriginalLinks = uploadResult.originalImageLinks || [];
+                    if (detectedPaperGroups && persistedOriginalLinks.length > 0) {
+                        aiErrorMessage.detectedPaperGroups = detectedPaperGroups.map(group => ({
+                            ...group,
+                            storageUrls: (group.fileIndices || [])
+                                .map(idx => persistedOriginalLinks[idx])
+                                .filter((u): u is string => Boolean(u))
+                        }));
+                    }
 
                     const pdfFiles = files
                         .map((file, idx) => ({ file, idx }))
@@ -579,6 +598,37 @@ export class MarkingController {
                 } catch (persistErr) {
                     console.error('⚠️ [CONTROLLER] Failed to persist error state to Firestore:', persistErr);
                 }
+            }
+
+            if (capturedMarkingLogs) {
+                const resolvedUid = finalUserId || (req as any).user?.uid || `guest:${req.ip || '0.0.0.0'}`;
+                let uploadedFiles: any[] = persistedOriginalLinks
+                    .map((url, idx) => ({
+                        filename: files?.[idx]?.originalname || `file-${idx + 1}`,
+                        url,
+                        sizeBytes: files?.[idx]?.size
+                    }))
+                    .filter(item => Boolean(item.url));
+
+                if (uploadedFiles.length === 0 && files?.length > 0) {
+                    uploadedFiles = await Promise.race([
+                        AdminAlertService.uploadFilesForLog(files, resolvedUid),
+                        new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 10000)),
+                    ]);
+                }
+                await AdminAlertService.notifyMarkingLog({
+                    submissionId,
+                    sessionId: resolvedSessionId,
+                    userId: resolvedUid,
+                    userEmail: (req as any).user?.email,
+                    model: finalModel || 'auto',
+                    isRemark: false,
+                    turnType: 'MARKING',
+                    error,
+                    userInput: req.body?.customText || undefined,
+                    uploadedFiles,
+                    ...(capturedMarkingLogs as { logsText: string; lineCount: number; durationMs: number; truncated: boolean }),
+                });
             }
 
             // 🛑 THE FIX: Wrap the error as a successful AI chat message so it renders gracefully in the UI

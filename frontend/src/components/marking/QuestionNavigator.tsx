@@ -27,25 +27,36 @@ interface QuestionNavigatorProps {
 
 
 
-// Helper to check if a question matches the active ID (e.g. "3a" matches "3" but "3" does NOT match "30")
+// Helper to check if a question matches the active ID (e.g. "3a" matches "3" and "P1·3a" matches "P1·3", but "3" does NOT match "30" or "P2·3")
 const isActive = (qNum: string, activeId?: string) => {
     if (!activeId) return false;
-    if (qNum === activeId) return true;
+    const normQ = String(qNum).replace(/^(P\d+)[·.\-]Q?/i, '$1·');
+    const normActive = String(activeId).replace(/^(P\d+)[·.\-]Q?/i, '$1·');
+    if (normQ === normActive) return true;
 
     // Check if qNum is a sub-question of activeId (e.g. active="1", q="1a")
-    // MUST ensure the next character is NOT a digit (to prevent 1 matching 10)
-    if (qNum.startsWith(activeId)) {
-        const nextChar = qNum[activeId.length];
-        return isNaN(parseInt(nextChar, 10));
+    // MUST ensure the next character is NOT a digit or separator
+    if (normQ.startsWith(normActive)) {
+        const nextChar = normQ[normActive.length];
+        return nextChar !== undefined && nextChar !== '_' && nextChar !== '·' && nextChar !== '-' && nextChar !== '.' && isNaN(parseInt(nextChar, 10));
     }
 
     // Check if activeId is a sub-question of qNum (e.g. active="1a", q="1")
-    if (activeId.startsWith(qNum)) {
-        const nextChar = activeId[qNum.length];
-        return isNaN(parseInt(nextChar, 10));
+    if (normActive.startsWith(normQ)) {
+        const nextChar = normActive[normQ.length];
+        return nextChar !== undefined && nextChar !== '_' && nextChar !== '·' && nextChar !== '-' && nextChar !== '.' && isNaN(parseInt(nextChar, 10));
     }
 
     return false;
+};
+
+const formatQuestionPillLabel = (qNum: string): string => {
+    const raw = String(qNum ?? '').replace(/^Q/i, '').trim();
+    const multiMatch = raw.match(/^(P\d+)[·.\-]Q?(.+)$/i);
+    if (multiMatch) {
+        return `${multiMatch[1].toUpperCase()}.Q${multiMatch[2]}`;
+    }
+    return `Q${raw}`;
 };
 
 
@@ -133,7 +144,7 @@ const QuestionNavigator: React.FC<QuestionNavigatorProps> = ({
                                     onClick={() => handleQuestionClick(q)}
                                     title={`Question ${q.questionNumber}: ${scoreLabel} marks`}
                                 >
-                                    <span className="q-label">Q{q.questionNumber}</span>
+                                    <span className="q-label">{formatQuestionPillLabel(q.questionNumber)}</span>
                                     <span className={`score-text ${color}`}>
                                         {scoreLabel}
                                     </span>
@@ -176,7 +187,7 @@ const QuestionNavigator: React.FC<QuestionNavigatorProps> = ({
                             onClick={() => handleQuestionClick(q)}
                             title={`Question ${q.questionNumber}: ${scoreText} marks`}
                         >
-                            <span className="q-label">Q{q.questionNumber}</span>
+                            <span className="q-label">{formatQuestionPillLabel(q.questionNumber)}</span>
                             <span className={`score-text ${color}`}>
                                 {scoreText}
                             </span>

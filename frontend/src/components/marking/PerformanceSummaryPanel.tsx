@@ -68,6 +68,11 @@ interface SummaryV2Payload {
   mastered: Array<{ q?: string; text: string }>;
   focusNext: Array<{ q?: string; text: string }>;
   questionCoaching?: QuestionCoachingItem[];
+  hasCombinedOverview?: boolean;
+  paperSummaries?: Array<{
+    label: string;
+    summary: SummaryV2Payload;
+  }>;
 }
 
 interface PerformanceSummaryPanelProps {
@@ -420,40 +425,74 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
     return null;
   }, [rawSummary]);
 
+  const [selectedPaperTab, setSelectedPaperTab] = useState<number>(0);
+
+  const summaryTabs = useMemo(() => {
+    if (!parsedV2?.paperSummaries || parsedV2.paperSummaries.length <= 1) return [];
+    if (parsedV2.hasCombinedOverview === false) {
+      return parsedV2.paperSummaries.map(p => ({
+        label: p.label,
+        payload: p.summary
+      }));
+    }
+    const overallGradeTag = parsedV2.grading?.grade && parsedV2.grading.grade !== 'N/A'
+      ? ` (${parsedV2.grading.grade})`
+      : '';
+    return [
+      {
+        label: `Overall: ${parsedV2.score.awardedMarks}/${parsedV2.score.totalMarks}${overallGradeTag}`,
+        payload: parsedV2
+      },
+      ...parsedV2.paperSummaries.map(p => ({
+        label: p.label,
+        payload: p.summary
+      }))
+    ];
+  }, [parsedV2]);
+
+  const activeV2 = useMemo<SummaryV2Payload | null>(() => {
+    if (!parsedV2) return null;
+    if (summaryTabs.length > 0) {
+      const safeIdx = Math.min(selectedPaperTab, summaryTabs.length - 1);
+      return summaryTabs[safeIdx]?.payload || parsedV2;
+    }
+    return parsedV2;
+  }, [parsedV2, summaryTabs, selectedPaperTab]);
+
   // Sort grade boundaries descending (highest grade 9 / A* on the left, matching original database table)
   const sortedBoundariesDesc = useMemo(() => {
-    if (!parsedV2?.grading?.boundaries) return [];
-    return Object.entries(parsedV2.grading.boundaries)
+    if (!activeV2?.grading?.boundaries) return [];
+    return Object.entries(activeV2.grading.boundaries)
       .map(([g, mark]) => ({ grade: g, mark: Number(mark) }))
       .filter(b => !isNaN(b.mark))
       .sort((a, b) => b.mark - a.mark);
-  }, [parsedV2]);
+  }, [activeV2]);
 
   // Strategy 1 Initial Default (Single-Expand Accordion)
   const [expandedQuestionKey, setExpandedQuestionKey] = useState<string | null>(() =>
-    getDefaultExpandedKey(parsedV2?.questionCoaching || [])
+    getDefaultExpandedKey(activeV2?.questionCoaching || [])
   );
 
   useEffect(() => {
-    if (parsedV2?.questionCoaching && parsedV2.questionCoaching.length > 0) {
-      setExpandedQuestionKey(prev => prev ?? getDefaultExpandedKey(parsedV2.questionCoaching!));
+    if (activeV2?.questionCoaching && activeV2.questionCoaching.length > 0) {
+      setExpandedQuestionKey(prev => prev ?? getDefaultExpandedKey(activeV2.questionCoaching!));
     }
-  }, [parsedV2]);
+  }, [activeV2]);
 
   // Sync When User Clicks Top QUESTION BREAKDOWN Ribbon or Focus Next Chips
   useEffect(() => {
-    if (!effectiveActiveQuestionId || !parsedV2?.questionCoaching) return;
+    if (!effectiveActiveQuestionId || !activeV2?.questionCoaching) return;
     const normActive = String(effectiveActiveQuestionId).replace(/^Q/i, '').trim().toLowerCase();
-    const match = parsedV2.questionCoaching.find(
+    const match = activeV2.questionCoaching.find(
       qc => String(qc.q).replace(/^Q/i, '').trim().toLowerCase() === normActive
     );
     if (match) {
       setExpandedQuestionKey(String(match.q));
     }
-  }, [effectiveActiveQuestionId, parsedV2]);
+  }, [effectiveActiveQuestionId, activeV2]);
 
   // Fallback for legacy markdown sessions
-  if (!parsedV2) {
+  if (!activeV2) {
     return (
       <div className="ai-performance-summary">
         <div className="ai-performance-summary-content">
@@ -468,7 +507,7 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
     );
   }
 
-  const { examInfo, score, grading, radar, mastered, focusNext, headline, tooDenseWarning, questionCoaching } = parsedV2;
+  const { examInfo, score, grading, radar, mastered, focusNext, headline, tooDenseWarning, questionCoaching } = activeV2;
 
   const isPastPaperWithBoundaries = sortedBoundariesDesc.length > 0;
   const maxBoundaryMark = sortedBoundariesDesc[0]?.mark || 0;
@@ -505,6 +544,15 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
     return higherBoundaries[higherBoundaries.length - 1];
   })();
 
+  const formatSummaryQuestionChip = (qStr: string): string => {
+    const clean = String(qStr).replace(/^Q/i, '').trim();
+    const multiMatch = clean.match(/^(P\d+)[·.\-]Q?(.+)$/i);
+    if (multiMatch) {
+      return `${multiMatch[1].toUpperCase()}.Q${multiMatch[2]}`;
+    }
+    return `Q${clean}`;
+  };
+
   const scrollToCoachingCard = (qNum: string) => {
     const clean = String(qNum).replace(/^Q/i, '');
     const el = document.getElementById(`coaching-card-q${clean}`);
@@ -532,6 +580,39 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
           </div>
         )}
       </div>
+
+      {/* Multi-Paper / Multi-Subject Switcher Pill Bar */}
+      {summaryTabs.length > 1 && (
+        <div
+          className="tmua-paper-switcher"
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '8px',
+            marginBottom: '12px'
+          }}
+        >
+          {summaryTabs.map((tab, idx) => {
+            const isTabActive = idx === selectedPaperTab;
+            return (
+              <button
+                key={idx}
+                type="button"
+                onClick={() => setSelectedPaperTab(idx)}
+                className={`tmua-pill ${isTabActive ? 'strong' : ''}`}
+                style={{
+                  cursor: 'pointer',
+                  border: isTabActive ? '1px solid var(--primary-color, #3b82f6)' : '1px solid rgba(148, 163, 184, 0.3)',
+                  fontWeight: isTabActive ? 600 : 500,
+                  padding: '5px 12px'
+                }}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {tooDenseWarning && (
         <div className="tmua-warning-banner">
@@ -697,7 +778,7 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
                           }
                         }}
                       >
-                        {m.q && <span className="chip-q">Q{String(m.q).replace(/^Q/i, '')}</span>}
+                        {m.q && <span className="chip-q">{formatSummaryQuestionChip(String(m.q))}</span>}
                         <span>{m.text}</span>
                       </button>
                     ))}
@@ -726,7 +807,7 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
                           }
                         }}
                       >
-                        {f.q && <span className="chip-q">Q{String(f.q).replace(/^Q/i, '')}</span>}
+                        {f.q && <span className="chip-q">{formatSummaryQuestionChip(String(f.q))}</span>}
                         <span>{f.text}</span>
                       </button>
                     ))}
@@ -787,7 +868,9 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
                       <ChevronDown size={16} className="coaching-card-chevron" />
                     )}
                     <span className="coaching-card-q-title">
-                      Question {qc.q}
+                      {/^P\d+[·.\-]/i.test(String(qc.q || ''))
+                        ? formatSummaryQuestionChip(String(qc.q))
+                        : `Question ${qc.q}`}
                     </span>
                     {!isCardExpanded && (
                       <span className="coaching-card-preview" title={previewText}>

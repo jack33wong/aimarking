@@ -80,7 +80,13 @@ export async function checkCredits(
     userId: string,
     estimatedCost: number,
     currentPlan?: 'free' | 'pro' | 'ultra' | 'admin_test'
-): Promise<{ canProceed: boolean; warning?: string; remaining: number }> {
+): Promise<{
+    canProceed: boolean;
+    warning?: string;
+    remaining: number;
+    errorCode?: 'CREDITS_EXHAUSTED' | 'OVERDRAFT_LIMIT_EXCEEDED';
+    creditsNeeded?: number;
+}> {
     let credits = await getUserCredits(userId);
 
     // Reconcile if the subscription plan has changed since the credit record was created
@@ -105,7 +111,9 @@ export async function checkCredits(
         return {
             canProceed: false,
             warning: `❌ You have exhausted your credits (${remaining.toFixed(2)} remaining). Please top up to continue using AI features.`,
-            remaining
+            remaining,
+            errorCode: 'CREDITS_EXHAUSTED',
+            creditsNeeded
         };
     }
 
@@ -115,7 +123,9 @@ export async function checkCredits(
         return {
             canProceed: false,
             warning: `❌ Upload too large. Estimated cost (${creditsNeeded} credits) exceeds the ${MAX_OVERDRAFT_CREDITS}-credit safety limit for overdrafts.`,
-            remaining
+            remaining,
+            errorCode: 'OVERDRAFT_LIMIT_EXCEEDED',
+            creditsNeeded
         };
     }
 

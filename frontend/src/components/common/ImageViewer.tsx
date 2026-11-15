@@ -38,6 +38,15 @@ export interface ViewerFollowUpResponse {
     content: string;
 }
 
+const formatQuestionLabel = (qNum: string | number | null | undefined): string => {
+    const raw = String(qNum ?? '').replace(/^Q/i, '').trim();
+    const multiMatch = raw.match(/^(P\d+)[·.\-]Q?(.+)$/i);
+    if (multiMatch) {
+        return `${multiMatch[1].toUpperCase()}.Q${multiMatch[2]}`;
+    }
+    return `Q${raw}`;
+};
+
 interface ImageViewerProps {
     images: SessionImage[];
     initialImageIndex: number;
@@ -480,15 +489,15 @@ const ImageViewer: React.FC<ImageViewerProps> = ({
                                 disabled={isProcessingFollowUp}
                                 title={
                                     hasExplanationForActiveQuestion
-                                        ? `Scroll to existing Question ${activeQuestionMeta.questionNumber} explanation in chat`
-                                        : `Ask AI to explain Question ${activeQuestionMeta.questionNumber} in the chat panel`
+                                        ? `Scroll to existing ${formatQuestionLabel(activeQuestionMeta.questionNumber)} explanation in chat`
+                                        : `Ask AI to explain ${formatQuestionLabel(activeQuestionMeta.questionNumber)} in the chat panel`
                                 }
                             >
                                 <Sparkles size={14} />
                                 <span>
                                     {hasExplanationForActiveQuestion
-                                        ? `View Q${activeQuestionMeta.questionNumber} Explanation`
-                                        : `Explain Q${activeQuestionMeta.questionNumber}`}
+                                        ? `View ${formatQuestionLabel(activeQuestionMeta.questionNumber)} Explanation`
+                                        : `Explain ${formatQuestionLabel(activeQuestionMeta.questionNumber)}`}
                                 </span>
                             </button>
                             <div className="control-separator" />
@@ -595,8 +604,8 @@ const ImageViewer: React.FC<ImageViewerProps> = ({
                                 <Sparkles size={14} />
                                 <span>
                                     {isProcessingFollowUp
-                                        ? `Thinking${activeQuestionMeta ? ` about Q${activeQuestionMeta.questionNumber}` : ''}...`
-                                        : `AI Explanation${latestFollowUpResponse?.questionNumber ? ` · Q${latestFollowUpResponse.questionNumber}` : ''}`}
+                                        ? `Thinking${activeQuestionMeta ? ` about ${formatQuestionLabel(activeQuestionMeta.questionNumber)}` : ''}...`
+                                        : `AI Explanation${latestFollowUpResponse?.questionNumber ? ` · ${formatQuestionLabel(latestFollowUpResponse.questionNumber)}` : ''}`}
                                 </span>
                             </div>
                             <div className="viewer-mobile-sheet-actions">
@@ -636,7 +645,7 @@ const ImageViewer: React.FC<ImageViewerProps> = ({
                     <div className="viewer-mobile-chat-chips">
                         {activeQuestionMeta && (
                             <span className={`viewer-active-q-badge ${activeBadgeColorClass}`}>
-                                Q{activeQuestionMeta.questionNumber}
+                                {formatQuestionLabel(activeQuestionMeta.questionNumber)}
                                 {activeQuestionMeta.awardedMarks !== null && activeQuestionMeta.totalMarks > 0
                                     ? ` · ${activeQuestionMeta.awardedMarks}/${activeQuestionMeta.totalMarks}`
                                     : ''}
@@ -657,10 +666,10 @@ const ImageViewer: React.FC<ImageViewerProps> = ({
                             <Sparkles size={12} />
                             <span>
                                 {isProcessingFollowUp
-                                    ? `Thinking${activeQuestionMeta ? ` · Q${activeQuestionMeta.questionNumber}` : '...'}`
+                                    ? `Thinking${activeQuestionMeta ? ` · ${formatQuestionLabel(activeQuestionMeta.questionNumber)}` : '...'}`
                                     : showMobileResponseSheet
-                                        ? `AI Explanation${activeQuestionMeta ? ` · Q${activeQuestionMeta.questionNumber}` : ''}`
-                                        : (activeQuestionMeta ? `Explain Q${activeQuestionMeta.questionNumber}` : 'Explain Page')}
+                                        ? `AI Explanation${activeQuestionMeta ? ` · ${formatQuestionLabel(activeQuestionMeta.questionNumber)}` : ''}`
+                                        : (activeQuestionMeta ? `Explain ${formatQuestionLabel(activeQuestionMeta.questionNumber)}` : 'Explain Page')}
                             </span>
                             {showMobileResponseSheet && (
                                 isSheetCollapsed ? <ChevronUp size={13} /> : <ChevronDown size={13} />
@@ -675,7 +684,7 @@ const ImageViewer: React.FC<ImageViewerProps> = ({
                             onChange={e => setMobileInputText(e.target.value)}
                             placeholder={
                                 activeQuestionMeta
-                                    ? `Ask about Q${activeQuestionMeta.questionNumber}...`
+                                    ? `Ask about ${formatQuestionLabel(activeQuestionMeta.questionNumber)}...`
                                     : 'Ask a follow-up question...'
                             }
                             disabled={isProcessingFollowUp}

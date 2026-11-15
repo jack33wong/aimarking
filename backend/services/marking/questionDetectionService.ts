@@ -234,19 +234,69 @@ export class QuestionDetectionService {
         return { found: false, message: 'No exam papers found in database', hintMetadata };
       }
 
-      // 4. Candidate Scoring & Collection
-      let candidates: MatchCandidate[] = [];
+      const evaluatePool = (pool: any[], narrow: boolean, rescue: boolean) => {
+        let poolCandidates: MatchCandidate[] = [];
+        for (const paper of pool) {
+          poolCandidates = poolCandidates.concat(
+            this.findCandidatesInPaper(cleanText, paper, cleanQHint, rescue, allowCroppedQ1Exemption)
+          );
+        }
+        poolCandidates.sort((a, b) => b.score - a.score);
 
-      for (const paper of searchPool) {
-        const paperCandidates = this.findCandidatesInPaper(cleanText, paper, cleanQHint, isRescueMode, allowCroppedQ1Exemption);
-        candidates = candidates.concat(paperCandidates);
+        let acceptedWinner: MatchCandidate | null = null;
+        let isRelativeWinner = false;
+        let isLikelyModifiedQuestion = false;
+        const strictThreshold = 0.80;
+        const rescueThreshold = 0.35;
+        const minimumTextScore = rescue ? 0.15 : 0.25;
+
+        if (poolCandidates.length > 0) {
+          const winner = poolCandidates[0];
+          const runnerUp = poolCandidates.length > 1 ? poolCandidates[1] : null;
+          isRelativeWinner = winner.score >= 0.65 && (!runnerUp || (winner.score - runnerUp.score > 0.15));
+
+          let shouldAccept = false;
+          if (rescue) {
+            shouldAccept = winner.score >= rescueThreshold;
+          } else if (!narrow && isRelativeWinner && winner.score < strictThreshold) {
+            shouldAccept = winner.scoreDetails.text >= 0.50;
+          } else {
+            shouldAccept = (winner.score >= strictThreshold) || isRelativeWinner;
+          }
+
+          isLikelyModifiedQuestion = rescue && cleanText.length >= 100 && winner.scoreDetails.text < 0.50;
+          if (shouldAccept && winner.scoreDetails.text >= minimumTextScore && !isLikelyModifiedQuestion) {
+            acceptedWinner = winner;
+          }
+        }
+
+        return {
+          candidates: poolCandidates,
+          acceptedWinner,
+          isRelativeWinner,
+          isLikelyModifiedQuestion,
+          usedRescue: rescue
+        };
+      };
+
+      // 4-6. Candidate Scoring, Ranking, and Selection (with Global Search fallback if narrow hint search misses)
+      let evalResult = evaluatePool(searchPool, isNarrowSearch, isRescueMode);
+
+      if (!evalResult.acceptedWinner && isNarrowSearch && allExamPapers.length > searchPool.length) {
+        const globalEval = evaluatePool(allExamPapers, false, false);
+        if (globalEval.acceptedWinner) {
+          console.log(
+            `🌐 [DETECTION FALLBACK] Narrow hint "${cleanPaperHint}" missed; global search matched ` +
+            `${globalEval.acceptedWinner.paper.metadata.exam_code} Q${globalEval.acceptedWinner.questionNumber} ` +
+            `(score=${globalEval.acceptedWinner.score.toFixed(3)})`
+          );
+          evalResult = globalEval;
+          hintMetadata.deepSearchActive = true;
+          hintMetadata.matchedPapersCount = allExamPapers.length;
+        }
       }
 
-      // 5. Ranking & Sorting
-      candidates.sort((a, b) => b.score - a.score);
-
-
-
+      const candidates = evalResult.candidates;
       hintMetadata.auditTrail = candidates.slice(0, 5).map((c, idx) => ({
         rank: idx + 1,
         candidateId: `${c.paper.metadata.exam_code} Q${c.questionNumber}`,
@@ -255,78 +305,39 @@ export class QuestionDetectionService {
         reason: c.scoreDetails.semanticCheck ? 'Valid' : 'Semantic Fail'
       }));
 
-      // 6. Thresholding & Selection (IMPROVED RELATIVE CONFIDENCE)
-      if (candidates.length > 0) {
-        const winner = candidates[0];
-        const runnerUp = candidates.length > 1 ? candidates[1] : null;
-
-        // Base Thresholds
+      if (evalResult.acceptedWinner) {
+        const winner = evalResult.acceptedWinner;
         const strictThreshold = 0.80;
-        const rescueThreshold = 0.35;
+        if (winner.score < strictThreshold) hintMetadata.thresholdRelaxed = true;
+        hintMetadata.isWeakMatch = winner.score < 0.7;
 
-        // Relative Confidence Logic
-        const isRelativeWinner = winner.score >= 0.65 && (!runnerUp || (winner.score - runnerUp.score > 0.15));
+        // Construct Result
+        const matchResult = this.constructMatchResult(winner, evalResult.usedRescue || evalResult.isRelativeWinner);
 
-        let shouldAccept = false;
-
-        if (isRescueMode) {
-          shouldAccept = winner.score >= rescueThreshold;
-        } else {
-          // 🛡️ GLOBAL SEARCH PROTECTION
-          // Prevent a random paper from hijacking the session just because it's the "best of the worst"
-          // If it's a global search and relying on relative confidence, demand a minimum text score.
-          if (!isNarrowSearch && isRelativeWinner && winner.score < strictThreshold) {
-             shouldAccept = winner.scoreDetails.text >= 0.50; 
-          } else {
-             shouldAccept = (winner.score >= strictThreshold) || isRelativeWinner;
+        // Attach Marking Scheme
+        const markingScheme = await this.findCorrespondingMarkingScheme(matchResult);
+        if (markingScheme) {
+          matchResult.markingScheme = markingScheme;
+          // Always merge markingScheme.subQuestionMaxScores (authoritative canonical keys e.g. "2.2": 4)
+          // on top of any paper-derived subQuestionMaxScores (relative keys e.g. "2": 4)
+          if (markingScheme.subQuestionMaxScores) {
+            matchResult.subQuestionMaxScores = {
+              ...(matchResult.subQuestionMaxScores || {}),
+              ...markingScheme.subQuestionMaxScores
+            };
+          }
+          // Ensure subject is always populated from the official markingScheme if missing on the paper
+          if (!matchResult.subject && markingScheme.examDetails?.subject) {
+            matchResult.subject = markingScheme.examDetails.subject;
           }
         }
 
-        const minimumTextScore = isRescueMode ? 0.15 : 0.25;
-        // Distinguish teacher-modified question vs. OCR/extraction failure:
-        // If extracted text is substantial (>= 100 chars) yet text similarity is still < 0.50,
-        // the question was rewritten/modified — do NOT force-attach an outdated official scheme.
-        const isLikelyModifiedQuestion = isRescueMode && cleanText.length >= 100 && winner.scoreDetails.text < 0.50;
-
-        if (shouldAccept && winner.scoreDetails.text >= minimumTextScore && !isLikelyModifiedQuestion) {
-
-          if (winner.score < strictThreshold) hintMetadata.thresholdRelaxed = true;
-          hintMetadata.isWeakMatch = winner.score < 0.7;
-
-          /*
-          if (isRelativeWinner && !isRescueMode && winner.score < strictThreshold) {
-            console.log(`[DETECTION] 🏆 Relative Winner Accepted: ${winner.score.toFixed(3)} vs Runner-up ${runnerUp?.score.toFixed(3)}`);
-          }
-          */
-
-          // Construct Result
-          const matchResult = this.constructMatchResult(winner, isRescueMode || isRelativeWinner);
-
-          // Attach Marking Scheme
-          const markingScheme = await this.findCorrespondingMarkingScheme(matchResult);
-          if (markingScheme) {
-            matchResult.markingScheme = markingScheme;
-            // Always merge markingScheme.subQuestionMaxScores (authoritative canonical keys e.g. "2.2": 4)
-            // on top of any paper-derived subQuestionMaxScores (relative keys e.g. "2": 4)
-            if (markingScheme.subQuestionMaxScores) {
-              matchResult.subQuestionMaxScores = {
-                ...(matchResult.subQuestionMaxScores || {}),
-                ...markingScheme.subQuestionMaxScores
-              };
-            }
-            // Ensure subject is always populated from the official markingScheme if missing on the paper
-            if (!matchResult.subject && markingScheme.examDetails?.subject) {
-              matchResult.subject = markingScheme.examDetails.subject;
-            }
-          }
-
-          return {
-            found: true,
-            match: matchResult,
-            message: `Matched ${matchResult.paperCode} Q${matchResult.questionNumber}`,
-            hintMetadata
-          };
-        }
+        return {
+          found: true,
+          match: matchResult,
+          message: `Matched ${matchResult.paperCode} Q${matchResult.questionNumber}`,
+          hintMetadata
+        };
       }
 
       // 7. Failure State
@@ -1084,42 +1095,56 @@ export function generateSessionTitleFromDetectionResults(detectionResults: any[]
     return `${mode} - ${new Date().toLocaleDateString()}`;
   }
 
-  // Support Rescue Logic: Find the first valid (non-generic) past paper in the batch
-  const validPaper = examPapers.find(p => 
-    !p.isGeneric && 
-    p.examCode !== 'Generic Question' && 
-    p.subject !== 'Generic Question' && 
-    p.examBoard !== 'Unknown' && 
+  // Support Rescue Logic: Find all valid (non-generic) past papers in the batch
+  const validPapers = examPapers.filter(p =>
+    !p.isGeneric &&
+    p.examCode !== 'Generic Question' &&
+    p.subject !== 'Generic Question' &&
+    p.examBoard !== 'Unknown' &&
     p.examBoard !== 'N/A' &&
     p.examCode !== 'Unknown' &&
     p.examCode !== 'N/A'
   );
+  const validPaper = validPapers[0];
 
   const hasModifiedQuestion = detectionResults.some(
     dr => dr?.detectionResult?.isModifiedQuestion === true
   );
 
   if (validPaper) {
-    // Pattern: (Modified) + Exam Series + Exam Code + Board Short + Subject Short + Tier
+    // Pattern: (Modified) + Exam Series + Exam Code(s) + Board Short + Subject Short + Tier
     const p = validPaper;
-    const seriesPart = p.examSeries || '';
-    const codePart = p.examCode || '';
-    const boardPart = getShortExamBoard(p.examBoard);
-    const subjectPart = getShortSubjectName(p.subject || '');
-    const rawTier = String(p.tier || '').trim();
-    const tierPart = /^(n\/a|unknown|none)$/i.test(rawTier) ? '' : rawTier;
+    const seriesList = Array.from(new Set(validPapers.map(vp => vp.examSeries).filter(Boolean)));
+    const seriesPart = seriesList.length === 1 ? seriesList[0] : (p.examSeries || '');
+    const codePart = Array.from(new Set(validPapers.map(vp => vp.examCode).filter(Boolean))).join(', ');
+    const boardList = Array.from(new Set(validPapers.map(vp => getShortExamBoard(vp.examBoard)).filter(Boolean)));
+    const boardPart = boardList.join(' / ');
+    const subjectPart = Array.from(
+      new Set(validPapers.map(vp => getShortSubjectName(vp.subject || '')).filter(Boolean))
+    ).join(' & ');
+    const tierList = Array.from(
+      new Set(
+        validPapers
+          .map(vp => String(vp.tier || '').trim())
+          .filter(t => t && !/^(n\/a|unknown|none)$/i.test(t))
+      )
+    );
+    const tierPart = tierList.length === 1 ? tierList[0] : '';
 
-    // Question Range (Q1 to Q8)
-    const qNums = p.questions
-      .map((q: any) => parseInt(q.questionNumber))
-      .filter((n: any) => !isNaN(n))
-      .sort((a: any, b: any) => a - b);
-
+    // Question Range (only for single-paper sessions; multi-paper sessions list the paper codes instead)
     let qRange = '';
-    if (qNums.length > 0) {
+    if (validPapers.length === 1) {
+      const qNums = p.questions
+        .map((q: any) => {
+          const clean = String(q.questionNumber || '').replace(/^p\d+[·.\-]\s*q?/i, '');
+          return parseInt(clean, 10);
+        })
+        .filter((n: any) => !isNaN(n))
+        .sort((a: any, b: any) => a - b);
+
       if (qNums.length === 1) {
         qRange = ` Q${qNums[0]}`;
-      } else {
+      } else if (qNums.length > 1) {
         qRange = ` Q${qNums[0]} to Q${qNums[qNums.length - 1]}`;
       }
     }

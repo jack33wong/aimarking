@@ -15,6 +15,12 @@ export interface GeometryAnalysisResult {
     paper_code_hint?: string;
     /** Total/maximum mark for the WHOLE paper if printed on this page (usually the cover). */
     paper_total_marks_hint?: number;
+    /** True if this page is an exam booklet front cover / title page. */
+    is_cover_page?: boolean;
+    /** Printed booklet page number if visible (e.g. "Page 2 of 24" -> 2). */
+    booklet_page_number?: number;
+    /** Lowest main printed question number visible on this page (e.g. 1, 2, 20). */
+    first_question_number?: number;
 }
 
 export const KNOWN_ACADEMIC_SUBJECTS = new Set([
@@ -49,6 +55,9 @@ interface RawGeometryAnalysisResult {
     unsupported_subject_name?: string;
     paper_code_hint?: string;
     paper_total_marks_hint?: number | string | null;
+    is_cover_page?: boolean;
+    booklet_page_number?: number | string | null;
+    first_question_number?: number | string | null;
 }
 
 export class ImageGeometryService {
@@ -90,9 +99,15 @@ Your job is to analyze the provided image of student homework or exam booklet an
    - If \`detected_subject === "ENGLISH_LITERATURE"\`, set to \`"English Literature"\`.
    - If \`detected_subject === "UNSUPPORTED_SUBJECT"\`, set to the detected subject name (e.g., \`"Biology"\`, \`"Chemistry"\`, \`"Physics"\`, \`"History"\`, \`"Geography"\`). Otherwise \`""\`.
 
-8. paper_code_hint (string): If a paper code or title is visible on the cover/header/footer (e.g., "8700/1", "8700/2", "8702/1", "8461/1H", "1MA1/1H", "AQA GCSE English Language Paper 1"), extract it briefly. Otherwise "".
+8. paper_code_hint (string): Only output a paper component code (e.g., "1MA1/1H", "1MA1/2H", "8700/1", "8700/2", "8702/1", "8461/1H") when the paper/component number (/1H, /2H, Paper 1, Paper 2, etc.) is EXPLICITLY printed on that page (usually the front cover). NEVER guess or default to "1MA1/1H" when an inner page only prints "1MA1" or a printer barcode like "P76925A02024". If only a printer booklet code like "P76925A02024" is printed in the footer/margin, return "P76925A" or "". Otherwise "".
 
 8b. paper_total_marks_hint (integer | null): ONLY if this page explicitly prints the total/maximum mark for the WHOLE paper (typically the cover page, e.g. "The maximum mark for this paper is 100", "The total mark for this paper is 80", "Total for paper: 60 marks"), return that integer. Do NOT use per-question marks or mark tally grids. Otherwise null.
+
+8c. is_cover_page (boolean): True ONLY if this page is an official exam booklet front cover / title page (with candidate name/centre number boxes and exam instructions, and NO exam question 1 content). Otherwise false.
+
+8d. booklet_page_number (integer | null): If a printed booklet page number is visible in the top/bottom margin or barcode (e.g. "2", "Page 3 of 24", "*P75123A0224*" where 02 is page 2), return that integer (1 to 60). Otherwise null.
+
+8e. first_question_number (integer | null): If a main printed exam question number is visible on this page (e.g. Question 1, 2, ... 25), return the lowest main question number integer on this page. Otherwise null.
 
 9. rejection_reason (string):
    - If \`detected_subject === "NON_ACADEMIC"\` or non-academic content:
@@ -120,6 +135,9 @@ Return ONLY valid JSON matching this schema:
     "unsupported_subject_name": string,
     "paper_code_hint": string,
     "paper_total_marks_hint": number | null,
+    "is_cover_page": boolean,
+    "booklet_page_number": number | null,
+    "first_question_number": number | null,
     "evidence_text_snippet": string
 }`;
     }
@@ -179,7 +197,14 @@ Return ONLY valid JSON matching this schema:
                 content = content.replace(/\`\`\`/g, '').trim();
             }
 
-            const parsed = JSON.parse(content) as RawGeometryAnalysisResult;
+            let parsed: RawGeometryAnalysisResult;
+            try {
+                parsed = JSON.parse(content) as RawGeometryAnalysisResult;
+            } catch {
+                const jsonBlock = content.match(/\{[\s\S]*\}/)?.[0] || content;
+                const repaired = jsonBlock.replace(/,\s*([}\]])/g, '$1');
+                parsed = JSON.parse(repaired) as RawGeometryAnalysisResult;
+            }
             
             // Print pretty JSON if enabled, otherwise print single line
             if (process.env.DEBUG_SEMANTIC_GEOMETRY === 'true') {
@@ -241,6 +266,15 @@ Return ONLY valid JSON matching this schema:
                 paper_total_marks_hint: (() => {
                     const n = Number(parsed.paper_total_marks_hint);
                     return Number.isInteger(n) && n >= 10 && n <= 400 ? n : undefined;
+                })(),
+                is_cover_page: Boolean(parsed.is_cover_page),
+                booklet_page_number: (() => {
+                    const n = Number(parsed.booklet_page_number);
+                    return Number.isInteger(n) && n >= 1 && n <= 100 ? n : undefined;
+                })(),
+                first_question_number: (() => {
+                    const n = Number(parsed.first_question_number);
+                    return Number.isInteger(n) && n >= 1 && n <= 100 ? n : undefined;
                 })()
             };
 

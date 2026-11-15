@@ -203,9 +203,9 @@ export function combineQuestionAndPart(base: string, part: string): string {
  */
 export function getBaseQuestionNumber(questionNumber: string | null | undefined): string {
   if (!questionNumber) return '';
-  const qNumStr = String(questionNumber);
+  const qNumStr = String(questionNumber).trim().replace(/^p\d+[·.\-]\s*/i, '');
   // Extract leading digits, optionally skipping a 'Q' or 'q' prefix, and strip leading zeros (e.g. "01" -> "1")
-  // Examples: "12ii" -> "12", "2a" -> "2", "Q12ii" -> "12", "q21" -> "21", "02" -> "2"
+  // Examples: "12ii" -> "12", "2a" -> "2", "Q12ii" -> "12", "P1·12a" -> "12", "02" -> "2"
   const match = qNumStr.match(/^(?:q|question)?\s*(\d+)/i);
   return match ? match[1].replace(/^0+(?=\d)/, '') : '';
 }

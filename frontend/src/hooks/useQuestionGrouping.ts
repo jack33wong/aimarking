@@ -77,8 +77,8 @@ export const useQuestionGrouping = (
 
         // 1. First pass: Structure the groups based on DetectedQuestion (Schema)
         allQuestions.forEach(q => {
-            // Regex to extract main number: "15a" -> "15"
-            const match = q.questionNumber.match(/^(\d+)/);
+            // Regex to extract main number (supports single-paper "15a" -> "15" and multi-paper "P1·15a" -> "P1·15")
+            const match = q.questionNumber.match(/^((?:P\d+[·-]\s*)?\d+)/i);
             const mainNum = match ? match[1] : q.questionNumber;
 
             if (!groups[mainNum]) {
@@ -107,7 +107,7 @@ export const useQuestionGrouping = (
 
                 // Filter results that match this main number prefix
                 const relevantResults = markingContext.questionResults.filter(r => {
-                    const rMatch = r.number.match(/^(\d+)/);
+                    const rMatch = r.number.match(/^((?:P\d+[·-]\s*)?\d+)/i);
                     const rMain = rMatch ? rMatch[1] : r.number;
                     return rMain === group.questionNumber;
                 });

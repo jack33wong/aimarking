@@ -22,17 +22,28 @@ const ExamPaperTab: React.FC<ExamPaperTabProps> = ({ detectedQuestion, studentSc
     return null;
   }
 
-  // Helper function to extract base question number (e.g., "3a" -> "3", "22" -> "22")
+  const formatQuestionChip = (questionNumber: string): string => {
+    const clean = String(questionNumber || '').replace(/^Q/i, '').trim();
+    const multiMatch = clean.match(/^(P\d+)[·.\-]Q?(.+)$/i);
+    if (multiMatch) {
+      return `${multiMatch[1].toUpperCase()}.Q${multiMatch[2]}`;
+    }
+    return `Q${clean}`;
+  };
+
+  // Helper function to extract base question number (e.g., "3a" -> "3", "P1·3a" -> "3", "22" -> "22")
   const getBaseQuestionNumber = (questionNumber: string): number => {
-    const match = questionNumber.match(/^(\d+)/);
+    const stripped = String(questionNumber || '').trim().replace(/^P\d+[·.\-]\s*Q?/i, '');
+    const match = stripped.match(/^(\d+)/);
     return match ? parseInt(match[1], 10) : 0;
   };
 
-  // Helper function to check if question has sub-question part (e.g., "3a" -> true, "3" -> false)
+  // Helper function to check if question has sub-question part (e.g., "3a" -> true, "P1·3a" -> true, "3" -> false)
   const hasSubQuestionPart = (questionNumber: string): boolean => {
-    const baseMatch = questionNumber.match(/^(\d+)/);
+    const stripped = String(questionNumber || '').trim().replace(/^P\d+[·.\-]\s*Q?/i, '');
+    const baseMatch = stripped.match(/^(\d+)/);
     if (!baseMatch) return false;
-    const afterBase = questionNumber.substring(baseMatch[0].length);
+    const afterBase = stripped.substring(baseMatch[0].length);
     return afterBase.length > 0 && /^[a-z0-9()]+/i.test(afterBase);
   };
 
@@ -89,10 +100,7 @@ const ExamPaperTab: React.FC<ExamPaperTabProps> = ({ detectedQuestion, studentSc
                     const sortedBases = Array.from(grouped.keys()).sort((a, b) => a - b);
                     return sortedBases.map(baseNum => {
                       const subQuestions = grouped.get(baseNum)!.sort();
-                      if (subQuestions.length === 1) {
-                        return `Q${subQuestions[0]}`;
-                      }
-                      return `Q${subQuestions.join(', Q')}`;
+                      return subQuestions.map(formatQuestionChip).join(', ');
                     }).join(', ');
                   }
 
@@ -104,7 +112,7 @@ const ExamPaperTab: React.FC<ExamPaperTabProps> = ({ detectedQuestion, studentSc
                   const uniqueNumbers = Array.from(new Set(baseNumbers));
 
                   if (uniqueNumbers.length === 0) {
-                    return questionNumbers.map(qNum => `Q${qNum}`).join(', ');
+                    return questionNumbers.map(formatQuestionChip).join(', ');
                   }
 
                   // Check if sequential
@@ -205,10 +213,7 @@ const ExamPaperTab: React.FC<ExamPaperTabProps> = ({ detectedQuestion, studentSc
       const sortedBases = Array.from(grouped.keys()).sort((a, b) => a - b);
       return sortedBases.map(baseNum => {
         const subQuestions = grouped.get(baseNum)!.sort();
-        if (subQuestions.length === 1) {
-          return `Q${subQuestions[0]}`;
-        }
-        return `Q${subQuestions.join(', Q')}`;
+        return subQuestions.map(formatQuestionChip).join(', ');
       }).join(', ');
     }
 
@@ -223,7 +228,7 @@ const ExamPaperTab: React.FC<ExamPaperTabProps> = ({ detectedQuestion, studentSc
 
     if (uniqueNumbers.length === 0) {
       // Fallback: show all question numbers as-is
-      return questionNumbers.map(qNum => `Q${qNum}`).join(', ');
+      return questionNumbers.map(formatQuestionChip).join(', ');
     }
 
     // Check if in sequence

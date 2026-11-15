@@ -243,7 +243,8 @@ class SimpleSessionService {
       trimmed === 'Chat Session' ||
       trimmed === 'Marking Session' ||
       trimmed === 'Rejected Document' ||
-      trimmed === 'Rejected Upload'
+      trimmed === 'Rejected Upload' ||
+      trimmed === 'Upload Issue'
     ) {
       return true;
     }

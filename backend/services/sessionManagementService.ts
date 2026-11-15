@@ -393,10 +393,12 @@ export class SessionManagementService {
             existingTitle === 'Marking Session' ||
             existingTitle === 'Rejected Document' ||
             existingTitle === 'Rejected Upload' ||
+            existingTitle === 'Upload Issue' ||
             /^(Marking|Question|Single Message|Batch Session)\s*-\s*\d/i.test(existingTitle);
           const isMeaningfulNewTitle =
             Boolean(sessionTitle) &&
             sessionTitle !== 'Processing...' &&
+            sessionTitle !== 'Upload Issue' &&
             !/^(Marking|Question|Single Message|Batch Session)\s*-\s*\d/i.test(String(sessionTitle).trim());
           if (isFallbackExistingTitle && isMeaningfulNewTitle) {
             await FirestoreService.updateUnifiedSession(currentSessionId, { title: sessionTitle });
@@ -1005,24 +1007,73 @@ export class SessionManagementService {
       
       const isAnyQuestionFound = aiData.detectionResults?.some((r: any) => r.detectionResult?.found === true) || false;
 
-      detectedQuestion = {
-        found: isAnyQuestionFound,
-        isModifiedPaper,
-        multipleExamPapers: false,
-        multipleQuestions: questions.length > 1,
-        totalMarks: syncTotal,
-        examPapers: [{
-          examBoard: firstDetection.board || '',
-          examCode: firstDetection.paperCode || '',
-          examSeries: firstDetection.examSeries || firstDetection.year || '',
-          tier: firstDetection.tier || '',
-          subject: firstDetection.subject || firstDetection.qualification || '',
-          qualification: firstDetection.qualification || firstDetection.level || '',
-          paperTitle: firstDetection.paperTitle || firstQuestionMetadata.paperTitle || (isModifiedPaper ? 'Modified Paper' : 'Annotated Paper'),
+      // Check if questions belong to multiple paper buckets (e.g. "P1·1", "P2·1")
+      const paperPrefixes = Array.from(
+        new Set(
+          questions
+            .map(q => q.questionNumber.match(/^(P\d+)[·-]/i)?.[1]?.toUpperCase())
+            .filter((p): p is string => Boolean(p))
+        )
+      );
+
+      if (paperPrefixes.length > 1) {
+        const examPapers = paperPrefixes.map((prefix) => {
+          const paperQuestions = questions.filter(q =>
+            q.questionNumber.toUpperCase().startsWith(`${prefix}·`) ||
+            q.questionNumber.toUpperCase().startsWith(`${prefix}-`)
+          );
+          const paperDetections = (aiData.detectionResults || []).filter((r: any) => {
+            const qn = String(r?.question?.questionNumber || '').toUpperCase();
+            return qn.startsWith(`${prefix}·`) || qn.startsWith(`${prefix}-`);
+          });
+          const validPaperDet = paperDetections.find((r: any) => {
+            const m = r?.detectionResult?.match;
+            return r?.detectionResult?.found === true && m?.board && m.board !== 'Unknown' && m.board !== 'N/A' && m?.paperCode !== 'Generic Question';
+          });
+          const pMatch = validPaperDet?.detectionResult?.match || paperDetections[0]?.detectionResult?.match || firstDetection;
+          const pTotalMarks = paperQuestions.reduce((sum, q) => sum + (Number(q.totalMarks || q.marks) || 0), 0);
+
+          return {
+            examBoard: pMatch.board || '',
+            examCode: pMatch.paperCode || prefix,
+            examSeries: pMatch.examSeries || pMatch.year || '',
+            tier: pMatch.tier || '',
+            subject: pMatch.subject || pMatch.qualification || '',
+            qualification: pMatch.qualification || pMatch.level || '',
+            paperTitle: pMatch.paperTitle || `${pMatch.board || ''} ${pMatch.paperCode || prefix}`.trim() || prefix,
+            totalMarks: pTotalMarks,
+            questions: paperQuestions
+          };
+        });
+
+        detectedQuestion = {
+          found: isAnyQuestionFound,
+          isModifiedPaper,
+          multipleExamPapers: true,
+          multipleQuestions: questions.length > 1,
           totalMarks: syncTotal,
-          questions: questions
-        }]
-      };
+          examPapers
+        };
+      } else {
+        detectedQuestion = {
+          found: isAnyQuestionFound,
+          isModifiedPaper,
+          multipleExamPapers: false,
+          multipleQuestions: questions.length > 1,
+          totalMarks: syncTotal,
+          examPapers: [{
+            examBoard: firstDetection.board || '',
+            examCode: firstDetection.paperCode || '',
+            examSeries: firstDetection.examSeries || firstDetection.year || '',
+            tier: firstDetection.tier || '',
+            subject: firstDetection.subject || firstDetection.qualification || '',
+            qualification: firstDetection.qualification || firstDetection.level || '',
+            paperTitle: firstDetection.paperTitle || firstQuestionMetadata.paperTitle || (isModifiedPaper ? 'Modified Paper' : 'Annotated Paper'),
+            totalMarks: syncTotal,
+            questions: questions
+          }]
+        };
+      }
 
       console.log(`[V2 CLEAN FIX] ✅ UI Structure ready (Strings preserved)`);
     } else {

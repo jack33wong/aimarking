@@ -411,9 +411,12 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
         if (matches.length > 0) {
           const match = sortQuestionsByMistakePriority(matches)[0];
           const scoreText = match.awardedMarks !== null ? `${match.awardedMarks}/${match.totalMarks}` : `?/${match.totalMarks}`;
+          const rawQ = String(match.questionNumber ?? '').replace(/^Q/i, '').trim();
+          const multiMatch = rawQ.match(/^(P\d+)[·.\-]Q?(.+)$/i);
+          const qLabel = multiMatch ? `${multiMatch[1].toUpperCase()}.Q${multiMatch[2]}` : `Q${rawQ}`;
           return {
             ...img,
-            badgeText: `Q${match.questionNumber} ${scoreText}`,
+            badgeText: `${qLabel} ${scoreText}`,
             badgeColor: getGroupColor(match)
           };
         }
