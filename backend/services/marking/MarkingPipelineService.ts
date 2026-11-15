@@ -1699,6 +1699,7 @@ export class MarkingPipelineService {
                 subQuestionsMap: Map<string, string>;
                 donorImageData?: string;
             }>();
+            let ejectedPureReferenceFiles = false;
 
             if (answeredBaseQuestions.size > 0) {
                 for (const item of allClassificationResults) {
@@ -1818,28 +1819,37 @@ export class MarkingPipelineService {
 
                     standardizedPages = keptPages;
                     allClassificationResults = keptClassifications;
-                } else if (standardizedPages.length > 3) {
-                    // Hybrid / Partially-Answered Booklet Case:
-                    // Reclassify remaining `questionOnly` pages inside a partially-answered exam booklet (> 3 pages)
-                    // to `'metadata'` so `QuestionModeHandlerService` does NOT solve unattempted exam questions.
-                    // CRITICAL: Preserve question numbers in `mapperHints` before clearing `questions` so the Straightener
-                    // knows their logical question order (e.g. Q15, Q16, Q17) and puts them at the END, not Page 0!
-                    for (const item of allClassificationResults) {
-                        if (item.result?.category === 'questionOnly') {
-                            const existingQs = Array.isArray(item.result.questions)
-                                ? item.result.questions.map((q: any) => String(q.questionNumber || '')).filter(Boolean)
-                                : [];
-                            if (existingQs.length > 0) {
-                                (item.result as any).mapperHints = [
-                                    ...new Set([...((item.result as any).mapperHints || []), ...existingQs])
-                                ];
-                            }
-                            console.log(
-                                `🧹 [HYBRID-BOOKLET] Reclassifying blank/donor exam page ${item.pageIndex} (Qs: ${existingQs.join(', ') || 'none'}) from 'questionOnly' to 'metadata'.`
-                            );
-                            item.result.category = 'metadata';
-                            item.result.questions = [];
+                    ejectedPureReferenceFiles = true;
+                }
+            }
+
+            PaperSplitterService.assertSinglePaperClassification(allClassificationResults, {
+                isPdf: standardizedPages.length > 0 && standardizedPages.every(p => /\.pdf$/i.test(p.originalFileName || '')),
+                pageCount: standardizedPages.length,
+                fileName: standardizedPages[0]?.originalFileName
+            });
+
+            if (answeredBaseQuestions.size > 0 && !ejectedPureReferenceFiles && standardizedPages.length > 3) {
+                // Hybrid / Partially-Answered Booklet Case:
+                // Reclassify remaining `questionOnly` pages inside a partially-answered exam booklet (> 3 pages)
+                // to `'metadata'` so `QuestionModeHandlerService` does NOT solve unattempted exam questions.
+                // CRITICAL: Preserve question numbers in `mapperHints` before clearing `questions` so the Straightener
+                // knows their logical question order (e.g. Q15, Q16, Q17) and puts them at the END, not Page 0!
+                for (const item of allClassificationResults) {
+                    if (item.result?.category === 'questionOnly') {
+                        const existingQs = Array.isArray(item.result.questions)
+                            ? item.result.questions.map((q: any) => String(q.questionNumber || '')).filter(Boolean)
+                            : [];
+                        if (existingQs.length > 0) {
+                            (item.result as any).mapperHints = [
+                                ...new Set([...((item.result as any).mapperHints || []), ...existingQs])
+                            ];
                         }
+                        console.log(
+                            `🧹 [HYBRID-BOOKLET] Reclassifying blank/donor exam page ${item.pageIndex} (Qs: ${existingQs.join(', ') || 'none'}) from 'questionOnly' to 'metadata'.`
+                        );
+                        item.result.category = 'metadata';
+                        item.result.questions = [];
                     }
                 }
             }

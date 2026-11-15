@@ -56,12 +56,6 @@ function normalizePaperCode(code?: string): string {
     return '';
 }
 
-function extractBookletBarcode(raw?: string): string {
-    if (!raw || typeof raw !== 'string') return '';
-    const match = raw.toUpperCase().match(/\b(P\d{5}A)\d*\b/);
-    return match ? match[1] : '';
-}
-
 function extractPaperCodeFromFilename(fileName?: string): string {
     if (!fileName || typeof fileName !== 'string') return '';
     const normalized = fileName.replace(/1m11/ig, '1MA1');
@@ -228,97 +222,105 @@ function resolveBucketCodeHint(pages: StandardizedPage[], geo: GeometryAnalysisR
     return bestCode;
 }
 
-interface PoolMultiPaperDetection {
-    confirmedCodes: Set<string>;
-    confirmedBarcodes: Set<string>;
-    coverCount: number;
-    hasMultipleCodes: boolean;
-    hasMultipleBarcodes: boolean;
-    hasMultipleCovers: boolean;
-    exceedsSinglePaperLooseImageLimit: boolean;
+const STEM_STOP_WORDS = new Set([
+    'the', 'and', 'for', 'that', 'with', 'from', 'this', 'are',
+    'work', 'out', 'find', 'write', 'down', 'give', 'your', 'answer',
+    'show', 'diagram', 'shows', 'figure', 'table', 'below', 'marks', 'mark'
+]);
+
+function collectStudentWorkText(node: any): string {
+    if (!node || typeof node !== 'object') return '';
+    const parts: string[] = [];
+    if (typeof node.studentWork === 'string') {
+        parts.push(node.studentWork);
+    }
+    if (Array.isArray(node.studentWorkLines)) {
+        for (const line of node.studentWorkLines) {
+            if (typeof line === 'string') {
+                parts.push(line);
+            } else if (line && typeof line.text === 'string') {
+                parts.push(line.text);
+            }
+        }
+    }
+    if (Array.isArray(node.subQuestions)) {
+        for (const sq of node.subQuestions) {
+            const nested = collectStudentWorkText(sq);
+            if (nested) parts.push(nested);
+        }
+    }
+    return parts.join(' ');
 }
 
-function detectMultiplePapersInSinglePool(
-    pages: StandardizedPage[],
-    geo: GeometryAnalysisResult[],
-    isLooseImages: boolean
-): PoolMultiPaperDetection {
-    const codeGeoCounts = new Map<string, number>();
-    const barcodeGeoCounts = new Map<string, number>();
-    const confirmedCodes = new Set<string>();
-    const confirmedBarcodes = new Set<string>();
-    let coverCount = 0;
+function isOpeningQuestionStemOnPage(q: any): string {
+    const qNumStr = String(q?.questionNumber ?? '').trim();
+    const baseMatch = qNumStr.match(/^(\d+)/);
+    if (!baseMatch) return '';
 
-    for (let i = 0; i < pages.length; i++) {
-        const p = pages[i];
-        const g = geo[i];
-        const isCover = g?.is_cover_page === true;
-        if (isCover) coverCount++;
+    const trailingPart = qNumStr.slice(baseMatch[0].length).replace(/[().\s]/g, '').toLowerCase();
+    if (trailingPart && trailingPart !== 'a' && trailingPart !== 'i' && trailingPart !== 'ai') {
+        return '';
+    }
 
-        const fileCode = extractPaperCodeFromFilename(p?.originalFileName);
-        if (fileCode) confirmedCodes.add(fileCode);
-
-        const geoCode = normalizePaperCode(g?.paper_code_hint);
-        if (geoCode) {
-            if (isCover) {
-                confirmedCodes.add(geoCode);
-            } else {
-                codeGeoCounts.set(geoCode, (codeGeoCounts.get(geoCode) || 0) + 1);
-            }
-        }
-
-        const barcode = extractBookletBarcode(g?.paper_code_hint);
-        if (barcode) {
-            if (isCover) {
-                confirmedBarcodes.add(barcode);
-            } else {
-                barcodeGeoCounts.set(barcode, (barcodeGeoCounts.get(barcode) || 0) + 1);
-            }
+    if (Array.isArray(q?.subQuestions) && q.subQuestions.length > 0) {
+        const firstSubPart = String(q.subQuestions[0]?.part || '').replace(/[()\s.]/g, '').toLowerCase();
+        if (firstSubPart !== '' && !['a', 'i', '1', 'ai'].includes(firstSubPart)) {
+            return '';
         }
     }
 
-    codeGeoCounts.forEach((cnt, code) => {
-        if (cnt >= 2) confirmedCodes.add(code);
-    });
-    barcodeGeoCounts.forEach((cnt, barcode) => {
-        if (cnt >= 2) confirmedBarcodes.add(barcode);
-    });
-
-    const specificCodes = new Set<string>();
-    const genericPaperNums = new Set<string>();
-    confirmedCodes.forEach(c => {
-        if (c.startsWith('PAPER_')) {
-            genericPaperNums.add(c.slice('PAPER_'.length));
-        } else {
-            specificCodes.add(c);
-        }
-    });
-
-    let hasMultipleCodes = false;
-    if (specificCodes.size >= 2) {
-        hasMultipleCodes = true;
-    } else if (specificCodes.size === 1 && genericPaperNums.size >= 1) {
-        const onlySpec = Array.from(specificCodes)[0];
-        const specCompNum = (onlySpec.split('/')[1] || '').replace(/[FH]/gi, '').replace(/^0+/, '');
-        const hasDifferentPaperNum = Array.from(genericPaperNums).some(num => num !== specCompNum);
-        if (hasDifferentPaperNum) hasMultipleCodes = true;
-    } else if (specificCodes.size === 0 && genericPaperNums.size >= 2) {
-        hasMultipleCodes = true;
-    }
-
-    const hasMultipleBarcodes = confirmedBarcodes.size >= 2;
-    const hasMultipleCovers = coverCount >= 2 && pages.length >= 6;
-    const exceedsSinglePaperLooseImageLimit = isLooseImages && pages.length > 50;
-
-    return {
-        confirmedCodes,
-        confirmedBarcodes,
-        coverCount,
-        hasMultipleCodes,
-        hasMultipleBarcodes,
-        hasMultipleCovers,
-        exceedsSinglePaperLooseImageLimit
+    const cleanField = (val: any): string => {
+        const s = String(val ?? '').trim();
+        return s === 'null' || s === 'undefined' ? '' : s;
     };
+    const mainRaw = cleanField(q?.text) || cleanField(q?.questionText);
+    const firstSubRaw = Array.isArray(q?.subQuestions) && q.subQuestions.length > 0
+        ? (cleanField(q.subQuestions[0]?.text) || cleanField(q.subQuestions[0]?.questionText))
+        : '';
+    const combinedRaw = [mainRaw, firstSubRaw].filter(Boolean).join(' ').trim();
+    if (!combinedRaw) return '';
+
+    if (
+        /(?:\b(?:question|q)\s*\d*[a-z0-9().\s]*continued\b|\b\d+\s*\(\s*continued\s*\)|\(\s*continued\s*\))/i.test(combinedRaw) ||
+        /^\s*(?:\(?[b-z]\)|\((?:ii+|iv|v|vi+|[2-9])\)|(?:ii+|iv|v|vi+|[2-9])\))/i.test(combinedRaw) ||
+        (/^\s*[a-z]/.test(combinedRaw) && !/^\s*[a-z](?:\([a-z0-9,\s]+\))?\s*=/.test(combinedRaw))
+    ) {
+        return '';
+    }
+
+    const rawText = combinedRaw
+        .replace(/turn over/gi, ' ')
+        .replace(/leave blank/gi, ' ')
+        .replace(/do not write in this area/gi, ' ')
+        .replace(/total for question[^\n]*marks/gi, ' ')
+        .replace(/blank page/gi, ' ')
+        .replace(/context:\s*based on[^\n]*/gi, ' ')
+        .trim();
+
+    if (rawText.length < 20) return '';
+
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const studentWorkText = collectStudentWorkText(q);
+    const normStem = norm(rawText);
+    const normWork = norm(studentWorkText);
+    if (normStem.length >= 10 && normWork.includes(normStem.slice(0, 35))) {
+        return '';
+    }
+
+    return rawText;
+}
+
+function tokenizeQuestionStem(stem: string): Set<string> {
+    const tokens = new Set<string>();
+    const matches = stem.toLowerCase().match(/[a-z0-9]+/g) || [];
+    for (const tok of matches) {
+        if (/^\d+$/.test(tok)) {
+            tokens.add(tok);
+        } else if (tok.length >= 3 && !STEM_STOP_WORDS.has(tok)) {
+            tokens.add(tok);
+        }
+    }
+    return tokens;
 }
 
 function getValidPastPaperMatch(sub: SinglePaperCoreSubResult): any | null {
@@ -338,10 +340,95 @@ function getValidPastPaperMatch(sub: SinglePaperCoreSubResult): any | null {
 
 export class PaperSplitterService {
     /**
+     * Post-classification single-paper guard:
+     * Rejects loose-image or combined-PDF uploads where >= 2 main question numbers
+     * appear on different pages with completely different printed opening question stems.
+     */
+    static assertSinglePaperClassification(
+        allClassificationResults: Array<{ pageIndex: number; result?: any }>,
+        options: { isPdf?: boolean; pageCount?: number; fileName?: string } = {}
+    ): void {
+        const stemsByBaseQ = new Map<string, Array<{ pageIndex: number; tokens: Set<string> }>>();
+
+        for (const entry of allClassificationResults || []) {
+            const pageIndex = entry?.pageIndex;
+            const questions = entry?.result?.questions;
+            if (pageIndex === undefined || !Array.isArray(questions)) continue;
+
+            for (const q of questions) {
+                const baseMatch = String(q?.questionNumber ?? '').trim().match(/^(\d+)/);
+                if (!baseMatch) continue;
+                const baseQ = baseMatch[1];
+
+                const stem = isOpeningQuestionStemOnPage(q);
+                if (!stem) continue;
+
+                const tokens = tokenizeQuestionStem(stem);
+                if (tokens.size < 4) continue;
+
+                const list = stemsByBaseQ.get(baseQ) || [];
+                list.push({ pageIndex, tokens });
+                stemsByBaseQ.set(baseQ, list);
+            }
+        }
+
+        const conflictingQuestionNumbers = new Set<string>();
+        stemsByBaseQ.forEach((entries, baseQ) => {
+            for (let i = 0; i < entries.length; i++) {
+                for (let j = i + 1; j < entries.length; j++) {
+                    if (entries[i].pageIndex === entries[j].pageIndex) continue;
+                    const tokensA = entries[i].tokens;
+                    const tokensB = entries[j].tokens;
+                    let intersectionSize = 0;
+                    tokensA.forEach(t => {
+                        if (tokensB.has(t)) intersectionSize++;
+                    });
+                    const overlap = intersectionSize / Math.min(tokensA.size, tokensB.size);
+                    if (overlap < 0.30) {
+                        conflictingQuestionNumbers.add(baseQ);
+                    }
+                }
+            }
+        });
+
+        if (conflictingQuestionNumbers.size >= 2) {
+            const sortedConflicts = Array.from(conflictingQuestionNumbers).sort((a, b) => Number(a) - Number(b));
+            const sampleQs = sortedConflicts.slice(0, 5).map(q => `Q${q}`).join(', ');
+            console.warn(
+                `⚠️ [PAPER-SPLITTER] Conflicting question stems detected on ${sortedConflicts.map(q => `Q${q}`).join(', ')} (isPdf=${Boolean(options.isPdf)}, pages=${options.pageCount ?? 'unknown'}).`
+            );
+
+            if (options.isPdf) {
+                throw new UserFacingError({
+                    code: 'COMBINED_MULTI_PAPER_PDF_NOT_SUPPORTED',
+                    category: 'user_fixable',
+                    shouldAlertAdmin: false,
+                    userMessage:
+                        `This PDF${options.fileName ? ` ("${options.fileName}")` : ''} appears to contain **multiple exam papers combined into a single file** (duplicate question numbers with different questions detected: ${sampleQs}).\n\n` +
+                        `**How to fix:** Please upload **each exam paper as a separate PDF file** (e.g. Paper 1 PDF, Paper 2 PDF, Paper 3 PDF) so they can be graded accurately in parallel.`,
+                    technicalMessage: `Combined multi-paper PDF rejected after classification: conflicting question stems on Q${sortedConflicts.join(', Q')}.`
+                });
+            }
+
+            throw new UserFacingError({
+                code: 'MULTI_PAPER_LOOSE_IMAGES_NOT_SUPPORTED',
+                category: 'user_fixable',
+                shouldAlertAdmin: true,
+                userMessage:
+                    `Loose image uploads support **1 exam paper at a time**. We detected multiple exam papers in your upload (duplicate question numbers with different questions: ${sampleQs}).\n\n` +
+                    `**How to mark multiple papers:**\n` +
+                    `1. **Upload each paper as a separate PDF file** (e.g. 3 PDFs for Paper 1, Paper 2, and Paper 3, optionally with mark scheme PDFs).\n` +
+                    `2. **Or upload 1 paper at a time** if using loose photos/images.`,
+                technicalMessage: `Multi-paper loose image upload rejected after classification: conflicting question stems on Q${sortedConflicts.join(', Q')}.`
+            });
+        }
+    }
+
+    /**
      * Deterministic multi-PDF paper splitter & 1-paper fast path.
-     * - Single-paper uploads (1 PDF or <=50 loose images of 1 paper) bypass all splitting heuristics.
+     * - Single-paper uploads (1 PDF or loose images) return 1 bucket directly.
      * - Multi-paper uploads are supported ONLY as >=2 separate student PDFs.
-     * - Multi-paper loose images, mixed PDF+loose images, and single combined multi-paper PDFs are rejected deterministically.
+     * - Mixed PDF+loose images are rejected deterministically.
      */
     static splitIntoPaperBuckets(params: {
         standardizedPages: StandardizedPage[];
@@ -411,40 +498,6 @@ export class PaperSplitterService {
             });
         }
 
-        // Guard A: Loose images (studentPdfSourceIndices.length === 0)
-        if (studentPdfSourceIndices.length === 0) {
-            const check = detectMultiplePapersInSinglePool(standardizedPages, alignedGeo, true);
-            if (check.hasMultipleCodes || check.hasMultipleBarcodes || check.hasMultipleCovers || check.exceedsSinglePaperLooseImageLimit) {
-                throw new UserFacingError({
-                    code: 'MULTI_PAPER_LOOSE_IMAGES_NOT_SUPPORTED',
-                    category: 'user_fixable',
-                    shouldAlertAdmin: false,
-                    userMessage:
-                        `Loose image uploads support **1 exam paper at a time** (up to 50 pages). We detected multiple papers in your ${standardizedPages.length}-image upload.\n\n` +
-                        `**How to mark multiple papers:**\n` +
-                        `1. **Upload each paper as a separate PDF file** (e.g. 3 PDFs for Paper 1, Paper 2, and Paper 3, optionally with mark scheme PDFs).\n` +
-                        `2. **Or upload 1 paper at a time** if using loose photos/images.`,
-                    technicalMessage: `Multi-paper loose image upload rejected (${standardizedPages.length} pages, codes=${Array.from(check.confirmedCodes).join(',')}, barcodes=${Array.from(check.confirmedBarcodes).join(',')}, covers=${check.coverCount}).`
-                });
-            }
-        }
-
-        // Guard B: Single PDF (studentPdfSourceIndices.length === 1 && looseImagePages.length === 0)
-        if (studentPdfSourceIndices.length === 1 && looseImagePages.length === 0) {
-            const check = detectMultiplePapersInSinglePool(standardizedPages, alignedGeo, false);
-            if (check.hasMultipleCodes || check.hasMultipleBarcodes || (standardizedPages.length > 35 && check.hasMultipleCovers)) {
-                throw new UserFacingError({
-                    code: 'COMBINED_MULTI_PAPER_PDF_NOT_SUPPORTED',
-                    category: 'user_fixable',
-                    shouldAlertAdmin: false,
-                    userMessage:
-                        `This PDF appears to contain **multiple exam papers combined into a single file** (${standardizedPages.length} pages).\n\n` +
-                        `**How to fix:** Please upload **each exam paper as a separate PDF file** (e.g. Paper 1 PDF, Paper 2 PDF, Paper 3 PDF) so they can be graded accurately in parallel.`,
-                    technicalMessage: `Single combined multi-paper PDF rejected (${standardizedPages.length} pages, codes=${Array.from(check.confirmedCodes).join(',')}, barcodes=${Array.from(check.confirmedBarcodes).join(',')}).`
-                });
-            }
-        }
-
         // 1-Paper Zero-Regression Fast Path (0 or 1 student PDF)
         if (studentPdfSourceIndices.length <= 1) {
             const singleCode = resolveBucketCodeHint(standardizedPages, alignedGeo) || undefined;
@@ -484,22 +537,6 @@ export class PaperSplitterService {
         const orderedEntries = studentPdfSourceIndices
             .map(srcIdx => bucketsBySource.get(srcIdx))
             .filter((v): v is NonNullable<typeof v> => Boolean(v && v.std.length > 0));
-
-        // Guard each individual PDF against sneaking a 2-in-1 combined PDF
-        for (const entry of orderedEntries) {
-            const check = detectMultiplePapersInSinglePool(entry.std, entry.geo, false);
-            if (check.hasMultipleCodes || check.hasMultipleBarcodes || (entry.std.length > 35 && check.hasMultipleCovers)) {
-                throw new UserFacingError({
-                    code: 'COMBINED_MULTI_PAPER_PDF_NOT_SUPPORTED',
-                    category: 'user_fixable',
-                    shouldAlertAdmin: false,
-                    userMessage:
-                        `The PDF "${entry.std[0]?.originalFileName || 'document.pdf'}" appears to contain **multiple exam papers combined into a single file** (${entry.std.length} pages).\n\n` +
-                        `**How to fix:** Please upload **each exam paper as a separate PDF file** so they can be graded accurately in parallel.`,
-                    technicalMessage: `Combined multi-paper PDF "${entry.std[0]?.originalFileName}" rejected inside multi-PDF upload.`
-                });
-            }
-        }
 
         const builtBuckets = orderedEntries.map((entry, bIdx) => {
             const codeHint = resolveBucketCodeHint(entry.std, entry.geo) || undefined;

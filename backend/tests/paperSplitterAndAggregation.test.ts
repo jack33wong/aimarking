@@ -97,84 +97,8 @@ describe('PaperSplitterService & Multi-PDF Aggregation', () => {
         expect(buckets[0].deferredSchemePdfFiles[0].originalname).toBe('1MA1-1H-MS.pdf');
     });
 
-    it('Multi-Paper Loose Image Rejection: 47 loose images across 1MA1/1H and 1MA1/2H throw MULTI_PAPER_LOOSE_IMAGES_NOT_SUPPORTED', () => {
-        const pages: StandardizedPage[] = [];
-        const geo: GeometryAnalysisResult[] = [];
-
-        for (let i = 0; i < 23; i++) {
-            pages.push(makeMockPage(pages.length, `edexcel1m11-1h-2024-${i}.png`));
-            geo.push({
-                is_acceptable_quality: true,
-                needs_rotation: 0,
-                is_two_page_spread: false,
-                is_marking_scheme: false,
-                is_supported_doc: true,
-                detected_subject: 'MATHS',
-                paper_code_hint: i === 0 ? '1MA1/1H' : 'P74082A0224',
-                is_cover_page: i === 0
-            });
-        }
-        for (let i = 0; i < 24; i++) {
-            pages.push(makeMockPage(pages.length, `edexcel1m11-2h-2024-${i}.png`));
-            geo.push({
-                is_acceptable_quality: true,
-                needs_rotation: 0,
-                is_two_page_spread: false,
-                is_marking_scheme: false,
-                is_supported_doc: true,
-                detected_subject: 'MATHS',
-                paper_code_hint: i === 0 ? '1MA1/2H' : 'P76925A0224',
-                is_cover_page: i === 0
-            });
-        }
-
-        let caught: any;
-        try {
-            PaperSplitterService.splitIntoPaperBuckets({
-                standardizedPages: pages,
-                lightweightPages: pages,
-                geometryResults: geo,
-                interceptedSchemeImages: [],
-                deferredSchemePdfFiles: [],
-                files: []
-            });
-        } catch (err) {
-            caught = err;
-        }
-        expect(caught).toBeInstanceOf(UserFacingError);
-        expect(caught.code).toBe('MULTI_PAPER_LOOSE_IMAGES_NOT_SUPPORTED');
-    });
-
-    it('Multi-Paper Loose Image Rejection: 65 loose images throw MULTI_PAPER_LOOSE_IMAGES_NOT_SUPPORTED', () => {
-        const pages = Array.from({ length: 65 }, (_, i) => makeMockPage(i, `IMG_${i}.jpg`));
-        const geo: GeometryAnalysisResult[] = pages.map(() => ({
-            is_acceptable_quality: true,
-            needs_rotation: 0,
-            is_two_page_spread: false,
-            is_marking_scheme: false,
-            is_supported_doc: true,
-            detected_subject: 'MATHS'
-        }));
-
-        let caught: any;
-        try {
-            PaperSplitterService.splitIntoPaperBuckets({
-                standardizedPages: pages,
-                lightweightPages: pages,
-                geometryResults: geo,
-                interceptedSchemeImages: [],
-                deferredSchemePdfFiles: [],
-                files: []
-            });
-        } catch (err) {
-            caught = err;
-        }
-        expect(caught).toBeInstanceOf(UserFacingError);
-        expect(caught.code).toBe('MULTI_PAPER_LOOSE_IMAGES_NOT_SUPPORTED');
-    });
-
-    it('Single Combined Multi-Paper PDF Rejection: 1 PDF (48p) containing 1MA1/1H and 1MA1/2H throws COMBINED_MULTI_PAPER_PDF_NOT_SUPPORTED', () => {
-        const pages = Array.from({ length: 48 }, (_, i) => makeMockPage(i, 'combined-maths.pdf', 0));
+    it('splitIntoPaperBuckets never rejects loose images (even 65 loose images or noisy barcodes/covers/filenames)', () => {
+        const pages = Array.from({ length: 65 }, (_, i) => makeMockPage(i, i < 30 ? `1MA1-1H-${i}.jpg` : `1MA1-2H-${i}.jpg`));
         const geo: GeometryAnalysisResult[] = pages.map((_, i) => ({
             is_acceptable_quality: true,
             needs_rotation: 0,
@@ -182,25 +106,259 @@ describe('PaperSplitterService & Multi-PDF Aggregation', () => {
             is_marking_scheme: false,
             is_supported_doc: true,
             detected_subject: 'MATHS',
-            paper_code_hint: i === 0 ? '1MA1/1H' : (i === 24 ? '1MA1/2H' : undefined),
-            is_cover_page: i === 0 || i === 24
+            paper_code_hint: i === 0 ? '1MA1/1H' : (i === 30 ? '1MA1/2H' : 'P74082A0224'),
+            is_cover_page: i === 0 || i === 30
         }));
+
+        const buckets = PaperSplitterService.splitIntoPaperBuckets({
+            standardizedPages: pages,
+            lightweightPages: pages,
+            geometryResults: geo,
+            interceptedSchemeImages: [],
+            deferredSchemePdfFiles: [],
+            files: []
+        });
+        expect(buckets).toHaveLength(1);
+        expect(buckets[0].standardizedPages).toHaveLength(65);
+    });
+
+    it('assertSinglePaperClassification passes on a single 23-page 1MA1/1H paper including multi-page Q3a/Q3b and Q11a-b/Q11c-d', () => {
+        const classificationResults = [
+            {
+                pageIndex: 2,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [{
+                        questionNumber: '3',
+                        text: 'A shop sells apples in bags of 6 and oranges in bags of 8. Sam buys the same total number of apples and oranges.',
+                        subQuestions: [{ part: 'a', text: 'Work out the smallest number of bags of apples Sam can buy.' }]
+                    }]
+                }
+            },
+            {
+                pageIndex: 3,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [{
+                        questionNumber: '3',
+                        text: 'Question 3 continued. Each bag of apples costs £1.80 and each bag of oranges costs £2.10.',
+                        subQuestions: [{ part: 'b', text: 'Work out the total cost of the fruit Sam buys.' }]
+                    }]
+                }
+            },
+            {
+                pageIndex: 11,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [{
+                        questionNumber: '11',
+                        text: 'The cumulative frequency graph shows information about the weights of 80 parcels delivered by a courier.',
+                        subQuestions: [{ part: 'a', text: 'Find an estimate for the median weight.' }, { part: 'b', text: 'Find the interquartile range.' }]
+                    }]
+                }
+            },
+            {
+                pageIndex: 12,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [{
+                        questionNumber: '11',
+                        text: 'Question 11 continued. A box plot is drawn for the weights of the 80 parcels.',
+                        subQuestions: [{ part: 'c', text: 'Compare the distribution of parcel weights.' }, { part: 'd', text: 'State one assumption you made.' }]
+                    }]
+                }
+            }
+        ];
+
+        expect(() => PaperSplitterService.assertSinglePaperClassification(classificationResults, { isPdf: false, pageCount: 23 })).not.toThrow();
+    });
+
+    it('assertSinglePaperClassification passes when duplicate question numbers have empty text (handwritten continuation sheet)', () => {
+        const classificationResults = [
+            {
+                pageIndex: 0,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [
+                        { questionNumber: '1', text: 'Solve the simultaneous equations 3x + 2y = 12 and 5x - y = 7 algebraically.' },
+                        { questionNumber: '2', text: 'A triangle ABC has sides AB = 8 cm, BC = 11 cm and angle ABC = 42 degrees.' }
+                    ]
+                }
+            },
+            {
+                pageIndex: 1,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [
+                        { questionNumber: '1', text: '' },
+                        { questionNumber: '2', text: '   ' }
+                    ]
+                }
+            }
+        ];
+
+        expect(() => PaperSplitterService.assertSinglePaperClassification(classificationResults, { isPdf: false, pageCount: 2 })).not.toThrow();
+    });
+
+    it('assertSinglePaperClassification throws MULTI_PAPER_LOOSE_IMAGES_NOT_SUPPORTED when loose images contain 1MA1/1H and 1MA1/2H (different Q1 & Q2 stems)', () => {
+        const classificationResults = [
+            {
+                pageIndex: 0,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [
+                        { questionNumber: '1', text: 'Write 84 as a product of its prime factors in index form.' },
+                        { questionNumber: '2', text: 'Reflect triangle T in the line x = -1 and label the new triangle R.' }
+                    ]
+                }
+            },
+            {
+                pageIndex: 23,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [
+                        { questionNumber: '1', text: 'Expand and simplify the expression 4(2x - 3) + 5(x + 2) completely.' },
+                        { questionNumber: '2', text: 'A train travels 240 kilometres in 3 hours and 20 minutes. Calculate its average speed.' }
+                    ]
+                }
+            }
+        ];
 
         let caught: any;
         try {
-            PaperSplitterService.splitIntoPaperBuckets({
-                standardizedPages: pages,
-                lightweightPages: pages,
-                geometryResults: geo,
-                interceptedSchemeImages: [],
-                deferredSchemePdfFiles: [],
-                files: [makeMockPdfFile('combined-maths.pdf')]
-            });
+            PaperSplitterService.assertSinglePaperClassification(classificationResults, { isPdf: false, pageCount: 47 });
+        } catch (err) {
+            caught = err;
+        }
+        expect(caught).toBeInstanceOf(UserFacingError);
+        expect(caught.code).toBe('MULTI_PAPER_LOOSE_IMAGES_NOT_SUPPORTED');
+    });
+
+    it('assertSinglePaperClassification throws COMBINED_MULTI_PAPER_PDF_NOT_SUPPORTED when isPdf: true and Q1 & Q2 have different stems', () => {
+        const classificationResults = [
+            {
+                pageIndex: 0,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [
+                        { questionNumber: '1', text: 'Write 84 as a product of its prime factors in index form.' },
+                        { questionNumber: '2', text: 'Reflect triangle T in the line x = -1 and label the new triangle R.' }
+                    ]
+                }
+            },
+            {
+                pageIndex: 24,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [
+                        { questionNumber: '1', text: 'Expand and simplify the expression 4(2x - 3) + 5(x + 2) completely.' },
+                        { questionNumber: '2', text: 'A train travels 240 kilometres in 3 hours and 20 minutes. Calculate its average speed.' }
+                    ]
+                }
+            }
+        ];
+
+        let caught: any;
+        try {
+            PaperSplitterService.assertSinglePaperClassification(classificationResults, { isPdf: true, pageCount: 48, fileName: 'combined-maths.pdf' });
         } catch (err) {
             caught = err;
         }
         expect(caught).toBeInstanceOf(UserFacingError);
         expect(caught.code).toBe('COMBINED_MULTI_PAPER_PDF_NOT_SUPPORTED');
+    });
+
+    it('assertSinglePaperClassification catches multi-paper uploads when q.text is null and prompts live inside subQuestions[0].text (e.g. Q2a and Q17a)', () => {
+        const classificationResults = [
+            {
+                pageIndex: 1,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [
+                        {
+                            questionNumber: '2',
+                            text: null,
+                            subQuestions: [{ part: 'a', text: 'Write the ratio 18 : 24 : 30 in its simplest whole number form.' }]
+                        },
+                        {
+                            questionNumber: '17',
+                            text: null,
+                            subQuestions: [{ part: 'a', text: 'Prove algebraically that the straight line x + 2y = 10 is a tangent to the circle.' }]
+                        }
+                    ]
+                }
+            },
+            {
+                pageIndex: 24,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [
+                        {
+                            questionNumber: '2',
+                            text: null,
+                            subQuestions: [{ part: 'a', text: 'Convert 4.5 kilometres per hour into metres per minute accurately.' }]
+                        },
+                        {
+                            questionNumber: '17',
+                            text: null,
+                            subQuestions: [{ part: 'a', text: 'A pyramid has a square base of side 12 cm and perpendicular height 15 cm. Calculate its volume.' }]
+                        }
+                    ]
+                }
+            }
+        ];
+
+        let caught: any;
+        try {
+            PaperSplitterService.assertSinglePaperClassification(classificationResults, { isPdf: false, pageCount: 47 });
+        } catch (err) {
+            caught = err;
+        }
+        expect(caught).toBeInstanceOf(UserFacingError);
+        expect(caught.code).toBe('MULTI_PAPER_LOOSE_IMAGES_NOT_SUPPORTED');
+    });
+
+    it('assertSinglePaperClassification ignores continuation pages with subQuestions: [] and "Question N continued" text', () => {
+        const classificationResults = [
+            {
+                pageIndex: 4,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [
+                        {
+                            questionNumber: '5',
+                            text: 'A regular pentagon and a regular hexagon share a common side AB. Calculate the interior angle.',
+                            subQuestions: []
+                        },
+                        {
+                            questionNumber: '6',
+                            text: 'The scatter graph shows the height and shoe size of 15 students in Year 11.',
+                            subQuestions: []
+                        }
+                    ]
+                }
+            },
+            {
+                pageIndex: 5,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [
+                        {
+                            questionNumber: '5',
+                            text: 'Question 5 continued. Complete the rest of the proof using angles on a straight line.',
+                            subQuestions: []
+                        },
+                        {
+                            questionNumber: '6',
+                            text: '(b) Draw a line of best fit on the scatter graph and estimate the shoe size for height 172 cm.',
+                            subQuestions: []
+                        }
+                    ]
+                }
+            }
+        ];
+
+        expect(() => PaperSplitterService.assertSinglePaperClassification(classificationResults, { isPdf: false, pageCount: 23 })).not.toThrow();
     });
 
     it('Deterministic Multi-PDF Bucketing: 3 student PDFs produce 3 buckets in exact PDF order', () => {
