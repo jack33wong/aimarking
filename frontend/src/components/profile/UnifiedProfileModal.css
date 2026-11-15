@@ -730,7 +730,7 @@
 }
 
 .account-details-grid .detail-label {
-    color: var(--text-secondary);
+    color: var(--text-tertiary);
     font-size: 14px;
     font-weight: 500;
     text-transform: none;

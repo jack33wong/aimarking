@@ -1398,13 +1398,13 @@ html.dark .follow-up-chat-input-container.follow-up-bottom::before {
   padding: 6px 6px 6px 6px;
   border-radius: 15px;
   border: 1.5px solid var(--border-main);
-  background: var(--fill-tsp-gray-main, rgba(0, 0, 0, 0.04));
+  background: var(--background-white-main);
   cursor: pointer;
   transition: transform 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .ribbon-thumbnail-stack-btn:hover {
-  background-color: var(--surface-tertiary, rgba(148, 163, 184, 0.18));
+  background-color: var(--background-gray-main);
   border-color: var(--border-main, rgba(148, 163, 184, 0.55));
   transform: translateY(-1px);
   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.2);

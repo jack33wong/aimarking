@@ -667,8 +667,8 @@
 .viewer-mobile-chat-bar {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+  gap: 8px;
+  padding: 12px 12px calc(8px + env(safe-area-inset-bottom));
   background: var(--background-nav, #ffffff);
   border-top: 1px solid var(--border-main, #e2e8f0);
   z-index: 35;

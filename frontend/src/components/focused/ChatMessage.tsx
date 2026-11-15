@@ -662,9 +662,9 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
                       isYourWork={false}
                     />
                     {!isUser && (Boolean((message as any).requiresUpgrade) || (Array.isArray((message as any).detectedPaperGroups) && (message as any).detectedPaperGroups.length > 0)) && (
-                      <div style={{ marginTop: '14px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '10px' }}>
+                      <div className="limit-actions-row">
                         {Array.isArray((message as any).detectedPaperGroups) && (message as any).detectedPaperGroups.length > 0 && (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                          <div className="detected-paper-groups-list">
                             {(message as any).detectedPaperGroups.map((group: any, gIdx: number) => (
                               <button
                                 key={group.paperIndex ?? gIdx}
@@ -686,8 +686,13 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
                             ))}
                           </div>
                         )}
+                        {Boolean((message as any).requiresUpgrade) && Array.isArray((message as any).detectedPaperGroups) && (message as any).detectedPaperGroups.length > 0 && (
+                          <div className="limit-actions-or-divider" aria-hidden="true">
+                            <span>or</span>
+                          </div>
+                        )}
                         {Boolean((message as any).requiresUpgrade) && (
-                          <div style={{ marginLeft: 'auto' }}>
+                          <div className="limit-upgrade-cta-wrap">
                             <button
                               type="button"
                               className="paywall-unlock-btn"

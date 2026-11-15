@@ -113,19 +113,36 @@
   }
 }
 
-/* Mobile responsive for multi-image gallery */
+/* Mobile responsive for multi-image gallery (at most 5 x 1 thumbnails, horizontal scroll on overflow) */
 @media (max-width: 640px) {
+  .multi-image-gallery {
+    padding: 0;
+    margin: 4px 0;
+    max-width: 100%;
+  }
+
+  .multi-image-gallery.thumbnail-grid,
   .multi-image-gallery .thumbnail-grid {
-    grid-template-columns: repeat(3, 1fr) !important;
-    grid-auto-rows: 80px !important;
+    display: grid !important;
+    grid-template-columns: none !important;
+    grid-auto-flow: column !important;
+    grid-auto-columns: 58px !important;
+    grid-template-rows: 68px !important;
     gap: 6px !important;
-    padding: 8px !important;
-    max-height: 240px !important;
+    padding: 4px 2px !important;
+    width: auto !important;
+    max-width: 100% !important;
+    max-height: none !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-x;
   }
 
   .multi-image-gallery .thumbnail-item {
-    height: 80px !important;
-    aspect-ratio: 0.8 !important;
+    width: 58px !important;
+    height: 68px !important;
+    aspect-ratio: auto !important;
   }
 }
 
@@ -153,7 +170,7 @@
 /* PDF Files Container - 3x3 Grid Layout */
 .pdf-files-container {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   max-width: 100%;
 }
@@ -170,6 +187,36 @@
   cursor: pointer;
   transition: all 0.2s ease;
   width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+@media (max-width: 640px) {
+  .pdf-files-container {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    width: 100%;
+    max-width: 100%;
+    max-height: 120px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    padding: 2px;
+  }
+
+  .chat-message-file-card {
+    padding: 6px 7px;
+    gap: 6px;
+  }
+
+  .small-pdf-file-name {
+    font-size: 10px;
+  }
+
+  .pdf-file-size {
+    font-size: 8.5px;
+  }
 }
 
 .chat-message-file-card:hover {

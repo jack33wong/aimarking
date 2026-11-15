@@ -290,7 +290,7 @@ export const FollowUpRectificationPanel: React.FC<FollowUpRectificationPanelProp
           <div style={{ fontSize: '13.5px', color: 'var(--text-primary, #f3f4f6)', display: 'flex', alignItems: 'center', gap: '6px' }}>
             <Sparkles color="#f59e0b" size={15} />
             <span>
-              <strong>Marked with General Rubric.</strong> Is this from an official past paper, or do you have the question / marking scheme? Re-mark for 100% accuracy (Free):
+              <strong>Marked with General Mark Scheme.</strong> Is this from an official past paper, or do you have the question / marking scheme? Re-mark for 100% accuracy (Free):
             </span>
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
