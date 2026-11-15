@@ -1045,3 +1045,35 @@ html.dark .guest-mode-floating-banner {
   }
 }
 
+.detected-paper-grade-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: rgba(99, 102, 241, 0.14);
+  border: 1px solid rgba(99, 102, 241, 0.45);
+  color: var(--text-primary, #e2e8f0);
+  transition: all 0.2s ease;
+}
+
+.detected-paper-grade-btn:hover:not(:disabled) {
+  background: rgba(99, 102, 241, 0.28);
+  border-color: rgba(129, 140, 248, 0.85);
+  color: #ffffff;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
+}
+
+.detected-paper-grade-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.detected-paper-grade-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+

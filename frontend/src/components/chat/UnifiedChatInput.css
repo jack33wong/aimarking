@@ -1397,3 +1397,98 @@
 .context-chip-close:hover {
   color: var(--text-primary);
 }
+
+/* Follow-up rectification action buttons */
+.rectification-primary-btn {
+  padding: 8px 14px;
+  background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
+  color: #ffffff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.rectification-primary-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35);
+}
+
+.rectification-primary-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.rectification-primary-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.rectification-secondary-btn {
+  padding: 8px 14px;
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.rectification-secondary-btn:hover:not(:disabled) {
+  background: rgba(99, 102, 241, 0.28);
+  border-color: rgba(129, 140, 248, 0.8);
+  color: #c7d2fe;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.24);
+}
+
+.rectification-secondary-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.rectification-secondary-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.rectification-amend-btn {
+  padding: 6px 12px;
+  background: transparent;
+  color: var(--text-secondary, #9ca3af);
+  border: 1px solid rgba(156, 163, 175, 0.3);
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  transition: all 0.2s ease;
+}
+
+.rectification-amend-btn:hover:not(:disabled) {
+  background-color: var(--surface-tertiary, rgba(156, 163, 175, 0.14));
+  border-color: rgba(156, 163, 175, 0.6);
+  color: var(--text-primary, #f3f4f6);
+  transform: translateY(-1px);
+}
+
+.rectification-amend-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.rectification-amend-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

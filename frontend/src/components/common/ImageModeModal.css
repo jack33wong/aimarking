@@ -174,11 +174,20 @@
 
 .viewer-explain-btn.has-explanation {
   border-color: rgba(124, 58, 237, 0.55);
-  background: rgba(124, 58, 237, 0.16);
+  background: rgba(124, 58, 237, 0.2);
 }
 
-.viewer-explain-btn:hover:not(:disabled) {
-  background: rgba(124, 58, 237, 0.18);
+.viewer-explain-btn:hover:not(:disabled),
+.viewer-explain-btn.has-explanation:hover:not(:disabled) {
+  background: rgba(124, 58, 237, 0.34);
+  border-color: rgba(139, 92, 246, 0.85);
+  color: #ffffff;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(124, 58, 237, 0.28);
+}
+
+.viewer-explain-btn:active:not(:disabled) {
+  transform: scale(0.96);
 }
 
 .viewer-explain-btn:disabled {
@@ -724,6 +733,19 @@
   color: #7c3aed;
 }
 
+.viewer-mobile-explain-chip:hover:not(:disabled),
+.viewer-mobile-explain-chip.has-explanation:hover:not(:disabled) {
+  background: rgba(124, 58, 237, 0.28);
+  border-color: rgba(139, 92, 246, 0.85);
+  color: #ffffff;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.24);
+}
+
+.viewer-mobile-explain-chip:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
 .viewer-mobile-explain-chip:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -844,12 +866,24 @@
   justify-content: center;
   width: 28px;
   height: 28px;
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--icon-primary, #374151);
   border-radius: 6px;
   cursor: pointer;
   touch-action: manipulation;
+  transition: all 0.2s ease;
+}
+
+.viewer-sheet-icon-btn:hover:not(:disabled) {
+  background-color: var(--surface-tertiary, rgba(148, 163, 184, 0.18));
+  border-color: var(--border-color, rgba(148, 163, 184, 0.35));
+  color: var(--text-primary, #111827);
+  transform: scale(1.05);
+}
+
+.viewer-sheet-icon-btn:active:not(:disabled) {
+  transform: scale(0.94);
 }
 
 .viewer-mobile-sheet-body {

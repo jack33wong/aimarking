@@ -669,6 +669,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
                               <button
                                 key={group.paperIndex ?? gIdx}
                                 type="button"
+                                className="detected-paper-grade-btn"
                                 disabled={isAnyMessageProcessing || group.canGradeOnFree === false}
                                 onClick={() => {
                                   logEvent('telemetry_events', {
@@ -677,21 +678,6 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
                                     pageCount: group.pageCount
                                   });
                                   gradeSelectedPaperGroup?.(group);
-                                }}
-                                style={{
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: '6px',
-                                  padding: '8px 14px',
-                                  borderRadius: '8px',
-                                  fontSize: '13px',
-                                  fontWeight: 600,
-                                  cursor: isAnyMessageProcessing ? 'not-allowed' : 'pointer',
-                                  opacity: isAnyMessageProcessing ? 0.6 : 1,
-                                  background: 'rgba(99, 102, 241, 0.14)',
-                                  border: '1px solid rgba(99, 102, 241, 0.45)',
-                                  color: 'var(--text-primary, #e2e8f0)',
-                                  transition: 'all 0.15s ease'
                                 }}
                               >
                                 <span>Grade {group.label}</span>

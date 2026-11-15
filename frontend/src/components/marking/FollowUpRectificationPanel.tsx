@@ -296,21 +296,9 @@ export const FollowUpRectificationPanel: React.FC<FollowUpRectificationPanelProp
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
             <button
               type="button"
+              className="rectification-primary-btn"
               disabled={isProcessing}
               onClick={() => setIsPaperDrawerOpen(true)}
-              style={{
-                padding: '8px 14px',
-                background: 'linear-gradient(135deg, #2563eb 0%, #3b82f6 100%)',
-                color: '#ffffff',
-                border: 'none',
-                borderRadius: '8px',
-                cursor: isProcessing ? 'not-allowed' : 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '7px',
-                fontSize: '13px',
-                fontWeight: 600
-              }}
             >
               <Link2 size={15} />
               <span>Select Official Past Paper / Question</span>
@@ -318,21 +306,9 @@ export const FollowUpRectificationPanel: React.FC<FollowUpRectificationPanelProp
 
             <button
               type="button"
+              className="rectification-secondary-btn"
               disabled={isProcessing}
               onClick={() => fileInputRef.current?.click()}
-              style={{
-                padding: '8px 14px',
-                background: 'rgba(99, 102, 241, 0.15)',
-                color: '#818cf8',
-                border: '1px solid rgba(99, 102, 241, 0.4)',
-                borderRadius: '8px',
-                cursor: isProcessing ? 'not-allowed' : 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '7px',
-                fontSize: '13px',
-                fontWeight: 600
-              }}
             >
               <Paperclip size={15} />
               <span>Upload Mark Scheme / Question Paper (Free)</span>
@@ -346,22 +322,9 @@ export const FollowUpRectificationPanel: React.FC<FollowUpRectificationPanelProp
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
           <button
             type="button"
+            className="rectification-amend-btn"
             disabled={isProcessing}
             onClick={() => setIsPaperDrawerOpen(true)}
-            style={{
-              padding: '6px 12px',
-              background: 'transparent',
-              color: 'var(--text-secondary, #9ca3af)',
-              border: '1px solid rgba(156, 163, 175, 0.3)',
-              borderRadius: '6px',
-              cursor: isProcessing ? 'not-allowed' : 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '10px',
-              fontSize: '12.5px',
-              fontWeight: 500,
-              textAlign: 'left'
-            }}
           >
             <Link2 size={13} style={{ flexShrink: 0 }} />
             <span>Wrong paper or question detected? Amend Official Paper</span>
