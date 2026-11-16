@@ -259,6 +259,12 @@
   white-space: nowrap;
 }
 
+.score-marks-label {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
 .tmua-hero-pct {
   font-size: 13px;
   font-weight: 600;
