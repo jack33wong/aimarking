@@ -41,6 +41,7 @@ interface SessionDigestEntry {
   sessionId: string;
   userId: string;
   userEmail?: string;
+  userAgent?: string;
   sessionTitle: string;
   createdAt: string;
   lastActivityAt: string;
@@ -798,6 +799,7 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
     turnType: SessionTurnType;
     userId?: string;
     userEmail?: string;
+    userAgent?: string;
     sessionTitle?: string;
     model?: string;
     result?: any;
@@ -821,6 +823,7 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
         turnType,
         userId = 'anonymous',
         userEmail,
+        userAgent,
         model = 'default',
         result,
         error,
@@ -919,6 +922,7 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
         existing.lastActivityAt = nowIso;
         if (userId && userId !== 'anonymous') existing.userId = userId;
         if (userEmail) existing.userEmail = userEmail;
+        if (userAgent && !existing.userAgent) existing.userAgent = userAgent;
         if (extractedTitle && (existing.sessionTitle === 'Marking Session' || existing.sessionTitle === 'Chat Session' || !existing.sessionTitle)) {
           existing.sessionTitle = extractedTitle;
         }
@@ -966,6 +970,7 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
           sessionId: resolvedSessionId,
           userId,
           userEmail,
+          userAgent,
           sessionTitle: extractedTitle || (turnType === 'FOLLOW_UP_CHAT' ? 'Chat Session' : 'Marking Session'),
           createdAt: nowIso,
           lastActivityAt: nowIso,
@@ -1064,7 +1069,15 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
           : '<p style="margin: 6px 0; color: #666;"><em>No uploaded files recorded.</em></p>';
 
       // Build combined .txt attachment across all turns
-      const combinedLogsText = entry.turns
+      const sessionMetaHeader = [
+        `Session ID: ${entry.sessionId}`,
+        `User: ${entry.userEmail || entry.userId}`,
+        `Device / Browser (UA): ${entry.userAgent || 'Unknown'}`,
+      ].join('\n');
+
+      const combinedLogsText = [
+        sessionMetaHeader,
+        ...entry.turns
         .map((t, idx) => {
           const header = [
             '================================================================================',
@@ -1080,7 +1093,7 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
             .join('\n');
           return `${header}\n${t.logsText || '(No log output captured)'}`;
         })
-        .join('\n\n');
+      ].join('\n\n');
 
       const turnsText = entry.turns
         .map((t, idx) => {
@@ -1143,6 +1156,7 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
           latestBreakdown.length > 0 ? `Questions: ${latestBreakdown.join(', ')}` : '',
           `Total Duration: ${totalDurationSec}s | Total Log Lines: ${totalLines}`,
           `Started: ${entry.createdAt} | Last Activity: ${entry.lastActivityAt}`,
+          `Device / Browser (UA): ${entry.userAgent || 'Unknown'}`,
           '',
           'Uploaded Files:',
           filesText,
@@ -1168,6 +1182,7 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
     <tr><td style="padding: 5px 0; font-weight: bold;">Models:</td><td><code>${escapeHtml(modelsUsed)}</code></td></tr>
     <tr><td style="padding: 5px 0; font-weight: bold;">Activity Window:</td><td>${escapeHtml(entry.createdAt)} → ${escapeHtml(entry.lastActivityAt)}</td></tr>
     ${latestBreakdown.length > 0 ? `<tr><td style="padding: 5px 0; font-weight: bold; vertical-align: top;">Breakdown:</td><td>${escapeHtml(latestBreakdown.join('  |  '))}</td></tr>` : ''}
+    <tr><td style="padding: 5px 0; font-weight: bold; vertical-align: top;">Device / Browser:</td><td style="font-size: 12px; color: #555;">${escapeHtml(entry.userAgent || 'Unknown')}</td></tr>
   </table>
 
   <h3 style="font-size: 14px; margin: 16px 0 6px 0;">Uploaded Files</h3>
@@ -1200,6 +1215,7 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
     sessionId?: string;
     userId?: string;
     userEmail?: string;
+    userAgent?: string;
     model?: string;
     isRemark?: boolean;
     turnType?: SessionTurnType;

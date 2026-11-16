@@ -413,40 +413,96 @@ export function compareSubQuestionParts(partA: string | null | undefined, partB:
  * @param maxLength - Maximum length (default 30)
  * @returns Cleaned and truncated title
  */
-export function generateGenericTitleFromText(text: string | undefined, mode: 'Question' | 'Marking', maxLength: number = 30): string {
-  if (!text || !text.trim()) {
-    return `${mode} - ${new Date().toLocaleDateString()}`;
-  }
+/**
+ * Strips LaTeX commands, math delimiters, and pure math expressions/equations
+ * so fallback session titles contain only readable natural-language prose.
+ */
+export function stripLatexAndMathForTitle(text: string | undefined): string {
+  if (!text || !text.trim()) return '';
 
   let cleaned = text.trim();
 
-  // CLEANUP: Remove AI-generated markers and markdown (e.g. :::your-work, **Question 6**)
+  // Remove AI-generated markers, markdown, and generic prefixes
   cleaned = cleaned.replace(/:::[^\s\n]+/g, '');
   cleaned = cleaned.replace(/\*\*/g, '').replace(/###/g, '').trim();
 
-  // Remove User-Specific Generic Prefixes
   const genericPrefixes = [
     'Unknown General Generic Question (N/A)',
     'Unknown General Generic Question',
     'General Generic Question'
   ];
-  genericPrefixes.forEach(prefix => {
+  for (const prefix of genericPrefixes) {
     if (cleaned.startsWith(prefix)) {
       cleaned = cleaned.replace(prefix, '').trim();
     }
-  });
+  }
 
-  // Handle cases where extraction failed after cleaning
+  // Remove display & inline math blocks ($$...$$, \[...\], \(...\), $...$)
+  cleaned = cleaned
+    .replace(/\$\$[\s\S]*?\$\$/g, ' ')
+    .replace(/\\\[[\s\S]*?\\\]/g, ' ')
+    .replace(/\\\([\s\S]*?\\\)/g, ' ')
+    .replace(/\$[^$\n]+\$/g, ' ');
+
+  // Remove LaTeX environments (\begin{...}...\end{...})
+  cleaned = cleaned.replace(/\\begin\{[^}]+\}[\s\S]*?\\end\{[^}]+\}/g, ' ');
+
+  // Remove common LaTeX commands with arguments (\frac{a}{b}, \mathrm{f}, \sqrt{x}, etc.)
+  for (let i = 0; i < 3; i++) {
+    cleaned = cleaned.replace(/\\[a-zA-Z]+\*?(\[[^\]]*\])?(\{[^{}]*\})+/g, ' ');
+  }
+  // Remove remaining LaTeX commands & braces/subscripts/superscripts
+  cleaned = cleaned
+    .replace(/\\[a-zA-Z]+\*?/g, ' ')
+    .replace(/[_^]\{[^}]*\}/g, ' ')
+    .replace(/[_^][a-zA-Z0-9]/g, ' ')
+    .replace(/[{}]/g, ' ');
+
+  // Remove equations / math expressions like f(x) = ..., y = ..., x > -1, = ( ... )
+  cleaned = cleaned
+    .replace(/\b[a-zA-Z]\s*\([^)]*\)\s*=\s*[^.,;\n]*/g, ' ')
+    .replace(/\b[a-zA-Z0-9]+\s*[=<>≤≥≠≈]\s*[^.,;\n]*/g, ' ')
+    .replace(/\([^)]*[+\-*/^=][^)]*\)/g, ' ')
+    .replace(/[=<>≤≥≠≈+\-*/^|\\]/g, ' ');
+
+  // Remove isolated single-letter math variable tokens (e.g. "x", "y", "O", "C") and "(x)"
+  // while keeping valid English single-letter words "a" and "I"
+  cleaned = cleaned.replace(/\(\s*[a-zA-Z]\s*\)/g, ' ');
+  cleaned = cleaned.replace(/(^|\s)(?![aAI]\b)[a-zA-Z](?=\s|$|[.,;:])/g, ' ');
+  cleaned = cleaned.replace(/\(\s*\)|\[\s*\]/g, ' ');
+
+  // Collapse whitespace and trim leading/trailing punctuation
+  cleaned = cleaned
+    .replace(/\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s.,;:\-–—•]+|[\s.,;:\-–—•]+$/g, '')
+    .trim();
+
+  // Require meaningful natural-language prose (at least 6 letters and 2+ words of >=2 letters)
+  const proseWords = cleaned.match(/[a-zA-Z]{2,}/g) || [];
+  const alphaCount = (cleaned.match(/[a-zA-Z]/g) || []).length;
+  if (alphaCount < 6 || proseWords.length < 2) {
+    return '';
+  }
+
+  return cleaned;
+}
+
+export function generateGenericTitleFromText(text: string | undefined, mode: 'Question' | 'Marking', maxLength: number = 30): string {
+  if (!text || !text.trim()) {
+    return `${mode} - ${new Date().toLocaleDateString()}`;
+  }
+
+  let cleaned = stripLatexAndMathForTitle(text);
+
+  // Handle cases where extraction failed or only math/LaTeX remained after cleaning
   const lower = cleaned.toLowerCase();
   if (!cleaned || lower.includes('unable to extract') || lower.includes('no text detected') || lower.includes('extraction failed')) {
     return `${mode} - ${new Date().toLocaleDateString()}`;
   }
 
-  // Ensure newlines are replaced with spaces for clean title
-  cleaned = cleaned.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
-
   if (cleaned.length > maxLength) {
-    cleaned = cleaned.substring(0, maxLength) + '...';
+    cleaned = cleaned.substring(0, maxLength).trimEnd() + '...';
   }
 
   return `${mode} - ${cleaned}`;

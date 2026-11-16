@@ -1,0 +1,370 @@
+import React from 'react';
+import '@testing-library/jest-dom';
+import { render, fireEvent, waitFor, screen, act } from '@testing-library/react';
+import UnifiedChatInput from './UnifiedChatInput';
+
+jest.mock('react-router-dom', () => ({
+  useNavigate: () => jest.fn(),
+  useLocation: () => ({ pathname: '/app', search: '' }),
+}));
+
+jest.mock('../../contexts/AuthContext', () => ({
+  useAuth: () => ({ user: { uid: 'test-user', displayName: 'Test User' } }),
+}));
+
+jest.mock('../../contexts/MarkingPageContext', () => ({
+  useMarkingPage: () => ({
+    onGenerateModelAnswer: jest.fn(),
+    isModelAnswerMode: false,
+    setIsModelAnswerMode: jest.fn(),
+    isMarkingSchemeMode: false,
+    setIsMarkingSchemeMode: jest.fn(),
+    onExplainMarkingScheme: jest.fn(),
+    initialInput: '',
+    setInitialInput: jest.fn(),
+    showModelAnswerConfirmation: false,
+    setShowModelAnswerConfirmation: jest.fn(),
+    pendingModelAnswerPaper: null,
+    setPendingModelAnswerPaper: jest.fn(),
+    pendingConfirmationMode: null,
+    setPendingConfirmationMode: jest.fn(),
+  }),
+}));
+
+jest.mock('../../contexts/ModelContext', () => ({
+  useModels: () => ({ defaultModel: 'gemini-2.5-pro' }),
+}));
+
+jest.mock('../../hooks/useSubscription', () => ({
+  useSubscription: () => ({ checkPermission: () => true }),
+}));
+
+jest.mock('../../hooks/useTelemetry', () => ({
+  useTelemetry: () => ({ logEvent: jest.fn() }),
+}));
+
+jest.mock('../../services/configService', () => ({
+  __esModule: true,
+  default: {
+    getExamMetadata: jest.fn().mockResolvedValue({
+      boards: [],
+      qualifications: [],
+      tiers: [],
+      papers: [],
+      codes: [],
+    }),
+  },
+}));
+
+jest.mock('../../services/MobileUploadService', () => ({
+  mobileUploadService: {
+    generateSessionId: jest.fn(() => 'sess-1'),
+    createSession: jest.fn(),
+    listenToSession: jest.fn(() => jest.fn()),
+    resetSession: jest.fn(),
+    cleanupSession: jest.fn(),
+  },
+}));
+
+jest.mock('../../utils/funnelTracker', () => ({
+  trackFunnelEvent: jest.fn(),
+}));
+
+jest.mock('browser-image-compression', () => jest.fn((file) => Promise.resolve(file)));
+
+jest.mock('../common/LandingPageUploadWidget', () => () => null);
+jest.mock('../upload/MobileUploadModal', () => () => null);
+jest.mock('../common/ImageModeModal', () => () => null);
+jest.mock('../common/ConfirmationModal', () => () => null);
+jest.mock('./FileHandoff', () => ({ FileHandoff: () => null }));
+jest.mock('../focused', () => ({
+  ModelSelector: () => <div data-testid="model-selector" />,
+  SendButton: ({ onClick, disabled }: { onClick: () => void; disabled: boolean }) => (
+    <button data-testid="send-button" onClick={onClick} disabled={disabled}>
+      Send
+    </button>
+  ),
+}));
+
+const renderInput = (overrides: Partial<React.ComponentProps<typeof UnifiedChatInput>> = {}) => {
+  const props: React.ComponentProps<typeof UnifiedChatInput> = {
+    mode: 'first-time',
+    selectedModel: 'gemini-2.5-pro',
+    isProcessing: false,
+    onModelChange: jest.fn(),
+    onAnalyzeImage: jest.fn().mockResolvedValue(true),
+    onFollowUpImage: jest.fn().mockResolvedValue(true),
+    onSendMessage: jest.fn().mockResolvedValue(true),
+    onAnalyzeMultiImage: jest.fn().mockResolvedValue(true),
+    onFollowUpMultiImage: jest.fn().mockResolvedValue(true),
+    ...overrides,
+  };
+  return { ...render(<UnifiedChatInput {...props} />), props };
+};
+
+const createMockFile = (name: string, type = '', size = 1024): File => {
+  const content = new Uint8Array(size);
+  return new File([content], name, { type, lastModified: 1700000000000 });
+};
+
+describe('UnifiedChatInput — Multi-File Finder Paste, Local Path Interception & Drag-and-Drop', () => {
+  let originalFileReader: typeof FileReader;
+
+  beforeEach(() => {
+    const ConfigService = require('../../services/configService').default;
+    ConfigService.getExamMetadata.mockResolvedValue({
+      boards: [],
+      qualifications: [],
+      tiers: [],
+      papers: [],
+      codes: [],
+    });
+    const imageCompression = require('browser-image-compression');
+    imageCompression.mockImplementation((file: File) => Promise.resolve(file));
+    const { mobileUploadService } = require('../../services/MobileUploadService');
+    mobileUploadService.generateSessionId.mockReturnValue('sess-1');
+    mobileUploadService.createSession.mockResolvedValue(undefined);
+    mobileUploadService.listenToSession.mockReturnValue(jest.fn());
+
+    originalFileReader = window.FileReader;
+    class MockFileReader {
+      result: string | ArrayBuffer | null = 'data:image/jpeg;base64,MOCK';
+      onload: ((this: FileReader, ev: ProgressEvent<FileReader>) => any) | null = null;
+      readAsDataURL() {
+        if (this.onload) {
+          this.onload.call(this as unknown as FileReader, {} as ProgressEvent<FileReader>);
+        }
+      }
+    }
+    (window as any).FileReader = MockFileReader;
+  });
+
+  afterEach(() => {
+    window.FileReader = originalFileReader;
+    jest.clearAllMocks();
+  });
+
+  test('pastes 14 .JPG files from clipboardData.files (with empty MIME type) and calls preventDefault', async () => {
+    const { container } = renderInput();
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
+
+    const files = Array.from({ length: 14 }, (_, i) =>
+      createMockFile(`IMG_${String(i + 1).padStart(4, '0')}.JPG`, '', 5000)
+    );
+
+    const pasteEvent = new Event('paste', { bubbles: true, cancelable: true }) as any;
+    pasteEvent.clipboardData = {
+      files,
+      items: [],
+      getData: () => '',
+    };
+
+    await act(async () => {
+      fireEvent(textarea, pasteEvent);
+    });
+
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    expect(textarea.value).toBe('');
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('.multi-image-item').length).toBe(14);
+    });
+  });
+
+  test('pastes files from clipboardData.items when item.type is empty (.JPG) and deduplicates against clipboardData.files', async () => {
+    const { container } = renderInput();
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
+
+    const file1 = createMockFile('PHOTO_1.JPG', '', 2048);
+    const file2 = createMockFile('PHOTO_2.JPG', '', 4096);
+
+    const pasteEvent = new Event('paste', { bubbles: true, cancelable: true }) as any;
+    pasteEvent.clipboardData = {
+      files: [file1],
+      items: [
+        { kind: 'file', type: '', getAsFile: () => file1 },
+        { kind: 'file', type: '', getAsFile: () => file2 },
+      ],
+      getData: () => '',
+    };
+
+    await act(async () => {
+      fireEvent(textarea, pasteEvent);
+    });
+
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    await waitFor(() => {
+      expect(container.querySelectorAll('.multi-image-item').length).toBe(2);
+    });
+  });
+
+  test('intercepts macOS Finder local file paths in text/plain when clipboard files are blocked', async () => {
+    const { container } = renderInput();
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
+
+    const rawPaths = [
+      '/Users/ytwong/Downloads/IMG_0001.JPG',
+      '/Users/ytwong/Downloads/IMG_0002.JPG',
+      '/Users/ytwong/Downloads/IMG_0003.JPG',
+    ].join('\n');
+
+    const pasteEvent = new Event('paste', { bubbles: true, cancelable: true }) as any;
+    pasteEvent.clipboardData = {
+      files: [],
+      items: [],
+      getData: (type: string) => (type === 'text/plain' ? rawPaths : ''),
+    };
+
+    await act(async () => {
+      fireEvent(textarea, pasteEvent);
+    });
+
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    expect(textarea.value).toBe('');
+    expect(
+      screen.getByText(/Browser security prevents pasting local file paths directly/i)
+    ).toBeInTheDocument();
+  });
+
+  test('intercepts Windows, Linux, and file:/// local file paths in text/plain', async () => {
+    const { container } = renderInput();
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
+
+    for (const path of [
+      'C:\\Users\\student\\Downloads\\page1.pdf',
+      '/home/student/scans/essay.png',
+      'file:///Users/student/Desktop/work.heic',
+    ]) {
+      const pasteEvent = new Event('paste', { bubbles: true, cancelable: true }) as any;
+      pasteEvent.clipboardData = {
+        files: [],
+        items: [],
+        getData: (type: string) => (type === 'text/plain' ? path : ''),
+      };
+
+      await act(async () => {
+        fireEvent(textarea, pasteEvent);
+      });
+
+      expect(pasteEvent.defaultPrevented).toBe(true);
+    }
+  });
+
+  test('allows normal text paste without interception', async () => {
+    const { container } = renderInput();
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
+
+    const pasteEvent = new Event('paste', { bubbles: true, cancelable: true }) as any;
+    pasteEvent.clipboardData = {
+      files: [],
+      items: [],
+      getData: () => 'Edexcel 1MA1/2H June 2022',
+    };
+
+    await act(async () => {
+      fireEvent(textarea, pasteEvent);
+    });
+
+    expect(pasteEvent.defaultPrevented).toBe(false);
+    expect(
+      screen.queryByText(/Browser security prevents pasting local file paths directly/i)
+    ).not.toBeInTheDocument();
+  });
+
+  test('supports drag-and-drop for multiple .JPG and .pdf files with drag-over visual state', async () => {
+    const { container } = renderInput();
+    const dropZone = container.querySelector('.followup-single-line-container') as HTMLDivElement;
+
+    await act(async () => {
+      fireEvent.dragEnter(dropZone, { dataTransfer: { files: [] } });
+    });
+    expect(dropZone.classList.contains('drag-over')).toBe(true);
+
+    // Nested dragEnter + dragLeave should keep drag-over active until outer dragLeave
+    await act(async () => {
+      fireEvent.dragEnter(dropZone, { dataTransfer: { files: [] } });
+      fireEvent.dragLeave(dropZone, { dataTransfer: { files: [] } });
+    });
+    expect(dropZone.classList.contains('drag-over')).toBe(true);
+
+    const droppedFiles = [
+      createMockFile('PAGE_1.JPG', '', 4096),
+      createMockFile('MARK_SCHEME.pdf', 'application/pdf', 8192),
+    ];
+
+    await act(async () => {
+      fireEvent.drop(dropZone, {
+        dataTransfer: { files: droppedFiles },
+      });
+    });
+
+    expect(dropZone.classList.contains('drag-over')).toBe(false);
+    await waitFor(() => {
+      expect(container.querySelectorAll('.multi-image-item').length).toBe(1);
+      expect(container.querySelectorAll('.pdf-preview-container').length).toBe(1);
+    });
+  });
+
+  test('shows warning when dropping only unsupported files', async () => {
+    const { container } = renderInput();
+    const dropZone = container.querySelector('.followup-single-line-container') as HTMLDivElement;
+
+    const unsupported = [createMockFile('notes.txt', 'text/plain', 512)];
+    await act(async () => {
+      fireEvent.drop(dropZone, {
+        dataTransfer: { files: unsupported },
+      });
+    });
+
+    expect(
+      screen.getByText(/Only image files \(JPG, PNG, WEBP, HEIC, etc\.\) and PDFs are supported\./i)
+    ).toBeInTheDocument();
+  });
+
+  test('ignores paste and drop when isProcessing or isNegative is true', async () => {
+    for (const override of [{ isProcessing: true }, { isNegative: true }]) {
+      const { container, unmount } = renderInput(override);
+      const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
+      const dropZone = container.querySelector('.followup-single-line-container') as HTMLDivElement;
+
+      const file = createMockFile('IMG_1.JPG', '', 2048);
+      const pasteEvent = new Event('paste', { bubbles: true, cancelable: true }) as any;
+      pasteEvent.clipboardData = {
+        files: [file],
+        items: [],
+        getData: () => '',
+      };
+
+      await act(async () => {
+        fireEvent(textarea, pasteEvent);
+        fireEvent.dragEnter(dropZone, { dataTransfer: { files: [] } });
+        fireEvent.drop(dropZone, { dataTransfer: { files: [file] } });
+      });
+
+      expect(pasteEvent.defaultPrevented).toBe(false);
+      expect(dropZone.classList.contains('drag-over')).toBe(false);
+      expect(container.querySelectorAll('.multi-image-item').length).toBe(0);
+      expect(container.querySelectorAll('.followup-preview-image').length).toBe(0);
+      unmount();
+    }
+  });
+
+  test('filters out unsupported files when dropping a mixed batch', async () => {
+    const { container } = renderInput();
+    const dropZone = container.querySelector('.followup-single-line-container') as HTMLDivElement;
+
+    const mixed = [
+      createMockFile('notes.txt', 'text/plain', 512),
+      createMockFile('PAGE_1.JPG', '', 2048),
+      createMockFile('PAGE_2.HEIC', '', 2048),
+    ];
+
+    await act(async () => {
+      fireEvent.drop(dropZone, { dataTransfer: { files: mixed } });
+    });
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('.multi-image-item').length).toBe(2);
+    });
+  });
+});

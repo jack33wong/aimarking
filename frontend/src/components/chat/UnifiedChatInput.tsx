@@ -162,6 +162,8 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
   const [isMultiImage, setIsMultiImage] = useState<boolean>(false);
   const [fileSizeWarning, setFileSizeWarning] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState<boolean>(false);
+  const dragCounterRef = useRef<number>(0);
 
   const [showUpgradeModal, setShowUpgradeModal] = useState<boolean>(false);
   const [isMobileUploadOpen, setIsMobileUploadOpen] = useState<boolean>(false);
@@ -513,6 +515,17 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
   };
 
+  const isSupportedAttachmentFile = (file: File): boolean => {
+    if (!file) return false;
+    if (file.type && (file.type.startsWith('image/') || file.type === 'application/pdf')) {
+      return true;
+    }
+    return /\.(?:jpe?g|png|webp|gif|bmp|heic|heif|tiff?|pdf)$/i.test(file.name || '');
+  };
+
+  const LOCAL_FILE_PATH_REGEX =
+    /(?:^|[\r\n\s])(?:\/Users\/[^\r\n]+\.(?:jpe?g|png|webp|gif|bmp|heic|heif|tiff?|pdf)|\/home\/[^\r\n]+\.(?:jpe?g|png|webp|gif|bmp|heic|heif|tiff?|pdf)|[A-Za-z]:\\[^\r\n]+\.(?:jpe?g|png|webp|gif|bmp|heic|heif|tiff?|pdf)|file:\/\/\/[^\r\n]+\.(?:jpe?g|png|webp|gif|bmp|heic|heif|tiff?|pdf))(?=$|[\r\n\s])/i;
+
   // PDF Preview Component
   const PDFPreview = ({ file, onRemove }: { file: File, onRemove: () => void }) => {
     const fileName = file.name.length > 20 ? file.name.substring(0, 20) + '...' : file.name;
@@ -767,26 +780,105 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     if (isProcessing || isNegative) return;
 
-    const items = e.clipboardData.items;
-    const pastedFiles: File[] = [];
+    const clipboardData = e.clipboardData;
+    if (!clipboardData) return;
 
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      if (item.type.indexOf('image') !== -1 || item.type === 'application/pdf') {
-        const file = item.getAsFile();
-        if (file) pastedFiles.push(file);
+    const pastedFiles: File[] = [];
+    const seenKeys = new Set<string>();
+
+    const addFileIfSupported = (file: File | null) => {
+      if (!file || !isSupportedAttachmentFile(file)) return;
+      const key = `${file.name}::${file.size}::${file.lastModified}`;
+      if (!seenKeys.has(key)) {
+        seenKeys.add(key);
+        pastedFiles.push(file);
+      }
+    };
+
+    // 1. Check clipboardData.files first (multi-file Finder/Explorer paste)
+    if (clipboardData.files && clipboardData.files.length > 0) {
+      for (let i = 0; i < clipboardData.files.length; i++) {
+        addFileIfSupported(clipboardData.files[i]);
+      }
+    }
+
+    // 2. Also check clipboardData.items (screenshots and items with empty MIME type such as .JPG)
+    if (clipboardData.items && clipboardData.items.length > 0) {
+      for (let i = 0; i < clipboardData.items.length; i++) {
+        const item = clipboardData.items[i];
+        if (
+          item.kind === 'file' ||
+          item.type.indexOf('image') !== -1 ||
+          item.type === 'application/pdf'
+        ) {
+          addFileIfSupported(item.getAsFile());
+        }
       }
     }
 
     if (pastedFiles.length > 0) {
-      // If we found images/PDFs, process them
-      processFiles(pastedFiles);
-
-      // Prevent the default paste behavior (which might insert filenames or text)
-      // to keep the chat input clean for the user's typing.
+      // Prevent the default paste behavior (which might insert filenames or raw paths)
       e.preventDefault();
+      processFiles(pastedFiles);
+      return;
+    }
+
+    // 3. Intercept raw local file paths pasted from Finder/Explorer when browser blocks clipboard file access
+    const pastedText = clipboardData.getData('text/plain');
+    if (pastedText && LOCAL_FILE_PATH_REGEX.test(pastedText)) {
+      e.preventDefault();
+      setFileSizeWarning(
+        'Browser security prevents pasting local file paths directly. Please drag and drop the files here or use "Add Files".'
+      );
     }
   }, [processFiles, isProcessing, isNegative]);
+
+  const isDragDropDisabled =
+    isProcessing || isNegative || (mode === 'first-time' && (isModelAnswerMode || isMarkingSchemeMode));
+
+  const handleDragEnter = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (isDragDropDisabled) return;
+    dragCounterRef.current += 1;
+    setIsDragging(true);
+  }, [isDragDropDisabled]);
+
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = isDragDropDisabled ? 'none' : 'copy';
+    }
+  }, [isDragDropDisabled]);
+
+  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragging(false);
+
+    if (isDragDropDisabled) return;
+
+    const allDroppedFiles = Array.from(e.dataTransfer?.files || []);
+    if (allDroppedFiles.length === 0) return;
+
+    const supportedFiles = allDroppedFiles.filter(isSupportedAttachmentFile);
+    if (supportedFiles.length > 0) {
+      processFiles(supportedFiles);
+    } else {
+      setFileSizeWarning('Only image files (JPG, PNG, WEBP, HEIC, etc.) and PDFs are supported.');
+    }
+  }, [isDragDropDisabled, processFiles]);
 
   const handleUploadClick = useCallback(() => {
     if (isNegative) {
@@ -1180,7 +1272,13 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
               </div>
             </div>
           )}
-          <div className={`followup-single-line-container ${isExpanded ? 'expanded' : ''} ${isNegative ? 'negative-credits' : ''}`}>
+          <div
+            className={`followup-single-line-container ${isExpanded ? 'expanded' : ''} ${isNegative ? 'negative-credits' : ''} ${isDragging ? 'drag-over' : ''}`}
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
             {isNegative && (
               <div className="negative-credits-warning">
                 <span className="warning-icon">⚠️</span>

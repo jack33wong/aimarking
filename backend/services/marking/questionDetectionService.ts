@@ -1171,9 +1171,67 @@ export function generateSessionTitleFromDetectionResults(detectionResults: any[]
     return `Modified Paper${qRange}`.replace(/\s+/g, ' ').trim();
   }
 
-  // All papers are generic or unknown. Bypass the structured builder and use the question text for a cleaner title
-  const firstQText = detectionResults[0]?.question?.text || '';
-  return generateGenericTitleFromText(firstQText, mode);
+  // Fallback when DB match was missed, but hint/subject metadata is present (e.g., WMA14/01)
+  const hintPapers = examPapers.filter(p =>
+    p.examCode &&
+    p.examCode !== 'Generic Question' &&
+    p.examCode !== 'Unknown' &&
+    p.examCode !== 'N/A'
+  );
+  if (hintPapers.length > 0) {
+    const codePart = Array.from(new Set(hintPapers.map(hp => hp.examCode).filter(Boolean))).join(', ');
+    const boardPart = Array.from(
+      new Set(
+        hintPapers
+          .map(hp => getShortExamBoard(hp.examBoard))
+          .filter(b => b && !/^(unknown|n\/a)$/i.test(b))
+      )
+    ).join(' / ');
+    const subjectPart = Array.from(
+      new Set(
+        hintPapers
+          .map(hp => getShortSubjectName(hp.subject || ''))
+          .filter(s => s && !/^(general|generic question|unknown|n\/a)$/i.test(s))
+      )
+    ).join(' & ');
+
+    let qRange = '';
+    if (hintPapers.length === 1) {
+      const qNums = hintPapers[0].questions
+        .map((q: any) => {
+          const clean = String(q.questionNumber || '').replace(/^p\d+[·.\-]\s*q?/i, '');
+          return parseInt(clean, 10);
+        })
+        .filter((n: any) => !isNaN(n))
+        .sort((a: any, b: any) => a - b);
+
+      if (qNums.length === 1) {
+        qRange = ` Q${qNums[0]}`;
+      } else if (qNums.length > 1) {
+        qRange = ` Q${qNums[0]} to Q${qNums[qNums.length - 1]}`;
+      }
+    }
+
+    const marksPart = totalMarks > 0 ? ` ${totalMarks} marks` : '';
+    const metaTitle = `${codePart} ${boardPart} ${subjectPart}${qRange}${marksPart}`.replace(/\s+/g, ' ').trim();
+    if (metaTitle) {
+      return metaTitle;
+    }
+  }
+
+  // All papers are generic or unknown. Pick the first question/sub-question line with readable prose (no LaTeX, no math)
+  const candidateTexts: string[] = [];
+  for (const dr of detectionResults) {
+    const q = dr?.question;
+    if (q?.text) candidateTexts.push(String(q.text));
+    if (Array.isArray(q?.subQuestions)) {
+      for (const sq of q.subQuestions) {
+        if (sq?.text) candidateTexts.push(String(sq.text));
+      }
+    }
+  }
+  const firstProseText = candidateTexts.find(t => generateGenericTitleFromText(t, mode) !== `${mode} - ${new Date().toLocaleDateString()}`) || candidateTexts[0] || '';
+  return generateGenericTitleFromText(firstProseText, mode);
 }
 
 /**

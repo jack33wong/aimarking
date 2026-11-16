@@ -79,6 +79,97 @@ const MULTI_IMAGE_STEPS = [
     'Output Generation'
 ];
 
+export function computeGeoSubjectVote(
+    geometryResults: Array<{ is_marking_scheme?: boolean; detected_subject?: string } | null | undefined>
+): string | undefined {
+    const nonSchemeGeo = geometryResults.filter(g => g && !g.is_marking_scheme);
+    const subjectVoteCounts = new Map<string, number>();
+    nonSchemeGeo.forEach(g => {
+        const s = g?.detected_subject || 'MATHS';
+        subjectVoteCounts.set(s, (subjectVoteCounts.get(s) || 0) + 1);
+    });
+    let geoSubjectVote: string | undefined = undefined;
+    let maxVotes = 0;
+    subjectVoteCounts.forEach((cnt, subj) => {
+        if (cnt > maxVotes) {
+            maxVotes = cnt;
+            geoSubjectVote = subj;
+        }
+    });
+    return geoSubjectVote;
+}
+
+export function detectIsFrontCover(params: {
+    isGeoCover: boolean;
+    originalIdx: number;
+    isMeta: boolean;
+    pageOcrText: string;
+}): boolean {
+    const { isGeoCover, originalIdx, isMeta, pageOcrText } = params;
+    const hasCoverLandmarks = /candidate\s*surname|centre\s*number|instructions\s*to\s*candidates|paper\s*reference|total\s*mark\s*for\s*this\s*paper|you\s*must\s*have/i.test(pageOcrText)
+        && !/no\s*questions\s*printed|blank\s*page/i.test(pageOcrText);
+    return (isGeoCover && (originalIdx === 0 || hasCoverLandmarks)) || (isMeta && hasCoverLandmarks);
+}
+
+export function computeIsScrambledPdf(params: {
+    pageSortMap: Array<{ minQ: number; isFrontCover: boolean }>;
+    isPdf: boolean;
+    isMultiplePdfs: boolean;
+}): { majorQuestionInversions: number; hasDisplacedFrontCover: boolean; isScrambledPdf: boolean } {
+    const { pageSortMap, isPdf, isMultiplePdfs } = params;
+    const questionPagesInOrder = pageSortMap.filter(p => p.minQ < 999999 && !p.isFrontCover);
+    let majorQuestionInversions = 0;
+    for (let i = 1; i < questionPagesInOrder.length; i++) {
+        if (questionPagesInOrder[i].minQ + 0.5 < questionPagesInOrder[i - 1].minQ) {
+            majorQuestionInversions++;
+        }
+    }
+    const firstQuestionPageIdx = pageSortMap.findIndex(p => p.minQ < 999999 && !p.isFrontCover);
+    const hasDisplacedFrontCover = pageSortMap.some(
+        (p, idx) => p.isFrontCover && p.minQ === 999999 && firstQuestionPageIdx >= 0 && idx > firstQuestionPageIdx
+    );
+    const isScrambledPdf = (isPdf || isMultiplePdfs) && (
+        majorQuestionInversions >= 2 ||
+        (majorQuestionInversions >= 1 && hasDisplacedFrontCover)
+    );
+    return { majorQuestionInversions, hasDisplacedFrontCover, isScrambledPdf };
+}
+
+export function recoverGenericTotalMarks(params: {
+    task: any;
+    result: any;
+    finalizedAnnotations: any[];
+    newAwarded: number;
+    aiStatedTotalMarks: number;
+}): void {
+    const { task, result, finalizedAnnotations, newAwarded, aiStatedTotalMarks } = params;
+    if (aiStatedTotalMarks > 0 || !result.score.totalMarks || result.score.totalMarks <= 0) {
+        const inferredTotalFromAnnotations = finalizedAnnotations.reduce((sum: number, a: any) => {
+            const text = (a.text || '').trim();
+            const isMath = /[\\{}=\^_\(\)]/.test(text) || text.includes('sqrt') || text.includes('frac');
+            if (!isMath) {
+                const clean = text.replace(/[^a-zA-Z0-9]/g, '');
+                const m = clean.match(/^([BMAPC])(\d+)$/i);
+                if (m) {
+                    const num = parseInt(m[2], 10);
+                    return sum + (num > 0 ? num : 1);
+                }
+            }
+            if (a.action === 'tick' || a.action === 'cross' || a.action === 'mark') {
+                return sum + 1;
+            }
+            return sum;
+        }, 0);
+
+        result.score.totalMarks = Math.max(aiStatedTotalMarks, inferredTotalFromAnnotations, newAwarded);
+        (result as any).totalMarks = result.score.totalMarks;
+        if (task.markingScheme && result.score.totalMarks > 0) {
+            task.markingScheme.totalMarks = result.score.totalMarks;
+            task.markingScheme.parentQuestionMarks = result.score.totalMarks;
+        }
+    }
+}
+
 // Define the steps for re-marking processing
 const REMARK_STEPS = [
     'Loading cached student work...',
@@ -1294,7 +1385,7 @@ export class MarkingPipelineService {
                             ...schemeFileIndices
                         ])
                     ).sort((a, c) => a - c);
-                    const subj = b.geometryResults.find((g: any) => g?.detected_subject && g.detected_subject !== 'unknown')?.detected_subject;
+                    const subj = computeGeoSubjectVote(b.geometryResults) || b.subjectHint;
                     const prettySubj = subj
                         ? subj === 'ENGLISH_LANGUAGE'
                             ? 'English Language'
@@ -1551,10 +1642,7 @@ export class MarkingPipelineService {
             // --- Stage 2: Parallel OCR/Classify (Common for Multi-Page PDF & Multi-Image) ---
 
             // --- 🧭 EARLY SUBJECT ROUTING (BEFORE CLASSIFICATION & STAGE 3 OCR) ---
-            const geoSubjectVote = geometryResults
-                .filter(g => !g?.is_marking_scheme)
-                .map(g => g?.detected_subject)
-                .find(s => s === 'ENGLISH_LANGUAGE' || s === 'ENGLISH_LITERATURE' || s === 'UNSUPPORTED_SUBJECT');
+            const geoSubjectVote = computeGeoSubjectVote(geometryResults);
             const geoUnsupportedSubjName = geometryResults
                 .filter(g => !g?.is_marking_scheme)
                 .map(g => g?.unsupported_subject_name)
@@ -2338,7 +2426,7 @@ export class MarkingPipelineService {
             const fileNamePaperHintMatch = uploadedFileNames
                 .join(' ')
                 .replace(/1m11/ig, '1MA1')
-                .match(/(?:^|[^a-z0-9]|edexcel|aqa|ocr|wjec|eduqas|cie)(1ma1|8300|8700|8702|8461|8462|8463|8464|j560|j351|9ma0|1bi0|1ch0|1ph0|1en0)[-_\/ ]([0-9]{1,2}[a-z]?|[a-z][0-9]{1,2})\b/i);
+                .match(/(?:^|[^a-z0-9]|edexcel|aqa|ocr|wjec|eduqas|cie)(1ma1|8300|8700|8702|8461|8462|8463|8464|j560|j351|9ma0|wma1[1-4]|wma0[1-3]|wme0[1-3]|wst0[1-3]|wfm0[1-3]|wdm11|wdm01|1bi0|1ch0|1ph0|1en0)[-_\/ ]([0-9]{1,2}[a-z]?|[a-z][0-9]{1,2})\b/i);
             const fileNamePaperHint = fileNamePaperHintMatch
                 ? `${fileNamePaperHintMatch[1].toUpperCase()}/${fileNamePaperHintMatch[2].toUpperCase()}`
                 : undefined;
@@ -2915,11 +3003,9 @@ export class MarkingPipelineService {
                 // Detect true Exam Front Cover so out-of-order loose image uploads never treat it as an interior blank page
                 const pageOcrBlocks = (allPagesOcrData.find(o => o.pageIndex === page.pageIndex) || allPagesOcrData[originalIdx])?.ocrData?.mathBlocks || [];
                 const pageOcrText = pageOcrBlocks.map((b: any) => b.googleVisionText || b.mathpixLatex || b.text || '').join(' ');
-                const hasCoverLandmarks = /candidate\s*surname|centre\s*number|instructions\s*to\s*candidates|paper\s*reference|total\s*mark\s*for\s*this\s*paper|you\s*must\s*have/i.test(pageOcrText)
-                    && !/no\s*questions\s*printed|blank\s*page/i.test(pageOcrText);
                 const rawGeoIdx = typeof (page as any)._rawPageIndex === 'number' ? (page as any)._rawPageIndex : originalIdx;
                 const isGeoCover = Boolean(geometryResults?.[originalIdx]?.is_cover_page || geometryResults?.[rawGeoIdx]?.is_cover_page);
-                const isFrontCover = pageRawResult?.category === 'frontPage' || isGeoCover || (isMeta && hasCoverLandmarks);
+                const isFrontCover = detectIsFrontCover({ isGeoCover, originalIdx, isMeta, pageOcrText });
 
                 // Detect whether this page contains a printed question prompt vs continuation text only
                 const isContaminatedStemLocal = (q: any): boolean => {
@@ -3052,18 +3138,11 @@ export class MarkingPipelineService {
             // Loose images are always straightened. Sequential PDFs preserve their exact physical sequence,
             // while PDFs generated from out-of-order phone photos (multiple question inversions or displaced cover)
             // are automatically straightened into logical question order.
-            const questionPagesInOrder = pageSortMap.filter(p => p.minQ < 999999 && !p.isFrontCover);
-            let majorQuestionInversions = 0;
-            for (let i = 1; i < questionPagesInOrder.length; i++) {
-                if (questionPagesInOrder[i].minQ + 0.5 < questionPagesInOrder[i - 1].minQ) {
-                    majorQuestionInversions++;
-                }
-            }
-            const firstQuestionPageIdx = pageSortMap.findIndex(p => p.minQ < 999999 && !p.isFrontCover);
-            const hasDisplacedFrontCover = pageSortMap.some(
-                (p, idx) => p.isFrontCover && p.minQ === 999999 && firstQuestionPageIdx >= 0 && idx > firstQuestionPageIdx
-            );
-            const isScrambledPdf = (isPdf || isMultiplePdfs) && (majorQuestionInversions >= 2 || hasDisplacedFrontCover);
+            const {
+                majorQuestionInversions,
+                hasDisplacedFrontCover,
+                isScrambledPdf
+            } = computeIsScrambledPdf({ pageSortMap, isPdf, isMultiplePdfs });
 
             if ((!isPdf && !isMultiplePdfs) || isScrambledPdf) {
                 if (isScrambledPdf) {
@@ -3770,6 +3849,13 @@ export class MarkingPipelineService {
                                                 (result as any).rubricEvaluation
                                             );
                                             if (!isLoRResult && task.markingScheme && result.annotations && result.score) {
+                                                const aiStatedTotalMarks = (
+                                                    task.markingScheme?.isGeneric &&
+                                                    (!task.markingScheme.totalMarks || task.markingScheme.totalMarks <= 0) &&
+                                                    result.score?.totalMarks > 0
+                                                )
+                                                    ? result.score.totalMarks
+                                                    : 0;
                                                 const anyAnnotations = result.annotations as any[];
                                                 const subQuestionBudgets = task.markingScheme.subQuestionMaxScores || {};
                                                 const totalBudget = result.score.totalMarks || task.markingScheme.totalMarks || 0;
@@ -3920,32 +4006,13 @@ export class MarkingPipelineService {
                                                     // If `result.score.totalMarks` is 0 (because the paper is not in the DB and
                                                     // mark brackets like `[ 1 ]` or `[ 4 ]` were in OCR blocks rather than classification text),
                                                     // compute the true denominator from all evaluated mark annotations (e.g. B1, B2, M1, A1, B0, M0, A0).
-                                                    if (!result.score.totalMarks || result.score.totalMarks <= 0) {
-                                                        const inferredTotalFromAnnotations = finalizedAnnotations.reduce((sum: number, a: any) => {
-                                                            const text = (a.text || '').trim();
-                                                            const isMath = /[\\{}=\^_\(\)]/.test(text) || text.includes('sqrt') || text.includes('frac');
-                                                            if (!isMath) {
-                                                                const clean = text.replace(/[^a-zA-Z0-9]/g, '');
-                                                                // Match both awarded (B1, B2, M1, A1) and un-awarded (B0, M0, A0, P0) rubric criteria
-                                                                const m = clean.match(/^([BMAPC])(\d+)$/i);
-                                                                if (m) {
-                                                                    const num = parseInt(m[2], 10);
-                                                                    return sum + (num > 0 ? num : 1);
-                                                                }
-                                                            }
-                                                            if (a.action === 'tick' || a.action === 'cross' || a.action === 'mark') {
-                                                                return sum + 1;
-                                                            }
-                                                            return sum;
-                                                        }, 0);
-
-                                                        result.score.totalMarks = Math.max(inferredTotalFromAnnotations, newAwarded);
-                                                        (result as any).totalMarks = result.score.totalMarks;
-                                                        if (task.markingScheme && result.score.totalMarks > 0) {
-                                                            task.markingScheme.totalMarks = result.score.totalMarks;
-                                                            task.markingScheme.parentQuestionMarks = result.score.totalMarks;
-                                                        }
-                                                    }
+                                                    recoverGenericTotalMarks({
+                                                        task,
+                                                        result,
+                                                        finalizedAnnotations,
+                                                        newAwarded,
+                                                        aiStatedTotalMarks
+                                                    });
 
                                                     result.score.scoreText = `${newAwarded}/${result.score.totalMarks}`;
                                                 }

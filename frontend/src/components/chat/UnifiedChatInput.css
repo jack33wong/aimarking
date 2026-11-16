@@ -694,6 +694,12 @@
   box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.1);
 }
 
+.followup-single-line-container.drag-over {
+  border: 1.5px dashed rgba(139, 92, 246, 0.85);
+  background: rgba(139, 92, 246, 0.08);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.18);
+}
+
 /* ============================================================================
    BUTTON STYLE LOGIC (Mode Dependent)
    ============================================================================ */

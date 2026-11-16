@@ -286,6 +286,7 @@ export class ExamReferenceService {
         const isAlevel = rawQual.includes('a level') || rawQual.includes('alevel') ||
             code.startsWith('7357') || code.startsWith('7356') || code.startsWith('7367') || // AQA
             code.startsWith('9ma0') || code.startsWith('8ma0') || code.startsWith('9fm0') || code.startsWith('8fm0') || // Edexcel
+            code.startsWith('wma') || code.startsWith('wme') || code.startsWith('wst') || code.startsWith('wfm') || code.startsWith('wdm') || // Edexcel IAL Maths
             code.startsWith('h240') || code.startsWith('h230') || code.startsWith('h640') || code.startsWith('h630'); // OCR
 
         let formattedTier = '';

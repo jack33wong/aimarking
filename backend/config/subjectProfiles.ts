@@ -195,6 +195,18 @@ export interface SubjectResolutionHints {
  * Always defaults safely to SUBJECT_PROFILES.MATHS if no English or Universal BYOMS signal is present.
  */
 export function resolveSubjectProfile(hints: SubjectResolutionHints = {}): SubjectProfile {
+  const mathsCodeSource = [
+    hints.paperCode || '',
+    hints.paperTitle || '',
+    ...(hints.fileNames || [])
+  ].filter(Boolean).join(' ');
+  if (
+    mathsCodeSource &&
+    /(?:^|[^a-z0-9])(1MA1|8300|9MA0|8MA0|J560|H240|H230|7357|7356|9709|0580|0606|4MA1|4MB1|WMA1[1-4]|WMA0[1-3]|WME0[1-3]|WST0[1-3]|WFM0[1-3]|WDM11|WDM01)(?:[^a-z0-9]|$)/i.test(mathsCodeSource)
+  ) {
+    return SUBJECT_PROFILES.MATHS;
+  }
+
   const explicitKey = (hints.detectedSubject || '').trim().toUpperCase();
   if (explicitKey === 'ENGLISH_LANGUAGE') return SUBJECT_PROFILES.ENGLISH_LANGUAGE;
   if (explicitKey === 'ENGLISH_LITERATURE') return SUBJECT_PROFILES.ENGLISH_LITERATURE;

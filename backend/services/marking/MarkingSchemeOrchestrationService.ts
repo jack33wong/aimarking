@@ -708,6 +708,28 @@ export class MarkingSchemeOrchestrationService {
     // --- STEP 5: MERGE & FORMAT OUTPUT (SIMPLIFIED PREFIX-FIRST) ---
 
     // 0. Pre-processing: Create "Virtual Matches" for Generic Questions
+    const inferBoardFromPaperCode = (code?: string): string => {
+      if (!code) return 'Unknown';
+      const upper = code.toUpperCase();
+      if (/^(1MA1|9MA0|8MA0|WMA\d+|WME\d+|WST\d+|WFM\d+|WDM\d+|4MA1|4MB1|1BI0|1CH0|1PH0|1EN0|1ET0|1SC0)\b/.test(upper)) {
+        return 'Edexcel';
+      }
+      if (/^(8300|8700|8702|8461|8462|8463|8464|7357|7356)\b/.test(upper)) {
+        return 'AQA';
+      }
+      if (/^(J560|J351|H240|H230)\b/.test(upper)) {
+        return 'OCR';
+      }
+      if (/^(9709|0580|0606)\b/.test(upper)) {
+        return 'Cambridge';
+      }
+      return 'Unknown';
+    };
+    const explicitHintCode = (examPaperHint && /^[A-Z0-9]{3,6}(?:\/[A-Z0-9]{1,4})?$/i.test(examPaperHint.trim()))
+      ? examPaperHint.trim().toUpperCase()
+      : undefined;
+    const inferredHintBoard = inferBoardFromPaperCode(explicitHintCode);
+
     for (const item of detectionResults) {
       if (!item.detectionResult.match) {
         const qNum = item.question.questionNumber || '1';
@@ -732,9 +754,9 @@ export class MarkingSchemeOrchestrationService {
           }
 
           item.detectionResult.match = {
-            board: 'Unknown',
+            board: inferredHintBoard,
             qualification: 'GCSE',
-            paperCode: 'Generic Question',
+            paperCode: explicitHintCode || 'Generic Question',
             examSeries: 'N/A',
             tier: 'N/A',
             subject: effectiveProfile.displayName,
@@ -760,10 +782,19 @@ export class MarkingSchemeOrchestrationService {
           }
 
           item.detectionResult.match = {
-            board: 'Unknown', qualification: 'General', paperCode: 'Generic Question', examSeries: 'N/A', tier: 'N/A',
-            subject: effectiveProfile.key === 'UNIVERSAL_BYOMS' ? effectiveProfile.displayName : 'General',
+            board: inferredHintBoard,
+            qualification: 'General',
+            paperCode: explicitHintCode || 'Generic Question',
+            examSeries: 'N/A',
+            tier: 'N/A',
+            subject: explicitHintCode ? effectiveProfile.displayName : (effectiveProfile.key === 'UNIVERSAL_BYOMS' ? effectiveProfile.displayName : 'General'),
             ...(effectiveProfile.key === 'UNIVERSAL_BYOMS' ? { detectedSubject: effectiveProfile.key } : {}),
-            paperTitle: 'General (No Match)', questionNumber: qNum, confidence: 0, marks: detectedMarks, parentQuestionMarks: detectedMarks, isGeneric: true,
+            paperTitle: explicitHintCode ? `${explicitHintCode} (No Match)` : 'General (No Match)',
+            questionNumber: qNum,
+            confidence: 0,
+            marks: detectedMarks,
+            parentQuestionMarks: detectedMarks,
+            isGeneric: true,
             markingScheme: { questionMarks: { marks: sequentialRubric, subQuestionMarks: subQMarks }, generalMarkingGuidance: GENERIC_EXAMINER_INSTRUCTION }
           };
           item.detectionResult.found = false;

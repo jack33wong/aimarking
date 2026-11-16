@@ -59,7 +59,7 @@ function normalizePaperCode(code?: string): string {
 function extractPaperCodeFromFilename(fileName?: string): string {
     if (!fileName || typeof fileName !== 'string') return '';
     const normalized = fileName.replace(/1m11/ig, '1MA1');
-    const match = normalized.match(/(?:^|[^a-z0-9]|edexcel|aqa|ocr|wjec|eduqas|cie)(1ma1|8300|8700|8702|8461|8462|8463|8464|j560|j351|9ma0|1bi0|1ch0|1ph0|1en0|1et0|1sc0)[-_\/ ]([0-9]{1,2}[a-z]?|[a-z][0-9]{1,2})\b/i);
+    const match = normalized.match(/(?:^|[^a-z0-9]|edexcel|aqa|ocr|wjec|eduqas|cie)(1ma1|8300|8700|8702|8461|8462|8463|8464|j560|j351|9ma0|wma1[1-4]|wma0[1-3]|wme0[1-3]|wst0[1-3]|wfm0[1-3]|wdm11|wdm01|1bi0|1ch0|1ph0|1en0|1et0|1sc0)[-_\/ ]([0-9]{1,2}[a-z]?|[a-z][0-9]{1,2})\b/i);
     if (match) {
         return `${match[1].toUpperCase()}/${match[2].toUpperCase()}`;
     }

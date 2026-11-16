@@ -316,17 +316,19 @@ html.dark .guest-mode-floating-banner {
 }
 
 .chat-message.assistant .chat-message-bubble {
-  max-width: 100%;
-  width: 100%;
+  max-width: calc(100% - 60px);
+  width: calc(100% - 60px);
   background: var(--background-nav);
   border: 1px solid var(--border-main);
   box-shadow: 0 2px 6px rgba(0,0,0,0.03);
   padding: 16px 20px;
+  margin-left: 60px;
   border-radius: 12px;
   border-bottom-left-radius: 4px;
   color: var(--text-primary);
   transition: all 0.2s ease;
   font-size: 1.0em;
+  box-sizing: border-box;
 }
 
 .chat-message.assistant .chat-message-bubble.has-your-work {
@@ -339,11 +341,18 @@ html.dark .guest-mode-floating-banner {
 /* Split Mode Overrides: Reduce horizontal padding when space is halved */
 .split-mode .chat-message.assistant .chat-message-bubble {
   padding: 0px 12px;
+  margin-left: 0px;
+  width: 100%;
+  max-width: 100%;
 }
 
 .split-mode .chat-message.assistant .chat-message-image,
 .split-mode .chat-message.assistant .homework-annotated-image {
   padding-left: 0px;
+}
+
+.split-mode .chat-message-footer {
+  padding: 8px 12px;
 }
 
 .chat-message.assistant .markdown-math-renderer.has-your-work {
@@ -536,7 +545,7 @@ html.dark .guest-mode-floating-banner {
   justify-content: space-between;
   width: 100%;
   margin-top: 6px;
-  padding: 0 4px;
+  padding: 4px 20px 8px 60px;
   box-sizing: border-box;
 }
 
@@ -960,11 +969,20 @@ html.dark .guest-mode-floating-banner {
 /* Mobile Friendly Padding Adjustments */
 @media (max-width: 640px) {
   .chat-message.assistant .markdown-math-renderer.has-your-work {
+    margin-left: 0px;
     padding: 6px 12px;
     /* Reduced by half from 16px 30px */
   }
 
   .chat-message.assistant .chat-message-bubble {
+    margin-left: 0;
+    width: 100%;
+    max-width: 100%;
+    padding: 8px;
+  }
+
+  /* Footer row outside chat bubble: Action bar on left, timestamp on right */
+  .chat-message-footer {
     padding: 8px;
   }
 
