@@ -8,8 +8,9 @@
 /* App Layout Styles */
 .app-container {
   height: 100vh !important;
+  height: 100dvh !important;
   /* Lock viewport */
-  width: 100vw;
+  width: 100%;
   background-color: var(--background-white-main);
   color: var(--text-primary);
   display: flex;
@@ -86,6 +87,7 @@ body:has(.light-mode-forced) .app-container {
   overflow: hidden;
   /* Let chat-content handle scrolling */
   height: 100vh;
+  height: 100dvh;
   /* Fixed height to contain scroll */
   position: relative;
 }
@@ -93,6 +95,7 @@ body:has(.light-mode-forced) .app-container {
 /* Library page specific - full height without header */
 .right-side:has(.library-page) {
   height: 100vh;
+  height: 100dvh;
 }
 
 .right-side:has(.library-page) .main-content {

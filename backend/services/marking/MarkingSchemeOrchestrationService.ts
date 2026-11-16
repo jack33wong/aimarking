@@ -873,7 +873,9 @@ export class MarkingSchemeOrchestrationService {
         const hasIncompleteSubQuestionBudgets = hasMissingSubBudget;
         if (hasIncompleteSubQuestionBudgets) {
           // Do not cap at a partial sub-question sum (e.g. 4 when 2ii and 2iii have unknown budgets)
+          // Also clear partial/misaligned subQuestionMaxScores so the prompt & guillotine don't cap individual sub-questions
           groupTotalMarks = 0;
+          Object.keys(subQMaxScores).forEach(k => delete subQMaxScores[k]);
         }
 
         const rawAns = parentScheme.answer || '';

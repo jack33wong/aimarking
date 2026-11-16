@@ -5,7 +5,9 @@
 .mark-homework-page {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
+  flex: 1;
+  min-height: 0;
   overflow: visible;
   background: var(--background-gray-main);
   color: var(--text-primary);
@@ -47,6 +49,16 @@
 
   .landing-section-upload {
     padding-top: 80px;
+  }
+
+  .focused-app-entry {
+    justify-content: flex-start;
+    min-height: 0;
+    padding: 16px 12px calc(32px + env(safe-area-inset-bottom));
+  }
+
+  .landing-chat-input-placeholder {
+    margin-top: 16px;
   }
 }
 
@@ -143,7 +155,7 @@ html.dark .follow-up-chat-input-container.follow-up-bottom::before {
   min-height: 28px;
   padding: 6px 6px 4px;
   background: transparent;
-  font-size: 14.5px;
+  font-size: 16px;
 }
 
 /* Standardized 30px Circular Keys in Bottom Follow-Up Bar */
@@ -191,7 +203,7 @@ html.dark .follow-up-chat-input-container.follow-up-bottom::before {
 @media (max-width: 768px) {
   .follow-up-chat-input-container.follow-up-bottom {
     left: 0;
-    width: 100vw;
+    width: 100%;
     bottom: 0;
     padding-bottom: env(safe-area-inset-bottom);
   }
@@ -218,6 +230,7 @@ html.dark .follow-up-chat-input-container.follow-up-bottom::before {
   padding: 0;
   margin-top: 0;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;

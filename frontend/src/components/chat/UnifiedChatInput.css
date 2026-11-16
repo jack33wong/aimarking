@@ -512,7 +512,7 @@
   border-radius: 8px;
   background: transparent;
   color: var(--text-primary);
-  font-size: 15px;
+  font-size: 16px;
   font-family: inherit;
   line-height: 1.45;
   resize: none;
@@ -1087,6 +1087,39 @@
 
   .followup-chat-input-bar .btn-icon {
     display: inline-flex !important;
+  }
+
+  .chat-title-section.shift-up {
+    transform: none;
+  }
+
+  .multi-image-scroll {
+    gap: 8px;
+    max-height: 180px;
+    padding: 8px 8px 4px 0;
+  }
+
+  .multi-image-item {
+    min-width: 56px;
+  }
+
+  .multi-image-item .followup-preview-image {
+    width: 56px;
+    height: 56px;
+    border-radius: 8px;
+  }
+
+  .multi-image-remove {
+    top: -6px;
+    right: -6px;
+    width: 18px;
+    height: 18px;
+    font-size: 11px;
+  }
+
+  .multi-image-label {
+    font-size: 10px;
+    margin-top: 4px;
   }
 }
 

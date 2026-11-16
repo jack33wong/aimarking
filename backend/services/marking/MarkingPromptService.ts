@@ -160,6 +160,7 @@ ${genericHeader}
 > 1. **MARK EVERY SUB-QUESTION**: You MUST evaluate and output marking annotations (\`B1\`/\`M1\`/\`A1\` or \`B0\`/\`M0\`/\`A0\`) for EVERY sub-question listed below where the student has written work or ticked a box. Never skip a sub-question.
 > 2. **RESPECT SUB-QUESTION BUDGETS**: Use the \`[MAX SCORE]\` listed below (or the \`[ X marks ]\` printed in RAW OCR BLOCKS if not listed) as the strict maximum for each sub-question.
 > 3. **CUT (Guillotine)**: Do not exceed the budget for any sub-question.
+> 4. **MATCH TICK COUNT TO SUB-QUESTION MARKS**: When a sub-question is worth N marks (e.g. "(5 marks)") and the student's solution earns full marks, emit N one-mark tick annotations (e.g. M1, M1, M1, A1, A1) distributed across their lines of working so the annotation sum equals the awarded marks.
 ${subQBreakdown}`;
         }
 

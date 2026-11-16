@@ -189,6 +189,9 @@ export function recoverGenericTotalMarks(params: {
         }
 
         (result as any).totalMarks = result.score.totalMarks;
+        if (isGenericScheme && effectiveAiTotal > 0) {
+            (result.score as any)._authoritativeGenericScore = true;
+        }
         if (task.markingScheme && result.score.totalMarks > 0) {
             task.markingScheme.totalMarks = result.score.totalMarks;
             task.markingScheme.parentQuestionMarks = result.score.totalMarks;
