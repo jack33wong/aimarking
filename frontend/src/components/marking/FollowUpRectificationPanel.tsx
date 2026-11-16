@@ -276,17 +276,7 @@ export const FollowUpRectificationPanel: React.FC<FollowUpRectificationPanelProp
 
       {/* CASE 2: Generic Rubric Used (Unrecognized Past Paper or Answer-Only Upload) */}
       {isGenericMarking && !isPaperDrawerOpen && (
-        <div
-          style={{
-            padding: '12px 14px',
-            borderRadius: '10px',
-            background: 'rgba(245, 158, 11, 0.08)',
-            border: '1px solid rgba(245, 158, 11, 0.3)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '10px'
-          }}
-        >
+        <div className="rectification-banner">
           <div style={{ fontSize: '13.5px', color: 'var(--text-primary, #f3f4f6)', display: 'flex', alignItems: 'center', gap: '6px' }}>
             <Sparkles color="#f59e0b" size={15} />
             <span>

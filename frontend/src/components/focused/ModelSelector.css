@@ -1,7 +1,12 @@
+/* ==========================================================================
+   MODEL SELECTOR COMPONENT — Manus Standardized Secondary Control Pill
+   ========================================================================== */
+
 .model-selector {
   position: relative;
-  display: inline-block;
-  min-width: 100px;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
 }
 
 .model-selector.disabled {
@@ -9,71 +14,89 @@
   cursor: not-allowed;
 }
 
+/* Standardized Shape A Utility Pill (Matches 32px Composer Buttons) */
 .model-selector-button {
   width: auto;
-  padding: 8px 16px;
-  border: none;
-  border-radius: 20px;
-  /* Pill shape */
-  background: var(--background-menu-gray);
-  /* Theme-aware background */
-  color: var(--text-primary);
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 9999px;
+  background: var(--bg-surface-2);
+  border: 1px solid transparent;
+  color: var(--text-secondary);
   cursor: pointer;
-  transition: all 0.2s ease;
-  font-size: 14px;
+  transition: background-color 0.16s ease, color 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+  font-size: 12.5px;
   font-weight: 500;
-  display: flex;
+  display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  border: 1px solid var(--border-main);
+  white-space: nowrap;
+  box-sizing: border-box;
 }
 
 .model-selector-button:hover:not(:disabled) {
-  background: var(--background-hover, var(--background-card-gray));
-  border-color: var(--text-brand);
+  background: var(--bg-surface-3);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
 }
 
-.model-selector-button:focus {
+.model-selector-button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.model-selector-button:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--border-input-active);
+  border-color: var(--border-strong);
 }
 
 .model-selector-button:disabled {
   cursor: not-allowed;
-  opacity: 0.6;
+  opacity: 0.5;
 }
 
 .model-selector-content {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
 }
 
 .model-selector-label {
   font-weight: 500;
   color: var(--text-primary);
+  line-height: 1;
 }
 
 .model-selector-arrow {
-  color: var(--text-secondary);
-  font-size: 10px;
-  margin-top: 2px;
+  color: var(--text-tertiary);
+  font-size: 9px;
+  line-height: 1;
+  transition: color 0.16s ease, transform 0.16s ease;
 }
 
+.model-selector-button:hover:not(:disabled) .model-selector-arrow {
+  color: var(--text-secondary);
+}
+
+/* Popover Dropdown Menu — Manus Elevated Card Surface */
 .model-selector-dropdown {
   position: absolute;
-  /* Float above the pill */
+  bottom: calc(100% + 10px);
   right: 0;
   z-index: 1001;
-  background: var(--background-nav);
-  /* Theme-aware background */
-  border-radius: 16px;
-  box-shadow: var(--shadow-L);
-  width: 280px;
+  background: var(--bg-surface-1);
+  border-radius: 14px;
+  box-shadow: 0 10px 32px var(--shadow-L);
+  width: 272px;
   overflow: hidden;
-  padding: 4px 0;
+  padding: 6px;
   border: 1px solid var(--border-main);
-  animation: dropdownSlideIn 0.2s ease-out;
+  animation: dropdownSlideIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.model-selector-dropdown.direction-down {
+  bottom: auto;
+  top: calc(100% + 10px);
 }
 
 @media (max-width: 768px) {
@@ -83,10 +106,8 @@
     right: auto;
     left: 50%;
     margin-left: -130px;
-    /* Half of 260px to center exactly */
   }
 
-  /* Specific fix for header alignment - stays same but explicitly centered */
   .header-model-selector-container .model-selector-dropdown {
     left: 50%;
     margin-left: -130px;
@@ -96,89 +117,100 @@
 @keyframes dropdownSlideIn {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(6px) scale(0.98);
   }
-
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
   }
-}
-
-.model-selector-dropdown.direction-down {
-  bottom: auto;
-  top: calc(100% + 12px);
 }
 
 .model-selector-header {
-  padding: 8px 16px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-primary);
-  border-bottom: 1px solid var(--border-main);
+  padding: 6px 10px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+  border-bottom: 1px solid var(--border-subtle);
   margin-bottom: 4px;
 }
 
 .model-selector-option {
   width: 100%;
-  padding: 8px 16px;
+  padding: 8px 10px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
   cursor: pointer;
-  transition: background 0.2s ease;
+  transition: background-color 0.15s ease;
   color: var(--text-primary);
 }
 
+.model-selector-option + .model-selector-option {
+  margin-top: 2px;
+}
+
 .model-selector-option:hover {
-  background: var(--background-menu-gray);
+  background: var(--bg-surface-2);
 }
 
 .model-selector-option.selected {
-  background: transparent;
+  background: var(--bg-surface-2);
 }
 
 .model-option-info {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 
 .model-option-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .model-option-label {
-  font-weight: 500;
-  font-size: 14px;
+  font-weight: 600;
+  font-size: 13px;
   color: var(--text-primary);
 }
 
-/* Badge styles kept for potential future use, but not actively used now */
+/* Shape B (6px Radius) for Tier Badges (Pro / Ultra / New) */
 .model-option-badge {
-  background: var(--background-selection);
-  color: var(--text-blue-dark);
+  background: var(--text-brand-tsp);
+  color: var(--text-brand-light);
+  border: 1px solid var(--text-brand-border);
   font-size: 10px;
   font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 10px;
+  padding: 1px 6px;
+  border-radius: 6px;
   text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+:root:not(.dark) .model-option-badge {
+  color: var(--text-brand);
 }
 
 .model-option-description {
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--text-secondary);
+  line-height: 1.35;
 }
 
 .model-option-check {
-  color: var(--text-blue);
-  /* User requested specific color or theme brand color */
+  color: var(--text-primary);
+  flex-shrink: 0;
 }
 
-/* Size variants - simplified as we are moving to a consistent pill design */
+/* Compact Follow-up Mode Size Variant */
 .model-selector.small .model-selector-button {
-  padding: 6px 12px;
-  font-size: 13px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
 }

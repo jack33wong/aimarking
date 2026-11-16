@@ -4,7 +4,7 @@
  */
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import imageCompression from 'browser-image-compression';
-import { Plus, Brain, X, Check, Sparkles, Smartphone, UploadCloud, BookOpen } from 'lucide-react';
+import { Plus, Brain, X, Check, Sparkles, Smartphone, UploadCloud, BookOpen, Ruler, PenTool, FileCheck2, FolderOpen } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import LandingPageUploadWidget from '../common/LandingPageUploadWidget';
 import MobileUploadModal from '../upload/MobileUploadModal';
@@ -1235,21 +1235,37 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
               className={`subject-pill ${selectedSubject === 'maths' ? 'active' : ''}`}
               onClick={() => handleSubjectSelect('maths')}
             >
-              📐 GCSE &amp; A-Level Maths
+              <div className="subject-pill-top">
+                <span className="subject-pill-icon">
+                  <Ruler size={18} style={{ color: 'var(--text-blue)' }} />
+                </span>
+              </div>
+              <span>GCSE &amp; A-Level Maths</span>
             </button>
             <button
               type="button"
               className={`subject-pill ${selectedSubject === 'english' ? 'active' : ''}`}
               onClick={() => handleSubjectSelect('english')}
             >
-              ✍️ GCSE English Language
+              <div className="subject-pill-top">
+                <span className="subject-pill-icon">
+                  <PenTool size={18} style={{ color: 'var(--function-warning)' }} />
+                </span>
+              </div>
+              <span>GCSE English Language</span>
             </button>
             <button
               type="button"
               className={`subject-pill ${selectedSubject === 'custom' ? 'active' : ''}`}
               onClick={() => handleSubjectSelect('custom')}
             >
-              📄 Any Subject + Mark Scheme <span className="pill-tag-new">NEW</span>
+              <div className="subject-pill-top">
+                <span className="subject-pill-icon">
+                  <FileCheck2 size={18} style={{ color: 'var(--function-success)' }} />
+                </span>
+                <span className="pill-tag-new">NEW</span>
+              </div>
+              <span>Any Subject + Mark Scheme</span>
             </button>
           </div>
         </div>
@@ -1296,6 +1312,69 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
               </div>
             )}
 
+
+            {mode === 'first-time' && (
+              <div className="composer-context-tray">
+                <div className="composer-context-tray-left">
+                  <span className="composer-context-item">
+                    {selectedSubject === 'maths' ? (
+                      <>
+                        <Ruler size={13} style={{ color: 'var(--text-blue)' }} />
+                        <span className="context-item-active">GCSE &amp; A-Level Maths</span>
+                      </>
+                    ) : selectedSubject === 'english' ? (
+                      <>
+                        <PenTool size={13} style={{ color: 'var(--function-warning)' }} />
+                        <span className="context-item-active">GCSE English Language</span>
+                      </>
+                    ) : selectedSubject === 'custom' ? (
+                      <>
+                        <FileCheck2 size={13} style={{ color: 'var(--function-success)' }} />
+                        <span className="context-item-active">Any Subject + Mark Scheme</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles size={13} style={{ color: 'var(--text-tertiary)' }} />
+                        <span>All Subjects (Auto-detect)</span>
+                      </>
+                    )}
+                  </span>
+
+                  <span className="composer-context-divider">|</span>
+
+                  <span className="composer-context-item">
+                    <FolderOpen size={13} style={{ color: 'var(--text-tertiary)' }} />
+                    <span>
+                      {isModelAnswerMode
+                        ? 'Mode: Generate Model Answer'
+                        : isMarkingSchemeMode
+                          ? 'Mode: Explain Marking Scheme'
+                          : selectedTags.length > 0
+                            ? selectedTags.join(' • ')
+                            : 'Choose past paper or upload file'}
+                    </span>
+                  </span>
+                </div>
+
+                {(selectedSubject || selectedTags.length > 0 || isModelAnswerMode || isMarkingSchemeMode) && (
+                  <button
+                    type="button"
+                    className="composer-context-reset"
+                    onClick={() => {
+                      setSelectedSubject(null);
+                      setSelectedTags([]);
+                      setIsModelAnswerMode(false);
+                      setIsMarkingSchemeMode(false);
+                      setShowAutocomplete(false);
+                    }}
+                    title="Reset subject and filters"
+                  >
+                    <X size={12} />
+                    <span>Reset</span>
+                  </button>
+                )}
+              </div>
+            )}
 
             {isExpanded && ((previewImage || previewImages.length > 0) || (imageFile && isPDF(imageFile)) || (imageFiles.length > 0 && imageFiles.some(file => isPDF(file)))) && (
               <div className="followup-preview-section">

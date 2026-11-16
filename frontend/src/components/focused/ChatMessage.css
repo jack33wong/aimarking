@@ -1,5 +1,8 @@
+/* ==========================================================================
+   CHAT MESSAGE & GUEST PAYWALL STYLES — Manus Standardized
+   ========================================================================== */
+
 /* Guest Mode Paywall Strategy */
-/* Only Q5 (index 4) gets paywall-blur class injected by backend */
 .model-answer-block.paywall-blur {
   position: relative;
   filter: blur(5px);
@@ -8,7 +11,6 @@
   opacity: 0.85;
 }
 
-/* Paywall CTA — overlays the blurred Q5 block */
 .guest-blur-enabled {
   position: relative;
 }
@@ -23,7 +25,7 @@
   align-items: center;
   justify-content: flex-end;
   padding: 60px 24px 32px;
-  background: linear-gradient(to bottom, transparent 0%, var(--background-gray-main), var(--background-gray-white) 65%);
+  background: linear-gradient(to bottom, transparent 0%, var(--background-gray-main) 65%);
   text-align: center;
   z-index: 10;
   pointer-events: auto;
@@ -36,47 +38,43 @@
   margin: 0 0 14px;
 }
 
+/* Primary Upgrade CTA — Standardized Capsule */
 .paywall-unlock-btn {
-  background: var(--primary-color, #7c3aed);
-  color: white !important;
-  border: none;
-  padding: 12px 32px;
-  border-radius: 100px;
-  font-size: 16px;
-  font-weight: 700;
+  background: var(--text-primary);
+  color: var(--bg-canvas) !important;
+  border: 1px solid var(--text-primary);
+  padding: 10px 28px;
+  border-radius: 9999px;
+  font-size: 14.5px;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-  box-shadow: 0 10px 25px -5px rgba(124, 58, 237, 0.5);
-  display: flex;
+  transition: all 0.18s ease;
+  box-shadow: 0 6px 20px var(--shadow-M);
+  display: inline-flex;
   align-items: center;
   gap: 8px;
   white-space: nowrap;
 }
 
 .paywall-unlock-btn:hover {
-  transform: scale(1.05) translateY(-2px);
-  box-shadow: 0 15px 30px -5px rgba(124, 58, 237, 0.6);
-  background: #6d28d9;
+  transform: translateY(-1px);
+  opacity: 0.92;
+  box-shadow: 0 8px 24px var(--shadow-L);
 }
 
 .paywall-unlock-btn:active {
-  transform: scale(0.98) translateY(0);
+  transform: scale(0.98);
 }
 
 .paywall-unlock-btn svg {
-  width: 18px;
-  height: 18px;
-  stroke-width: 2.5px;
-}
-
-/* Dark mode adjustments for paywall */
-html.dark .paywall-cta-overlay h4 {
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+  width: 17px;
+  height: 17px;
+  stroke-width: 2.2px;
+  color: var(--text-brand-light);
 }
 
 /* Floating Banner */
 .guest-mode-floating-banner {
-
   bottom: 180px;
   padding: 10px 16px;
   gap: 12px;
@@ -86,55 +84,37 @@ html.dark .paywall-cta-overlay h4 {
   position: relative;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--tab-fill);
-  backdrop-filter: blur(10px);
-  border-radius: 50px;
+  background: var(--bg-surface-1);
+  backdrop-filter: blur(12px);
+  border-radius: 9999px;
   display: flex;
   align-items: center;
   z-index: 1000;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-
-}
-
-html.dark .guest-mode-floating-banner {
-  background: rgba(30, 30, 31, 0.95);
-  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 10px 30px var(--shadow-M);
+  border: 1px solid var(--border-main);
 }
 
 .guest-banner-text {
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .guest-banner-btn {
-  background: var(--text-brand, #7c3aed);
-  color: white !important;
+  background: var(--text-primary);
+  color: var(--bg-canvas) !important;
   border: none;
-  padding: 8px 16px;
-  border-radius: 50px;
-  font-size: 13px;
-  font-weight: 700;
+  padding: 7px 16px;
+  border-radius: 9999px;
+  font-size: 12.5px;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.18s ease;
 }
 
 .guest-banner-btn:hover {
-  filter: brightness(1.1);
-  transform: scale(1.02);
-}
-
-@keyframes bannerSlideUp {
-  from {
-    transform: translate(-50%, 100px);
-    opacity: 0;
-  }
-
-  to {
-    transform: translate(-50%, 0);
-    opacity: 1;
-  }
+  opacity: 0.9;
+  transform: translateY(-1px);
 }
 
 @media (max-width: 640px) {
@@ -143,7 +123,6 @@ html.dark .guest-mode-floating-banner {
     padding: 10px 16px;
     gap: 12px;
     width: 90%;
-    justify-content: space-between;
   }
 
   .guest-banner-text {
@@ -156,52 +135,48 @@ html.dark .guest-mode-floating-banner {
   }
 }
 
-/**
- * Focused ChatMessage Component Styles
- * Matches existing design system colors and styles
- */
+/* ==========================================================================
+   CHAT MESSAGE BUBBLES & AVATARS
+   ========================================================================== */
 
-/* Chat message base styles are defined in ChatInterface.css */
-
-/* Ensure last message is fully visible */
 .chat-message:last-child {
   margin-bottom: 24px;
 }
 
 .chat-message {
   scroll-margin-top: 140px;
-  /* Clearance for sticky header/ribbon */
 }
 
 /* Progress steps display */
 .progress-steps-display {
   margin: 12px 0;
   border: 1px solid var(--border-main);
-  border-radius: 8px;
-  background: var(--background-menu-gray);
+  border-radius: 10px;
+  background: var(--bg-surface-1);
 }
 
 .progress-steps-header {
   padding: 8px 12px;
-  border-bottom: 1px solid var(--border-main);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .progress-toggle-button {
   background: none;
   border: none;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: 13px;
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   padding: 4px 8px;
-  border-radius: 4px;
-  transition: background-color 0.2s;
+  border-radius: 6px;
+  transition: background-color 0.16s ease, color 0.16s ease;
 }
 
 .progress-toggle-button:hover {
-  background: var(--background-hover);
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
 }
 
 .progress-steps-list {
@@ -215,7 +190,7 @@ html.dark .guest-mode-floating-banner {
   align-items: center;
   gap: 8px;
   padding: 4px 0;
-  font-size: 14px;
+  font-size: 13.5px;
 }
 
 .progress-step.completed {
@@ -256,28 +231,29 @@ html.dark .guest-mode-floating-banner {
 }
 
 .chat-message-avatar {
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
-  background: var(--background-menu-gray);
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  font-size: 15px;
   flex-shrink: 0;
-  border: 2px solid var(--border-main);
+  border: 1px solid var(--border-main);
 }
 
 .chat-message.user .chat-message-avatar {
-  background: var(--text-brand);
-  color: white;
-  border-color: var(--text-brand);
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
+  border-color: var(--border-main);
 }
 
 .chat-message.assistant .chat-message-avatar {
-  background: var(--text-brand);
-  color: white;
-  border-color: var(--text-brand);
+  background: var(--bg-surface-2);
+  color: var(--text-brand-light);
+  border-color: var(--border-main);
 }
 
 .chat-message-content {
@@ -298,19 +274,21 @@ html.dark .guest-mode-floating-banner {
 }
 
 .chat-message .chat-message-bubble {
-  max-width: 70%;
-  padding: 16px 20px;
-  border-radius: 18px;
+  max-width: 72%;
+  padding: 12px 16px;
+  border-radius: 16px;
   position: relative;
   word-wrap: break-word;
 }
 
+/* Manus Neutral User Bubble (Works cleanly in both Light & Dark Mode) */
 .chat-message.user .chat-message-bubble {
-  background: var(--chat-user);
-  color: white;
-  border-bottom-right-radius: 6px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-  transition: all 0.2s ease;
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-bottom-right-radius: 4px;
+  box-shadow: 0 2px 8px var(--shadow-XS);
+  transition: all 0.18s ease;
   margin-left: auto;
   margin-right: 0;
 }
@@ -318,15 +296,15 @@ html.dark .guest-mode-floating-banner {
 .chat-message.assistant .chat-message-bubble {
   max-width: calc(100% - 60px);
   width: calc(100% - 60px);
-  background: var(--background-nav);
+  background: var(--bg-surface-1);
   border: 1px solid var(--border-main);
-  box-shadow: 0 2px 6px rgba(0,0,0,0.03);
+  box-shadow: 0 2px 10px var(--shadow-XS);
   padding: 16px 20px;
   margin-left: 60px;
-  border-radius: 12px;
+  border-radius: 14px;
   border-bottom-left-radius: 4px;
   color: var(--text-primary);
-  transition: all 0.2s ease;
+  transition: all 0.18s ease;
   font-size: 1.0em;
   box-sizing: border-box;
 }
@@ -338,7 +316,7 @@ html.dark .guest-mode-floating-banner {
   padding: 0;
 }
 
-/* Split Mode Overrides: Reduce horizontal padding when space is halved */
+/* Split Mode Overrides */
 .split-mode .chat-message.assistant .chat-message-bubble {
   padding: 0px 12px;
   margin-left: 0px;
@@ -356,33 +334,25 @@ html.dark .guest-mode-floating-banner {
 }
 
 .chat-message.assistant .markdown-math-renderer.has-your-work {
-  background: var(--background-nav);
-  border-radius: 10px;
-  padding: 16px 30px;
+  background: var(--bg-surface-1);
+  border-radius: 12px;
+  padding: 16px 24px;
   border: 1px solid var(--border-main);
-  /* Ensure it fills the container if needed */
   display: block;
   margin-top: 0px;
-  /* Reset margin inside container */
 }
 
 .has-your-work-outer-container {
   border: 1px solid var(--border-main);
-  border-radius: 10px;
-  padding: 24px 24px 40px;
-  background: var(--background-nav);
+  border-radius: 12px;
+  padding: 20px 20px 36px;
+  background: var(--bg-surface-1);
   margin-top: 8px;
   position: relative;
 }
 
 .split-mode .has-your-work-outer-container {
-  padding: 24px 16px 40px;
-  margin-left: 8px;
-  margin-right: 8px;
-}
-
-.split-mode .has-your-work-outer-container {
-  padding: 24px 16px 40px;
+  padding: 20px 14px 36px;
   margin-left: 8px;
   margin-right: 8px;
 }
@@ -393,22 +363,18 @@ html.dark .guest-mode-floating-banner {
 }
 
 .chat-message.user .chat-message-bubble:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  transform: translateY(-1px);
+  border-color: var(--border-strong);
 }
 
-/* Annotated image message bubble styles are defined in ChatInterface.css */
-
-/* Special styling for marking messages with images */
+/* Marking messages with images — Removed hardcoded #363537 */
 .chat-message.user .chat-message-bubble.marking-message {
-  max-width: 70%;
+  max-width: 72%;
   width: auto;
-  background: #363537;
-  /* Dark grey background */
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
   padding: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-  border: 1px solid #4b5563;
-  /* Dark grey border */
+  box-shadow: 0 2px 8px var(--shadow-XS);
+  border: 1px solid var(--border-main);
   margin-left: auto;
   margin-right: 0;
   text-align: right;
@@ -424,26 +390,22 @@ html.dark .guest-mode-floating-banner {
 }
 
 .chat-message-image:hover {
-  transform: scale(1.02);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transform: scale(1.01);
+  box-shadow: 0 4px 12px var(--shadow-S);
 }
 
-/* Align images to the right for user messages */
 .chat-message.user .chat-message-image {
   margin-left: auto;
   margin-right: 0;
   margin-top: 8px;
   margin-bottom: 4px;
   width: fit-content;
-  /* Ensure it shrinks to content to align properly */
 }
 
-/* Ensure gallery container shrinks too */
 .chat-message.user .gallery-container {
   width: auto !important;
 }
 
-/* Add left padding for assistant chat images */
 .chat-message.assistant .chat-message-image {
   padding-left: 25px;
 }
@@ -454,19 +416,12 @@ html.dark .guest-mode-floating-banner {
   max-width: 400px;
   max-height: 300px;
   display: block;
-  transition: transform 0.3s ease;
+  transition: transform 0.25s ease;
   object-fit: contain;
   border-radius: 8px;
   margin: 8px 0;
 }
 
-.chat-message-image:hover img {
-  transform: scale(1.05);
-}
-
-/* Content image and annotated image styles are defined in ChatInterface.css */
-
-/* Homework annotated image styles */
 .homework-annotated-image {
   margin: 8px 0;
   border-radius: 8px;
@@ -478,8 +433,8 @@ html.dark .guest-mode-floating-banner {
 }
 
 .homework-annotated-image:hover {
-  transform: scale(1.02);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transform: scale(1.01);
+  box-shadow: 0 4px 12px var(--shadow-S);
 }
 
 .homework-annotated-image img {
@@ -487,37 +442,33 @@ html.dark .guest-mode-floating-banner {
   height: auto;
   max-width: 500px;
   max-height: none;
-  /* Remove height constraint to maintain aspect ratio */
   display: block;
   object-fit: contain;
   border-radius: 8px;
 }
 
-/* Align annotated images to the right for user messages */
 .chat-message.user .homework-annotated-image {
   margin-left: auto;
   margin-right: 0;
 }
 
-/* Add left padding for assistant annotated images */
 .chat-message.assistant .homework-annotated-image {
   padding-left: 25px;
 }
 
 .split-mode .chat-message.assistant .homework-annotated-image {
-  padding-left: 0px;
+  padding: 8px 12px;
 }
 
 .chat-message-image-error {
   padding: 12px;
   text-align: center;
-  background: var(--function-error);
-  color: white;
+  background: var(--function-error-tsp);
+  color: var(--function-error);
+  border: 1px solid var(--function-error-border);
   border-radius: 8px;
   font-size: 12px;
 }
-
-/* Simple file card for PDFs - Legacy styles moved to SimpleImageGallery.css */
 
 .chat-message-text {
   line-height: 1.6;
@@ -560,13 +511,14 @@ html.dark .guest-mode-floating-banner {
   gap: 4px;
 }
 
+/* Standardized Secondary Utility Icon Button */
 .gemini-action-btn {
   width: 30px;
   height: 30px;
   border-radius: 8px;
   border: 1px solid transparent;
   background: transparent;
-  color: var(--text-secondary, #9ca3af);
+  color: var(--text-secondary);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -576,23 +528,24 @@ html.dark .guest-mode-floating-banner {
 }
 
 .gemini-action-btn:hover {
-  background: rgba(156, 163, 175, 0.14);
-  color: var(--text-primary, #f3f4f6);
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
 }
 
 .gemini-action-btn.active-up {
-  background: rgba(59, 130, 246, 0.15);
+  background: var(--fill-blue);
   color: var(--text-blue);
 }
 
 .gemini-action-btn.active-down {
-  background: rgba(239, 68, 68, 0.15);
+  background: var(--function-error-tsp);
   color: var(--function-error);
 }
 
 .gemini-feedback-toast {
   font-size: 12px;
-  color: #10b981;
+  color: var(--function-success);
   margin-left: 6px;
   display: inline-flex;
   align-items: center;
@@ -603,11 +556,10 @@ html.dark .guest-mode-floating-banner {
   margin: 0;
   padding: 0 4px;
   font-size: 11px;
-  color: var(--text-tertiary, #9ca3af);
+  color: var(--text-tertiary);
   white-space: nowrap;
 }
 
-/* Adjust timestamp margin when user has an image */
 .chat-message.user:has(.chat-message-image) .chat-message-timestamp {
   margin-top: 2px;
 }
@@ -628,32 +580,12 @@ html.dark .guest-mode-floating-banner {
   max-width: 150px;
 }
 
-/* Message renderer styles are defined in ChatInterface.css */
-
-/* Responsive design */
-@media (max-width: 640px) {
-  .chat-message-bubble {
-    max-width: 85%;
-    padding: 10px 14px;
-    font-size: 0.95rem;
-  }
-
-  .chat-message-image {
-    max-width: 100%;
-    overflow: visible;
-  }
-
-  .chat-message-image > img {
-    max-width: 220px;
-  }
-}
-
-/* Restored styles from the second half of the file */
+/* Question result blocks */
 .question-result {
   padding: 12px;
   margin-bottom: 24px;
-  background: var(--background-primary);
-  border-radius: 6px;
+  background: var(--bg-surface-2);
+  border-radius: 8px;
   border-left: 3px solid var(--text-brand);
 }
 
@@ -674,12 +606,13 @@ html.dark .guest-mode-floating-banner {
 }
 
 .score {
-  color: var(--text-brand);
+  color: var(--text-brand-light);
   font-size: 12px;
   font-weight: 600;
-  background: var(--background-brand-light);
-  padding: 2px 6px;
-  border-radius: 4px;
+  background: var(--text-brand-tsp);
+  border: 1px solid var(--text-brand-border);
+  padding: 2px 7px;
+  border-radius: 6px;
 }
 
 .feedback {
@@ -693,49 +626,45 @@ html.dark .guest-mode-floating-banner {
   font-weight: 600;
 }
 
-/* Question marks styling - green and right-aligned */
 .question-marks {
-  color: #10b981;
-  /* green-500 */
+  color: var(--function-success);
   float: right;
-  font-weight: 500;
+  font-weight: 600;
   font-size: 14px;
   margin-left: 12px;
 }
-
-
 
 /* Chat Message Markdown Table Styling */
 .chat-message-renderer table {
   width: 100%;
   border-collapse: collapse;
   margin: 16px 0;
-  background: var(--background-menu-white);
+  background: var(--bg-surface-1);
   border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+  border: 1px solid var(--border-subtle);
 }
 
 .chat-message-renderer th,
 .chat-message-renderer td {
   padding: 6px 8px;
   text-align: center;
-  border: 1px solid var(--border-main);
+  border: 1px solid var(--border-subtle);
 }
 
 .chat-message-renderer th {
-  background: var(--background-menu-gray);
+  background: var(--bg-surface-2);
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--text-secondary);
   text-align: left;
   font-size: 12px;
 }
 
-/* For horizontal tables, center the values but keep headers left-aligned */
 .chat-message-renderer td {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   font-size: 12px;
+  color: var(--text-primary);
 }
 
 .chat-message-renderer th.highlighted-grade,
@@ -743,7 +672,6 @@ html.dark .guest-mode-floating-banner {
   background-color: var(--text-brand);
   color: var(--text-white);
   font-weight: 700;
-  border: 1px solid var(--border-white);
   text-align: center;
 }
 
@@ -765,12 +693,10 @@ html.dark .guest-mode-floating-banner {
   position: relative;
   flex: 0 0 120px;
   height: 160px;
-  background: #d1d1d9;
-  /* Muted silver */
+  background: var(--bg-surface-2);
   border-radius: 12px;
   overflow: hidden;
-  border: 1px solid rgba(0, 0, 0, 0.1);
-  box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.05);
+  border: 1px solid var(--border-main);
 }
 
 .skeleton-shimmer {
@@ -780,9 +706,9 @@ html.dark .guest-mode-floating-banner {
   width: 100%;
   height: 100%;
   background: linear-gradient(100deg,
-      rgba(0, 0, 0, 0) 20%,
-      rgba(0, 0, 0, 0.5) 50%,
-      rgba(0, 0, 0, 0) 80%);
+  rgba(255, 255, 255, 0) 20%,
+  rgba(255, 255, 255, 0.08) 50%,
+  rgba(255, 255, 255, 0) 80%);
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite linear;
 }
@@ -793,33 +719,26 @@ html.dark .guest-mode-floating-banner {
   left: 0;
   right: 0;
   padding: 6px 8px;
-  background: rgba(0, 0, 0, 0.1);
-  backdrop-filter: blur(4px);
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--bg-surface-1);
+  border-top: 1px solid var(--border-subtle);
   display: flex;
   justify-content: center;
 }
 
 .skeleton-label {
-  font-size: 8px;
+  font-size: 9px;
   color: var(--text-tertiary);
-  opacity: 0.8;
   font-weight: 500;
 }
 
 @keyframes shimmer {
-  0% {
-    background-position: -200% 0;
-  }
-
-  100% {
-    background-position: 200% 0;
-  }
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
 }
 
 /* AI Response Styling for Question text and Answer body */
 .markdown-math-renderer .model_question {
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   display: block;
   margin-bottom: 0.5em;
   font-weight: 500;
@@ -831,28 +750,24 @@ html.dark .guest-mode-floating-banner {
   margin-top: 0.5em;
   margin-left: 15px;
   margin-bottom: 1.5em;
-  /* Added spacing after answer */
 }
 
-/* Question Mode Response Styling */
-/* Question Mode Response Styling */
+/* Question Mode Response Styling — Replaced hardcoded white */
 .question-mode-response .chat-message-renderer {
   border: 1px solid var(--border-main);
   border-radius: 12px;
   padding: 16px;
-  background-color: white;
-  /* Ensure visibility */
-  /* Ensure it stands out slightly */
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  background-color: var(--bg-surface-1);
+  box-shadow: 0 2px 8px var(--shadow-XS);
 }
 
 .markdown-math-renderer .model-exam-header {
-  background: var(--fill-gray);
-  border-left: 4px solid var(--text-brand);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--text-brand);
   padding: 0.7em 1em;
   border-radius: 8px;
   margin-bottom: 1.5em;
-  box-shadow: var(--shadow-S);
   color: var(--text-primary);
   display: flex;
   flex-direction: row;
@@ -861,16 +776,12 @@ html.dark .guest-mode-floating-banner {
   gap: 24px;
   overflow-x: auto;
   scrollbar-width: none;
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 .markdown-math-renderer .model-exam-header::-webkit-scrollbar {
   display: none;
-}
-
-/* Fallback for old simple text header format in dark mode */
-.markdown-math-renderer .model-exam-header {
-  font-weight: 500;
-  line-height: 1.4;
 }
 
 .markdown-math-renderer .exam-header-title {
@@ -887,16 +798,16 @@ html.dark .guest-mode-floating-banner {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .markdown-math-renderer .exam-pill {
   font-size: 0.65em;
   font-weight: 600;
   padding: 2px 8px;
-  border-radius: 100px;
-  background: var(--background-menu-gray);
-  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  background: var(--bg-surface-1);
+  border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.03em;
@@ -904,9 +815,9 @@ html.dark .guest-mode-floating-banner {
 
 .markdown-math-renderer .pill-code,
 .markdown-math-renderer .pill-series {
-  background: var(--background-menu-white);
+  background: var(--bg-surface-1);
   color: var(--text-primary);
-  border-color: var(--background-menu-gray);
+  border-color: var(--border-main);
 }
 
 .markdown-math-renderer .model-question-number {
@@ -914,12 +825,10 @@ html.dark .guest-mode-floating-banner {
   font-weight: 600;
   margin-top: 2em;
   margin-bottom: 1em;
-  /* Significant space before each question */
   display: block;
   color: var(--text-primary);
 }
 
-/* Ensure the very first question doesn't have excessive top margin */
 .markdown-math-renderer .model-exam-header+.model-question-number,
 .markdown-math-renderer .tmua-exam-pills+.model-question-number,
 .markdown-math-renderer .tmua-exam-pills+br+.model-question-number,
@@ -943,35 +852,111 @@ html.dark .guest-mode-floating-banner {
   font-size: 11px;
   font-weight: 600;
   padding: 2.5px 8.5px;
-  border-radius: 999px;
-  background: var(--background-menu-gray);
+  border-radius: 6px;
+  background: var(--bg-surface-2);
   color: var(--text-secondary);
-  border: 1px solid var(--border-main);
+  border: 1px solid var(--border-subtle);
   line-height: 1.35;
   white-space: nowrap;
 }
 
 .markdown-math-renderer .tmua-pill.strong,
-.tmua-pill.strong {
-  background: var(--background-menu-white);
-  color: var(--text-primary);
-  font-weight: 700;
-}
-
+.tmua-pill.strong,
 .markdown-math-renderer .tmua-pill.modified,
 .tmua-pill.modified {
-  background: var(--background-menu-white);
+  background: var(--bg-surface-3);
   color: var(--text-primary);
-  font-weight: 700;
+  border: 1px solid var(--border-strong);
+  font-weight: 600;
 }
 
+/* Detected Paper Picker Buttons — Standardized Manus Interactive Button */
+.detected-paper-grade-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  gap: 6px;
+  padding: 0 14px;
+  border-radius: 9999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
+  transition: all 0.16s ease;
+  white-space: nowrap;
+}
 
-/* Mobile Friendly Padding Adjustments */
+.detected-paper-grade-btn:hover:not(:disabled) {
+  background: var(--bg-surface-3);
+  border-color: var(--text-secondary);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px var(--shadow-XS);
+}
+
+.detected-paper-grade-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.detected-paper-grade-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.limit-actions-row {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.detected-paper-groups-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.limit-upgrade-cta-wrap {
+  margin-left: auto;
+}
+
+.limit-upgrade-cta-wrap .paywall-unlock-btn {
+  height: 34px;
+  padding: 0 18px;
+  font-size: 12.5px;
+}
+
+.limit-actions-or-divider {
+  display: none;
+}
+
+/* Responsive & Mobile Overrides */
 @media (max-width: 640px) {
+  .chat-message-bubble {
+    max-width: 85%;
+    padding: 10px 14px;
+    font-size: 0.95rem;
+  }
+
+  .chat-message-image {
+    max-width: 100%;
+    overflow: visible;
+  }
+
+  .chat-message-image > img {
+    max-width: 220px;
+  }
+
   .chat-message.assistant .markdown-math-renderer.has-your-work {
     margin-left: 0px;
     padding: 6px 12px;
-    /* Reduced by half from 16px 30px */
   }
 
   .chat-message.assistant .chat-message-bubble {
@@ -981,14 +966,12 @@ html.dark .guest-mode-floating-banner {
     padding: 8px;
   }
 
-  /* Footer row outside chat bubble: Action bar on left, timestamp on right */
   .chat-message-footer {
     padding: 8px;
   }
 
   .has-your-work-outer-container {
     padding: 40px 10px 40px;
-    /* Reduced by half from 50px 50px 80px */
   }
 
   .markdown-math-renderer .model-exam-header {
@@ -1015,114 +998,31 @@ html.dark .guest-mode-floating-banner {
 
   .markdown-math-renderer .exam-header-pills {
     display: contents;
-    /* Allow pins to be direct grid items */
   }
 
   .markdown-math-renderer .exam-pill {
     font-size: 0.6em;
-    padding: 2px 1px;
+    padding: 2px 4px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     white-space: nowrap;
   }
 
-  .markdown-math-renderer .pill-code {
-    grid-area: code;
-  }
+  .markdown-math-renderer .pill-code { grid-area: code; }
+  .markdown-math-renderer .pill-series { font-size: 0.55em; grid-area: series; }
+  .markdown-math-renderer .pill-tier { font-size: 0.5em; grid-area: tier; display: inline-flex !important; }
+  .markdown-math-renderer .pill-marks { font-size: 0.5em; grid-area: marks; }
+  .markdown-math-renderer .pill-count { font-size: 0.5em; grid-area: count; }
 
-  .markdown-math-renderer .pill-series {
-    font-size: 0.55em;
-    grid-area: series;
-  }
-
-  .markdown-math-renderer .pill-tier {
-    font-size: 0.5em;
-    grid-area: tier;
-    display: inline-flex !important;
-  }
-
-  .markdown-math-renderer .pill-marks {
-    font-size: 0.5em;
-    grid-area: marks;
-  }
-
-  .markdown-math-renderer .pill-count {
-    font-size: 0.5em;
-    grid-area: count;
-  }
-
-  /* AI Response Styling for Question text and Answer body */
-  .markdown-math-renderer .model_question {
-    font-size: 0.85em;
-  }
-
-  .markdown-math-renderer .model_answer {
-    font-size: 0.9em;
-  }
-
+  .markdown-math-renderer .model_question { font-size: 0.85em; }
+  .markdown-math-renderer .model_answer { font-size: 0.9em; }
   .markdown-math-renderer .model-question-number {
     font-size: 0.9em;
     margin-top: 5em;
     margin-bottom: 0.25em;
   }
-}
 
-.detected-paper-grade-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  background: rgba(99, 102, 241, 0.14);
-  border: 1px solid rgba(99, 102, 241, 0.45);
-  color: var(--text-primary, #e2e8f0);
-  transition: all 0.2s ease;
-}
-
-.detected-paper-grade-btn:hover:not(:disabled) {
-  background: rgba(99, 102, 241, 0.28);
-  border-color: rgba(129, 140, 248, 0.85);
-  color: #ffffff;
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
-}
-
-.detected-paper-grade-btn:active:not(:disabled) {
-  transform: scale(0.97);
-}
-
-.detected-paper-grade-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.limit-actions-row {
-  margin-top: 14px;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-}
-
-.detected-paper-groups-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.limit-upgrade-cta-wrap {
-  margin-left: auto;
-}
-
-.limit-actions-or-divider {
-  display: none;
-}
-
-@media (max-width: 640px) {
   .limit-actions-row {
     flex-direction: column;
     align-items: stretch;
@@ -1146,7 +1046,7 @@ html.dark .guest-mode-floating-banner {
     align-items: center;
     gap: 10px;
     width: 100%;
-    color: var(--text-tertiary, #94a3b8);
+    color: var(--text-tertiary);
     font-size: 12px;
     font-weight: 500;
     margin: 2px 0;
@@ -1157,7 +1057,7 @@ html.dark .guest-mode-floating-banner {
     content: '';
     flex: 1;
     height: 1px;
-    background: var(--border-color, rgba(148, 163, 184, 0.25));
+    background: var(--border-subtle);
   }
 
   .limit-upgrade-cta-wrap {
@@ -1170,4 +1070,3 @@ html.dark .guest-mode-floating-banner {
     justify-content: center;
   }
 }
-

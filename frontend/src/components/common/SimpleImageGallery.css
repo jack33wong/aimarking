@@ -180,12 +180,12 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
-  background-color: transparent;
-  border-radius: 8px;
-  border: 1px solid var(--border-color, #e5e7eb);
+  padding: 8px 12px 8px 8px;
+  background: var(--bg-surface-2);
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: border-color 0.16s ease, background-color 0.16s ease;
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
@@ -220,15 +220,13 @@
 }
 
 .chat-message-file-card:hover {
-  background-color: var(--background-hover, rgba(0, 0, 0, 0.05));
-  border-color: var(--border-hover-color, #d1d5db);
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  background: var(--bg-surface-3);
+  border-color: var(--border-strong);
 }
 
 /* PDF Icon */
 .small-pdf-icon {
-  background-color: rgb(250, 66, 62);
+  background-color: var(--function-error, #ef4444);
   width: 20px;
   height: 20px;
   border-radius: 3px;
@@ -253,7 +251,7 @@
 
 /* PDF File Name */
 .small-pdf-file-name {
-  color: var(--text-tertiary);
+  color: var(--text-primary);
   font-size: 9px;
   font-weight: 500;
   white-space: nowrap;

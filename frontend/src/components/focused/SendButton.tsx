@@ -3,7 +3,7 @@
  * A button for sending messages or analyzing images.
  */
 import React from 'react';
-import { SendHorizontal } from 'lucide-react';
+import { ArrowUp } from 'lucide-react';
 import './SendButton.css'; // Assuming styles are in this file
 
 // Define the type for the props this component receives
@@ -39,7 +39,7 @@ const SendButton: React.FC<SendButtonProps> = ({
         {loading ? (
           <div className="spinner" />
         ) : (
-          <SendHorizontal size={20} />
+          <ArrowUp size={size === 'small' ? 15 : 16} strokeWidth={2.25} />
         )}
       </div>
     </button>

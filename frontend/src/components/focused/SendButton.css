@@ -1,5 +1,5 @@
 /**
- * Focused SendButton Component Styles
+ * Focused SendButton Component Styles — Manus Standardized Primary Circle
  * Shared component for first-time and follow-up inputs.
  */
 
@@ -7,74 +7,83 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
-  border: none;
+  width: 34px;
+  height: 34px;
+  border: 1px solid transparent;
   border-radius: 50%;
-  background: transparent;
-  color: #e3e3e3;
+  background: var(--text-primary);
+  color: var(--bg-canvas);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background-color 0.16s ease, color 0.16s ease, border-color 0.16s ease, transform 0.16s ease, opacity 0.16s ease;
   position: relative;
   flex-shrink: 0;
+  box-shadow: 0 2px 8px var(--shadow-XS);
 }
 
+/* Disabled / Empty Input State — Subtle Manus Surface Circle */
 .send-button:disabled {
+  background: var(--bg-surface-2);
+  color: var(--text-disable);
+  border-color: var(--border-subtle);
+  box-shadow: none;
   cursor: not-allowed;
-  opacity: 0.3;
+  opacity: 0.65;
 }
 
 .send-button.loading {
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
+  border-color: var(--border-main);
   cursor: not-allowed;
 }
 
-/* Variant styles */
-.send-button.primary {
-  color: var(--color-text);
+/* Variant styles — Keep unified Manus high-contrast when enabled */
+.send-button.primary:not(:disabled) {
+  background: var(--text-primary);
+  color: var(--bg-canvas);
 }
 
-.send-button.success {
-  background: var(--fill-tsp-white-main);
-  color: var(--color-text);
+.send-button.success:not(:disabled) {
+  background: var(--text-primary);
+  color: var(--bg-canvas);
   opacity: 1;
 }
 
 .send-button:focus-visible {
-  outline: 2px solid var(--border-main);
+  outline: 2px solid var(--border-strong);
   outline-offset: 2px;
 }
 
 /* Sizes */
 .send-button.main {
-  width: 44px;
-  height: 44px;
+  width: 34px;
+  height: 34px;
 }
 
 .send-button.small {
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
+}
+
+.send-button svg {
+  width: 16px;
+  height: 16px;
 }
 
 /* Spinner adjustment */
 .send-button .spinner {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   border-width: 2px;
 }
 
-/* 
- * Interaction States
- * Defined at the bottom so they override base/variant backgrounds 
- * naturally via the CSS cascade without needing !important.
- */
+/* Interaction States */
 .send-button:hover:not(:disabled) {
-  /* Using the user's preferred variable */
-  background: var(--icon-tertiary);
-
-
+  opacity: 0.9;
+  transform: scale(1.04);
+  box-shadow: 0 4px 12px var(--shadow-S);
 }
 
 .send-button:active:not(:disabled) {
-  background: var(--background-tsp-menu-dark);
-
+  transform: scale(0.95);
 }
