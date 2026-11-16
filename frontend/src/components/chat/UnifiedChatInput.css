@@ -1093,9 +1093,54 @@
     transform: none;
   }
 
+  .composer-context-tray {
+    gap: 6px;
+    padding: 4px 10px 6px 10px;
+    font-size: 11px;
+  }
+
+  .composer-context-tray-left {
+    flex-wrap: nowrap;
+    gap: 6px;
+    overflow: hidden;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .composer-context-item {
+    white-space: nowrap;
+    flex-shrink: 0;
+    gap: 4px;
+  }
+
+  .composer-context-item svg {
+    flex-shrink: 0;
+  }
+
+  .composer-context-item:last-child {
+    flex: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .composer-context-item:last-child > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .composer-context-divider,
+  .composer-context-reset {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
   .multi-image-scroll {
     gap: 8px;
-    max-height: 180px;
+    max-height: none;
+    overflow-x: visible;
+    overflow-y: visible;
     padding: 8px 8px 4px 0;
   }
 

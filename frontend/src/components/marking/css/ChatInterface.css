@@ -60,6 +60,12 @@
   .landing-chat-input-placeholder {
     margin-top: 16px;
   }
+
+  .chat-container {
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    overscroll-behavior-y: contain;
+  }
 }
 
 /* Main Layout Flex Container for Chat Panel */
