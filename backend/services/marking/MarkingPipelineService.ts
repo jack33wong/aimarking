@@ -140,10 +140,27 @@ export function recoverGenericTotalMarks(params: {
     result: any;
     finalizedAnnotations: any[];
     newAwarded: number;
-    aiStatedTotalMarks: number;
+    aiStatedTotalMarks?: number;
+    isGenericScheme?: boolean;
+    hasIncompleteBudgets?: boolean;
+    aiReportedTotalMarks?: number;
+    aiReportedAwardedMarks?: number;
 }): void {
-    const { task, result, finalizedAnnotations, newAwarded, aiStatedTotalMarks } = params;
-    if (aiStatedTotalMarks > 0 || !result.score.totalMarks || result.score.totalMarks <= 0) {
+    const {
+        task,
+        result,
+        finalizedAnnotations,
+        newAwarded,
+        aiStatedTotalMarks = 0,
+        isGenericScheme = Boolean(task?.markingScheme?.isGeneric),
+        hasIncompleteBudgets = false,
+        aiReportedTotalMarks = aiStatedTotalMarks,
+        aiReportedAwardedMarks = 0
+    } = params;
+
+    const effectiveAiTotal = Math.max(aiReportedTotalMarks, aiStatedTotalMarks);
+
+    if (isGenericScheme || effectiveAiTotal > 0 || !result.score.totalMarks || result.score.totalMarks <= 0) {
         const inferredTotalFromAnnotations = finalizedAnnotations.reduce((sum: number, a: any) => {
             const text = (a.text || '').trim();
             const isMath = /[\\{}=\^_\(\)]/.test(text) || text.includes('sqrt') || text.includes('frac');
@@ -161,11 +178,37 @@ export function recoverGenericTotalMarks(params: {
             return sum;
         }, 0);
 
-        result.score.totalMarks = Math.max(aiStatedTotalMarks, inferredTotalFromAnnotations, newAwarded);
+        if (isGenericScheme) {
+            if (hasIncompleteBudgets && effectiveAiTotal >= inferredTotalFromAnnotations && effectiveAiTotal > 0) {
+                result.score.totalMarks = effectiveAiTotal;
+            } else {
+                result.score.totalMarks = Math.max(effectiveAiTotal, inferredTotalFromAnnotations, newAwarded);
+            }
+        } else {
+            result.score.totalMarks = Math.max(effectiveAiTotal, inferredTotalFromAnnotations, newAwarded);
+        }
+
         (result as any).totalMarks = result.score.totalMarks;
         if (task.markingScheme && result.score.totalMarks > 0) {
             task.markingScheme.totalMarks = result.score.totalMarks;
             task.markingScheme.parentQuestionMarks = result.score.totalMarks;
+        }
+
+        if (
+            isGenericScheme &&
+            hasIncompleteBudgets &&
+            aiReportedAwardedMarks > newAwarded &&
+            aiReportedAwardedMarks <= result.score.totalMarks
+        ) {
+            const crossCount = finalizedAnnotations.filter(
+                (a: any) => a.action === 'cross' || /\b(?:M0|A0|B0)\b/i.test(String(a.text || ''))
+            ).length;
+            if (crossCount === 0 || newAwarded + crossCount < result.score.totalMarks) {
+                result.score.awardedMarks = Math.min(
+                    Math.max(0, result.score.totalMarks - crossCount),
+                    Math.max(newAwarded, aiReportedAwardedMarks)
+                );
+            }
         }
     }
 }
@@ -3849,16 +3892,22 @@ export class MarkingPipelineService {
                                                 (result as any).rubricEvaluation
                                             );
                                             if (!isLoRResult && task.markingScheme && result.annotations && result.score) {
-                                                const aiStatedTotalMarks = (
-                                                    task.markingScheme?.isGeneric &&
-                                                    (!task.markingScheme.totalMarks || task.markingScheme.totalMarks <= 0) &&
-                                                    result.score?.totalMarks > 0
-                                                )
-                                                    ? result.score.totalMarks
-                                                    : 0;
+                                                const isGenericScheme = Boolean(task.markingScheme?.isGeneric);
+                                                const hasIncompleteBudgets = Boolean(
+                                                    isGenericScheme && (
+                                                        !task.markingScheme?.totalMarks ||
+                                                        task.markingScheme.totalMarks <= 0 ||
+                                                        (task.markingScheme as any)?.hasIncompleteSubQuestionBudgets ||
+                                                        (result.score?.totalMarks && result.score.totalMarks > (task.markingScheme.totalMarks || 0))
+                                                    )
+                                                );
+                                                const aiReportedTotalMarks = Number((result as any)?.meta?.question_total_marks || result.score?.totalMarks || 0);
+                                                const aiReportedAwardedMarks = Number(result.score?.awardedMarks || 0);
                                                 const anyAnnotations = result.annotations as any[];
                                                 const subQuestionBudgets = task.markingScheme.subQuestionMaxScores || {};
-                                                const totalBudget = result.score.totalMarks || task.markingScheme.totalMarks || 0;
+                                                const totalBudget = (hasIncompleteBudgets && aiReportedTotalMarks > 0)
+                                                    ? aiReportedTotalMarks
+                                                    : (result.score.totalMarks || task.markingScheme.totalMarks || 0);
 
                                                 // 1. Group by subQuestion
                                                 const groups = new Map<string, any[]>();
@@ -4011,10 +4060,14 @@ export class MarkingPipelineService {
                                                         result,
                                                         finalizedAnnotations,
                                                         newAwarded,
-                                                        aiStatedTotalMarks
+                                                        aiStatedTotalMarks: aiReportedTotalMarks,
+                                                        isGenericScheme,
+                                                        hasIncompleteBudgets,
+                                                        aiReportedTotalMarks,
+                                                        aiReportedAwardedMarks
                                                     });
 
-                                                    result.score.scoreText = `${newAwarded}/${result.score.totalMarks}`;
+                                                    result.score.scoreText = `${result.score.awardedMarks}/${result.score.totalMarks}`;
                                                 }
 
                                                 if (finalizedAnnotations.length < anyAnnotations.length && result.feedback) {

@@ -123,7 +123,9 @@ export class MarkingPromptService {
 
         if (normalizedScheme.isGeneric || hasGenericSignature) {
             let genericHeader = `\n[GENERIC_GCSE_LOGIC]`;
-            if (normalizedScheme.totalMarks) genericHeader += ` [MAX SCORE: ${normalizedScheme.totalMarks}]`;
+            if (normalizedScheme.totalMarks && !(normalizedScheme as any).hasIncompleteSubQuestionBudgets) {
+                genericHeader += ` [MAX SCORE: ${normalizedScheme.totalMarks}]`;
+            }
 
             let subQBreakdown = '';
             const cleanSubKey = (k: string) => String(k || '').trim().replace(/^0+(?=\d)/, '');

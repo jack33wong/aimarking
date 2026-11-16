@@ -827,12 +827,13 @@ export class MarkingSchemeOrchestrationService {
       const uniqueKey = `${baseQuestionNumber}_${examBoard}_${paperCode}`;
 
       // CASE A: GENERIC QUESTION (Discovery Mode)
-      if (paperCode === 'Generic Question') {
+      if (masterMatch?.isGeneric || paperCode === 'Generic Question') {
         const questionNumbers: string[] = [];
         const subQMarksMap: any = {};
         const subQMaxScores: any = {};
         const subQTextsMap: Record<string, string> = {};
         let groupTotalMarks = 0;
+        let hasMissingSubBudget = false;
 
         group.forEach(item => {
           const rawQNum = String(item.question.questionNumber || item.actualQuestionNumber || '').trim().replace(/^0+(?=\d)/, '');
@@ -852,6 +853,9 @@ export class MarkingSchemeOrchestrationService {
           }
 
           if (rawQNum !== baseQuestionNumber || group.length === 1) {
+            if (itemMarks <= 0) {
+              hasMissingSubBudget = true;
+            }
             groupTotalMarks += itemMarks;
           }
           if (rawQNum !== baseQuestionNumber && item.question.text) {
@@ -862,8 +866,14 @@ export class MarkingSchemeOrchestrationService {
           }
         });
 
-        if (groupTotalMarks === 0 && masterMatch.marks) {
+        if (groupTotalMarks === 0 && masterMatch.marks && !hasMissingSubBudget) {
           groupTotalMarks = Number(masterMatch.marks) || 0;
+        }
+
+        const hasIncompleteSubQuestionBudgets = hasMissingSubBudget;
+        if (hasIncompleteSubQuestionBudgets) {
+          // Do not cap at a partial sub-question sum (e.g. 4 when 2ii and 2iii have unknown budgets)
+          groupTotalMarks = 0;
         }
 
         const rawAns = parentScheme.answer || '';
@@ -880,6 +890,7 @@ export class MarkingSchemeOrchestrationService {
           subQuestionNumbers: questionNumbers.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })),
           subQuestionAnswers: subAns,
           isGeneric: true,
+          hasIncompleteSubQuestionBudgets,
           subQuestionMaxScores: subQMaxScores,
           subQuestionTexts: Object.keys(subQTextsMap).length > 0 ? subQTextsMap : undefined,
           generalMarkingGuidance: masterMatch.markingScheme.generalMarkingGuidance,

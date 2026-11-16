@@ -142,6 +142,7 @@ export function normalizeMarkingScheme(input: any): NormalizedMarkingScheme | nu
       hasAlternatives: hasAlternatives,
       parentQuestionMarks: input.parentQuestionMarks,
       isGeneric: input.isGeneric === true,
+      ...((input as any).hasIncompleteSubQuestionBudgets ? { hasIncompleteSubQuestionBudgets: true } : {}),
       guidance: input.guidance || questionMarksData?.guidance,
       subQuestionGuidanceMap: input.subQuestionGuidanceMap || questionMarksData?.subQuestionGuidanceMap,
       scoringType: input.scoringType || questionMarksData?.scoringType,
