@@ -51,8 +51,9 @@ function toPositiveInt(v: any): number | null {
  *        and clean relative sub-part in fullExamPapers ("1" not ".1")
  *  - v4: strip qualification prefix (e.g. "GCSE", "A-Level") from subject field, ensuring clean separation of qualification & subject
  *  - v5: standardize auto-persisted fullExamPapers & markingSchemes schemas to canonical Maths/English shapes (strip redundant exam, questionNumber, totalMarks, paper/date aliases, and boolean flags)
+ *  - v6: roll up child sub-question texts (e.g. 7bi + 7bii -> 7b) when mark scheme groups roman-numeral parts
  */
-export const AUTO_PERSIST_SCHEMA_VERSION = 5;
+export const AUTO_PERSIST_SCHEMA_VERSION = 6;
 
 /** True when a Firestore doc was written by the auto-persistence pipeline (never overwrite manual docs). */
 function isAutoPersistedDoc(data: any): boolean {
@@ -86,6 +87,35 @@ function compareQuestionKeys(a: string, b: string): number {
         }
     }
     return 0;
+}
+
+/**
+ * Resolves extracted paper text for a scheme key `nk` (e.g. "7b" or "13c").
+ * If `nk` has no direct match in `textMap`, rolls up any extracted child sub-question texts
+ * under the same base question whose normalized key starts with `nk` (e.g. "7bi" + "7bii" -> "7b"),
+ * excluding any child key that has its own standalone entry in `schemeKeys`.
+ */
+export function resolveSubQuestionTextWithChildRollup(
+    nk: string,
+    baseNum: string,
+    textMap: Map<string, string>,
+    schemeKeys: Set<string>
+): string {
+    const direct = textMap.get(nk);
+    if (direct && direct.trim()) return direct.trim();
+
+    const childEntries = Array.from(textMap.entries())
+        .filter(([k, val]) => {
+            if (!val || !val.trim()) return false;
+            if ((getBaseQuestionNumber(k) || k) !== baseNum) return false;
+            if (!k.startsWith(nk) || k.length <= nk.length) return false;
+            if (schemeKeys.has(k)) return false;
+            return true;
+        })
+        .sort(([a], [b]) => compareQuestionKeys(a, b));
+
+    if (childEntries.length === 0) return '';
+    return childEntries.map(([, val]) => val.trim()).join('\n');
 }
 
 export class MarkingSchemeParserService {
@@ -635,6 +665,8 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
             reasons.push(`Question paper is missing question(s): ${missingBases.join(', ')}`);
         }
 
+        const schemeKeySet = new Set<string>(scores.keys());
+
         // Every scheme leaf (sub-question, or base question with no sub-questions) must have extracted text
         const missingText: string[] = [];
         for (const nk of scores.keys()) {
@@ -642,7 +674,8 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
             if (missingBases.includes(base)) continue; // already reported
             const hasSubs = Array.from(scores.keys()).some(k => k !== base && (getBaseQuestionNumber(k) || k) === base);
             if (nk === base && hasSubs) continue; // parent container of sub-questions
-            if (!extractedTexts.has(nk)) missingText.push(nk);
+            const resolvedText = resolveSubQuestionTextWithChildRollup(nk, base, extractedTexts, schemeKeySet);
+            if (!resolvedText) missingText.push(nk);
         }
         if (missingText.length > 0) {
             reasons.push(`No question text extracted for: ${missingText.sort(compareQuestionKeys).join(', ')}`);
@@ -978,7 +1011,7 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
                     // Relative part: "1.2" -> "2", "1a" -> "a", "1ai" -> "ai"
                     let relativePart = displayKey.startsWith(baseNum) ? displayKey.slice(baseNum.length) : displayKey;
                     if (relativePart.startsWith('.')) relativePart = relativePart.substring(1);
-                    const text = subTexts.get(nk) || '';
+                    const text = resolveSubQuestionTextWithChildRollup(nk, baseNum, subTexts, allSubKeys);
                     if (!text) missingTextKeys.push(displayKey);
                     const marks = schemeScores.get(nk);
                     return {
