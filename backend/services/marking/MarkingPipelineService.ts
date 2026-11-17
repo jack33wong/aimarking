@@ -79,6 +79,415 @@ const MULTI_IMAGE_STEPS = [
     'Output Generation'
 ];
 
+export function isValidExamPaperHint(text?: string | null): boolean {
+    if (!text) return false;
+    const trimmed = text.trim();
+    if (trimmed.length < 3 || trimmed.length > 120) return false;
+    // 1. Preserve explicit General Rubric / No Official Scheme sentinel strings
+    if (/general\s+rubric|no\s+official\s+marking\s+scheme|generic\s+mode/i.test(trimmed)) {
+        return true;
+    }
+    // 2. Recognized exam board or qualification
+    const hasBoardOrQual = /\b(aqa|edexcel|pearson|ocr|wjec|eduqas|cie|cambridge|ccea|gcse|igcse|a-?level|as-?level)\b/i.test(trimmed);
+    // 3. Paper code pattern: MUST contain at least one digit (prevents matching hyphenated words like "mark-this" or "non-calc")
+    const hasPaperCode = /\b(?=[0-9a-z]*\d)[0-9a-z]{3,6}[\/\-_][0-9a-z]{1,4}\b|\b(?=[0-9a-z]*\d)(?:[0-9]{4}|[0-9][a-z]{2}[0-9]|[a-z][0-9]{3}|wma\d+|wme\d+|wst\d+|wfm\d+|1ma1|8300|9ma0|8ma0|j560|h240|h230|7357|7356|8700|1en0|j351)\b/i.test(trimmed);
+    return hasBoardOrQual || hasPaperCode;
+}
+
+const PAPER_CODE_PATTERN = /(?<![a-z0-9])((?=[0-9a-z]*\d)[0-9a-z]{3,6}[\/\-_][0-9a-z]{1,4}|(?=[0-9a-z]*\d)(?:[0-9][a-z]{2}[0-9]|[a-z][0-9]{3}|wma\d+|wme\d+|wst\d+|wfm\d+|1ma1|8300|9ma0|8ma0|j560|h240|h230|7357|7356|8700|1en0|j351))(?![a-z0-9])/i;
+
+export function extractCoverPaperMetadata(params: {
+    geometryResults?: Array<{
+        is_marking_scheme?: boolean;
+        paper_code_hint?: string;
+        visual_observations?: string;
+        evidence_text_snippet?: string;
+    } | null | undefined>;
+    classificationReasoning?: string;
+    uploadedFileNames?: string[];
+    extractedGeoPaperCode?: string;
+    cleanGeoPaperHint?: string;
+    effectiveExamPaperHint?: string;
+}): {
+    detectedBoard?: string;
+    detectedPaperCode?: string;
+    detectedExamSeries?: string;
+    hasFourDigitYear: boolean;
+} {
+    const {
+        geometryResults = [],
+        classificationReasoning = '',
+        uploadedFileNames = [],
+        extractedGeoPaperCode,
+        cleanGeoPaperHint,
+        effectiveExamPaperHint
+    } = params;
+
+    const coverSnippets = [
+        ...geometryResults
+            .filter(g => !g?.is_marking_scheme)
+            .map(g => `${g?.paper_code_hint || ''} ${g?.visual_observations || ''} ${g?.evidence_text_snippet || ''}`),
+        classificationReasoning
+    ].filter(Boolean);
+
+    const fileNameTexts = (uploadedFileNames || []).filter(Boolean);
+    const sanitizedFileNames = fileNameTexts
+        .join(' ')
+        .replace(/(?<![a-z0-9])20\d{2}[-_](?:0[1-9]|1[0-2])[-_](?:0[1-9]|[12]\d|3[01])(?![a-z0-9])/gi, ' ');
+    const coverTextOnly = coverSnippets.join(' ');
+    const allCoverText = [coverTextOnly, sanitizedFileNames].filter(Boolean).join(' ');
+
+    const detectedBoard = allCoverText.match(/(?<![a-z0-9])(Edexcel|Pearson|AQA|OCR|WJEC|Eduqas|CIE|Cambridge|CCEA)(?![a-z0-9])/i)?.[1];
+
+    const hintPaperCode = effectiveExamPaperHint
+        ? effectiveExamPaperHint.match(PAPER_CODE_PATTERN)?.[1]
+        : undefined;
+    const coverPaperCode = allCoverText.match(PAPER_CODE_PATTERN)?.[1];
+    const detectedPaperCode = extractedGeoPaperCode || cleanGeoPaperHint || hintPaperCode || coverPaperCode;
+
+    // Only accept explicit "<Month/Season/Series> <Year>" for the zero-probe fast-fail;
+    // bare years (e.g. copyright notices or filenames) fall through to the 3-question probe.
+    const explicitSeriesRegex = /(?<![a-z0-9])((?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|summer|autumn|winter|spring|series[\s_-]+\d+)[\s_-]*(?:20\d{2}))(?![a-z0-9])/i;
+
+    const rawExamSeries =
+        coverTextOnly.match(explicitSeriesRegex)?.[1] ||
+        sanitizedFileNames.match(explicitSeriesRegex)?.[1];
+    const detectedExamSeries = rawExamSeries ? rawExamSeries.replace(/[-_]+/g, ' ').trim() : undefined;
+
+    const hasFourDigitYear = Boolean(detectedExamSeries && /(?<![0-9])20\d{2}(?![0-9])/.test(detectedExamSeries));
+
+    return {
+        detectedBoard,
+        detectedPaperCode,
+        detectedExamSeries,
+        hasFourDigitYear
+    };
+}
+
+export interface FastDbPreCheckLookupResult {
+    markingSchemesMap: Map<string, any>;
+    detectionStats?: any;
+    updatedClassificationResult?: any;
+    detectionResults?: any[];
+    [key: string]: any;
+}
+
+function mergeMarkingSchemeEntries(existing: any, incoming: any): any {
+    if (!existing) return incoming;
+    if (!incoming) return existing;
+    if (!existing.isGeneric && incoming.isGeneric) return existing;
+    if (existing.isGeneric && !incoming.isGeneric) return incoming;
+
+    const mergedSubNumbers = Array.from(new Set([
+        ...(Array.isArray(existing.subQuestionNumbers) ? existing.subQuestionNumbers : []),
+        ...(Array.isArray(incoming.subQuestionNumbers) ? incoming.subQuestionNumbers : [])
+    ])).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+
+    const mergedSubMaxScores = {
+        ...(existing.subQuestionMaxScores || {}),
+        ...(incoming.subQuestionMaxScores || {})
+    };
+
+    const mergedSubMarks = {
+        ...(existing.questionMarks?.subQuestionMarks || {}),
+        ...(incoming.questionMarks?.subQuestionMarks || {})
+    };
+
+    const mergedSubAnswersMap = {
+        ...(existing.questionMarks?.subQuestionAnswersMap || {}),
+        ...(incoming.questionMarks?.subQuestionAnswersMap || {})
+    };
+
+    const mergedSubMetadata = {
+        ...(existing.subQuestionMetadata || existing.questionMarks?.subQuestionMetadata || {}),
+        ...(incoming.subQuestionMetadata || incoming.questionMarks?.subQuestionMetadata || {})
+    };
+
+    const mergedSubGuidanceMap = {
+        ...(existing.subQuestionGuidanceMap || existing.questionMarks?.subQuestionGuidanceMap || {}),
+        ...(incoming.subQuestionGuidanceMap || incoming.questionMarks?.subQuestionGuidanceMap || {})
+    };
+
+    const mergedSubAnswers = Array.from(new Set([
+        ...(Array.isArray(existing.subQuestionAnswers) ? existing.subQuestionAnswers : []),
+        ...(Array.isArray(incoming.subQuestionAnswers) ? incoming.subQuestionAnswers : [])
+    ]));
+
+    const mergedSubTexts = (existing.subQuestionTexts || incoming.subQuestionTexts)
+        ? { ...(existing.subQuestionTexts || {}), ...(incoming.subQuestionTexts || {}) }
+        : undefined;
+
+    const hasIncompleteSubQuestionBudgets = Boolean(
+        existing.hasIncompleteSubQuestionBudgets || incoming.hasIncompleteSubQuestionBudgets
+    );
+
+    const subScoreSum = Object.values(mergedSubMaxScores).reduce<number>(
+        (sum, val) => sum + (typeof val === 'number' && val > 0 ? val : 0),
+        0
+    );
+
+    let mergedTotalMarks: number;
+    if (existing.isGeneric && incoming.isGeneric) {
+        mergedTotalMarks = hasIncompleteSubQuestionBudgets
+            ? 0
+            : (subScoreSum > 0 ? subScoreSum : (Number(existing.totalMarks) || 0) + (Number(incoming.totalMarks) || 0));
+    } else {
+        mergedTotalMarks = Math.max(
+            Number(existing.totalMarks) || 0,
+            Number(incoming.totalMarks) || 0,
+            subScoreSum
+        );
+    }
+
+    const mergedParentQuestionMarks = existing.isGeneric && incoming.isGeneric
+        ? mergedTotalMarks
+        : Math.max(
+            Number(existing.parentQuestionMarks) || 0,
+            Number(incoming.parentQuestionMarks) || 0,
+            mergedTotalMarks
+        );
+
+    return {
+        ...existing,
+        ...incoming,
+        questionMarks: {
+            ...(existing.questionMarks || {}),
+            ...(incoming.questionMarks || {}),
+            subQuestionMarks: mergedSubMarks,
+            ...(Object.keys(mergedSubAnswersMap).length > 0 ? { subQuestionAnswersMap: mergedSubAnswersMap } : {}),
+            ...(Object.keys(mergedSubMetadata).length > 0 ? { subQuestionMetadata: mergedSubMetadata } : {}),
+            ...(Object.keys(mergedSubGuidanceMap).length > 0 ? { subQuestionGuidanceMap: mergedSubGuidanceMap } : {})
+        },
+        subQuestionNumbers: mergedSubNumbers,
+        subQuestionMaxScores: mergedSubMaxScores,
+        subQuestionAnswers: mergedSubAnswers,
+        ...(mergedSubTexts ? { subQuestionTexts: mergedSubTexts } : {}),
+        ...(Object.keys(mergedSubMetadata).length > 0 ? { subQuestionMetadata: mergedSubMetadata } : {}),
+        ...(Object.keys(mergedSubGuidanceMap).length > 0 ? { subQuestionGuidanceMap: mergedSubGuidanceMap } : {}),
+        hasIncompleteSubQuestionBudgets,
+        totalMarks: mergedTotalMarks,
+        parentQuestionMarks: mergedParentQuestionMarks,
+        questionDetection: existing.questionDetection?.found ? existing.questionDetection : incoming.questionDetection,
+        sourceImageIndex: existing.sourceImageIndex ?? incoming.sourceImageIndex
+    };
+}
+
+function mergeDetectionStats(probeStats: any, remainingStats: any): any {
+    if (!probeStats && !remainingStats) return undefined;
+    if (!probeStats) return remainingStats;
+    if (!remainingStats) return probeStats;
+
+    const mergedQuestionDetails = [
+        ...(Array.isArray(probeStats.questionDetails) ? probeStats.questionDetails : []),
+        ...(Array.isArray(remainingStats.questionDetails) ? remainingStats.questionDetails : [])
+    ];
+
+    const probeHint = probeStats.hintInfo;
+    const remHint = remainingStats.hintInfo;
+    const mergedHintInfo = (probeHint || remHint)
+        ? {
+            hintUsed: remHint?.hintUsed || probeHint?.hintUsed || '',
+            matchedPapersCount: Math.max(probeHint?.matchedPapersCount || 0, remHint?.matchedPapersCount || 0),
+            ...(remHint?.matchedPaperTitle || probeHint?.matchedPaperTitle
+                ? { matchedPaperTitle: remHint?.matchedPaperTitle || probeHint?.matchedPaperTitle }
+                : {}),
+            thresholdRelaxed: Boolean(probeHint?.thresholdRelaxed || remHint?.thresholdRelaxed),
+            ...(probeHint?.deepSearchActive || remHint?.deepSearchActive ? { deepSearchActive: true } : {}),
+            ...(Math.max(probeHint?.poolSize || 0, remHint?.poolSize || 0) > 0
+                ? { poolSize: Math.max(probeHint?.poolSize || 0, remHint?.poolSize || 0) }
+                : {}),
+            ...((probeHint?.rescuedQuestions || remHint?.rescuedQuestions)
+                ? {
+                    rescuedQuestions: Array.from(new Set([
+                        ...(probeHint?.rescuedQuestions || []),
+                        ...(remHint?.rescuedQuestions || [])
+                    ]))
+                }
+                : {})
+        }
+        : undefined;
+
+    return {
+        totalQuestions: (probeStats.totalQuestions || 0) + (remainingStats.totalQuestions || 0),
+        detected: (probeStats.detected || 0) + (remainingStats.detected || 0),
+        notDetected: (probeStats.notDetected || 0) + (remainingStats.notDetected || 0),
+        withMarkingScheme: (probeStats.withMarkingScheme || 0) + (remainingStats.withMarkingScheme || 0),
+        withoutMarkingScheme: (probeStats.withoutMarkingScheme || 0) + (remainingStats.withoutMarkingScheme || 0),
+        bySimilarityRange: {
+            high: (probeStats.bySimilarityRange?.high || 0) + (remainingStats.bySimilarityRange?.high || 0),
+            medium: (probeStats.bySimilarityRange?.medium || 0) + (remainingStats.bySimilarityRange?.medium || 0),
+            low: (probeStats.bySimilarityRange?.low || 0) + (remainingStats.bySimilarityRange?.low || 0)
+        },
+        questionDetails: mergedQuestionDetails,
+        hintInfo: mergedHintInfo
+    };
+}
+
+function mergeUpdatedClassificationResult(
+    probeUcr: any,
+    remainingUcr: any,
+    fallback: any,
+    totalQuestionsCount: number
+): any {
+    if (!probeUcr && !remainingUcr) return fallback;
+    if (!probeUcr) return remainingUcr;
+    if (!remainingUcr) return probeUcr;
+    if (probeUcr === remainingUcr) return remainingUcr;
+
+    const merged: any = { ...probeUcr, ...remainingUcr };
+    if (
+        Array.isArray(probeUcr.questions) &&
+        Array.isArray(remainingUcr.questions) &&
+        probeUcr.questions.length < totalQuestionsCount &&
+        probeUcr.questions.length + remainingUcr.questions.length === totalQuestionsCount
+    ) {
+        merged.questions = [...probeUcr.questions, ...remainingUcr.questions];
+    }
+    return merged;
+}
+
+export async function runFastDbPreCheck(params: {
+    individualQuestions: any[];
+    classificationResult: any;
+    effectiveExamPaperHint?: string;
+    geometryResults?: any[];
+    uploadedFileNames?: string[];
+    extractedGeoPaperCode?: string;
+    cleanGeoPaperHint?: string;
+    isVisionVerbatim?: boolean;
+    subjectProfile?: any;
+    paperExistsInDatabaseFn: (board?: string, paperCode?: string, examSeries?: string) => Promise<boolean>;
+    orchestrateLookupFn: (
+        questions: any[],
+        classificationResult: any,
+        examPaperHint?: string,
+        unused?: any,
+        isVisionVerbatim?: boolean,
+        subjectProfile?: any
+    ) => Promise<FastDbPreCheckLookupResult>;
+}): Promise<FastDbPreCheckLookupResult | null> {
+    const {
+        individualQuestions,
+        classificationResult,
+        effectiveExamPaperHint,
+        geometryResults,
+        uploadedFileNames,
+        extractedGeoPaperCode,
+        cleanGeoPaperHint,
+        isVisionVerbatim,
+        subjectProfile,
+        paperExistsInDatabaseFn,
+        orchestrateLookupFn
+    } = params;
+
+    if (!individualQuestions || individualQuestions.length === 0) return null;
+
+    const { detectedBoard, detectedPaperCode, detectedExamSeries, hasFourDigitYear } = extractCoverPaperMetadata({
+        geometryResults,
+        classificationReasoning: classificationResult?.reasoning,
+        uploadedFileNames,
+        extractedGeoPaperCode,
+        cleanGeoPaperHint,
+        effectiveExamPaperHint
+    });
+
+    // 1. Fast-fail by paper metadata (board + paperCode + examSeries with 4-digit year)
+    if (detectedBoard && detectedPaperCode && detectedExamSeries && hasFourDigitYear) {
+        const existsInDb = await paperExistsInDatabaseFn(
+            detectedBoard,
+            detectedPaperCode,
+            detectedExamSeries
+        );
+        if (!existsInDb) {
+            console.log(
+                `⚡ [FAST-DB-PRECHECK] Paper ${detectedBoard} ${detectedPaperCode} (${detectedExamSeries}) not found in DB. Fast-failing pre-check to rasterize/parse uploaded mark scheme!`
+            );
+            return null;
+        }
+    }
+
+    // 2. If examSeries is not known from the cover page, sample at most the first 3 questions first.
+    // If 0/3 match in DB, abort immediately without running the remaining questions.
+    // If >= 1 matches, query only the remaining questions and merge so the first 3 are not queried twice.
+    let dbPreCheck: FastDbPreCheckLookupResult;
+    if (!hasFourDigitYear && individualQuestions.length > 3) {
+        const probeQuestions = individualQuestions.slice(0, 3).map(q => ({ ...q }));
+        const probeResult = await orchestrateLookupFn(
+            probeQuestions,
+            classificationResult,
+            effectiveExamPaperHint,
+            undefined,
+            isVisionVerbatim,
+            subjectProfile
+        );
+        const probeMatches = Array.from(probeResult.markingSchemesMap.values()).filter(
+            (s: any) => !s?.isGeneric && s?.questionDetection?.found && s?.questionDetection?.match?.markingScheme
+        );
+        if (probeMatches.length === 0) {
+            console.log(
+                `⚡ [FAST-DB-PRECHECK] 0/${probeQuestions.length} sample questions matched in DB (Hint="${effectiveExamPaperHint || 'none'}"). Aborting pre-check and proceeding directly to uploaded mark scheme!`
+            );
+            return null;
+        }
+
+        const remainingQuestions = individualQuestions.slice(3).map(q => ({ ...q }));
+        const remainingResult = await orchestrateLookupFn(
+            remainingQuestions,
+            classificationResult,
+            effectiveExamPaperHint,
+            undefined,
+            isVisionVerbatim,
+            subjectProfile
+        );
+        const mergedMap = new Map<string, any>(probeResult.markingSchemesMap);
+        for (const [k, v] of remainingResult.markingSchemesMap.entries()) {
+            if (mergedMap.has(k)) {
+                mergedMap.set(k, mergeMarkingSchemeEntries(mergedMap.get(k), v));
+            } else {
+                mergedMap.set(k, v);
+            }
+        }
+        const mergedDetectionResults = (probeResult.detectionResults || remainingResult.detectionResults)
+            ? [...(probeResult.detectionResults || []), ...(remainingResult.detectionResults || [])]
+            : undefined;
+        const mergedDetectionStats = mergeDetectionStats(probeResult.detectionStats, remainingResult.detectionStats);
+        const mergedUpdatedClassificationResult = mergeUpdatedClassificationResult(
+            probeResult.updatedClassificationResult,
+            remainingResult.updatedClassificationResult,
+            classificationResult,
+            individualQuestions.length
+        );
+        dbPreCheck = {
+            ...probeResult,
+            ...remainingResult,
+            markingSchemesMap: mergedMap,
+            ...(mergedDetectionResults !== undefined ? { detectionResults: mergedDetectionResults } : {}),
+            ...(mergedDetectionStats !== undefined ? { detectionStats: mergedDetectionStats } : {}),
+            ...(mergedUpdatedClassificationResult !== undefined ? { updatedClassificationResult: mergedUpdatedClassificationResult } : {})
+        };
+    } else {
+        dbPreCheck = await orchestrateLookupFn(
+            individualQuestions.map(q => ({ ...q })),
+            classificationResult,
+            effectiveExamPaperHint,
+            undefined,
+            isVisionVerbatim,
+            subjectProfile
+        );
+    }
+    const totalGroups = dbPreCheck.markingSchemesMap.size;
+    const matchedDbSchemes = Array.from(dbPreCheck.markingSchemesMap.values()).filter(
+        (s: any) => !s?.isGeneric && s?.questionDetection?.found && s?.questionDetection?.match?.markingScheme
+    );
+    if (totalGroups > 0 && matchedDbSchemes.length > 0 && (matchedDbSchemes.length / totalGroups) >= 0.7) {
+        const matchedTitle = matchedDbSchemes[0]?.questionDetection?.match?.paperTitle || 'Official Past Paper';
+        console.log(`⚡ [FAST-DB-SCHEME] Official marking scheme already exists in DB ("${matchedTitle}", ${matchedDbSchemes.length}/${totalGroups} question groups). Skipping LLM extraction of uploaded mark scheme!`);
+        return dbPreCheck;
+    }
+
+    return null;
+}
+
 export function computeGeoSubjectVote(
     geometryResults: Array<{ is_marking_scheme?: boolean; detected_subject?: string } | null | undefined>
 ): string | undefined {
@@ -2480,7 +2889,8 @@ export class MarkingPipelineService {
                 ? geoPaperCodeHint.match(/\b([0-9A-Z]{4,6}\/[0-9A-Z]{1,3}|8700\/[12]|8300\/[123][FH]|1MA1\/[123][FH]|J560\/0[1-6])\b/i)?.[1]
                 : undefined;
             const cleanGeoPaperHint = extractedGeoPaperCode || fileNamePaperHint;
-            const effectiveExamPaperHint = options.customText || cleanGeoPaperHint;
+            const validatedCustomHint = isValidExamPaperHint(options.customText) ? options.customText!.trim() : undefined;
+            const effectiveExamPaperHint = validatedCustomHint || cleanGeoPaperHint;
 
             console.log(`🔍 [MODE DETECTION] Analysis (AFTER overrides):`);
             console.log(`  - All question-only: ${isQuestionMode}`);
@@ -2659,23 +3069,20 @@ export class MarkingPipelineService {
             let preResolvedOrchestrationResult: Awaited<ReturnType<typeof MarkingSchemeOrchestrationService.orchestrateMarkingSchemeLookup>> | null = null;
             if (pagesEjected && (interceptedSchemeImages.length > 0 || deferredSchemePdfFiles.length > 0) && !inputMarkingScheme && individualQuestions.length > 0) {
                 try {
-                    const dbPreCheck = await MarkingSchemeOrchestrationService.orchestrateMarkingSchemeLookup(
-                        individualQuestions.map(q => ({ ...q })),
+                    const { MarkingSchemeParserService } = await import('./MarkingSchemeParserService.js');
+                    preResolvedOrchestrationResult = await runFastDbPreCheck({
+                        individualQuestions,
                         classificationResult,
                         effectiveExamPaperHint,
-                        undefined,
-                        subjectProfile?.ocrStrategy === 'VISION_VERBATIM',
-                        subjectProfile
-                    );
-                    const totalGroups = dbPreCheck.markingSchemesMap.size;
-                    const matchedDbSchemes = Array.from(dbPreCheck.markingSchemesMap.values()).filter(
-                        (s: any) => !s?.isGeneric && s?.questionDetection?.found && s?.questionDetection?.match?.markingScheme
-                    );
-                    if (totalGroups > 0 && matchedDbSchemes.length > 0 && (matchedDbSchemes.length / totalGroups) >= 0.7) {
-                        const matchedTitle = matchedDbSchemes[0]?.questionDetection?.match?.paperTitle || 'Official Past Paper';
-                        console.log(`⚡ [FAST-DB-SCHEME] Official marking scheme already exists in DB ("${matchedTitle}", ${matchedDbSchemes.length}/${totalGroups} question groups). Skipping LLM extraction of uploaded mark scheme!`);
-                        preResolvedOrchestrationResult = dbPreCheck;
-                    }
+                        geometryResults,
+                        uploadedFileNames,
+                        extractedGeoPaperCode,
+                        cleanGeoPaperHint,
+                        isVisionVerbatim: subjectProfile?.ocrStrategy === 'VISION_VERBATIM',
+                        subjectProfile,
+                        paperExistsInDatabaseFn: MarkingSchemeParserService.paperExistsInDatabase.bind(MarkingSchemeParserService),
+                        orchestrateLookupFn: MarkingSchemeOrchestrationService.orchestrateMarkingSchemeLookup.bind(MarkingSchemeOrchestrationService)
+                    }) as any;
                 } catch (preCheckErr) {
                     // Non-fatal: fall through to custom scheme parser
                 }

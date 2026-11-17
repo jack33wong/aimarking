@@ -118,6 +118,162 @@ export function resolveSubQuestionTextWithChildRollup(
     return childEntries.map(([, val]) => val.trim()).join('\n');
 }
 
+function stripJsonCodeFences(raw: string): string {
+    let content = String(raw || '').trim();
+    if (content.startsWith('```json')) {
+        content = content.replace(/```json/g, '').replace(/```/g, '').trim();
+    } else if (content.startsWith('```')) {
+        content = content.replace(/```/g, '').trim();
+    }
+    return content;
+}
+
+/**
+ * Deterministically merges parsed marking scheme chunks (e.g. 10-page batches with 1-page overlap)
+ * into a single complete marking scheme object.
+ */
+export function mergeParsedSchemeChunks(chunkObjects: any[]): any {
+    const validChunks = (chunkObjects || []).filter(c => c && typeof c === 'object');
+    if (validChunks.length === 0) return null;
+
+    const isPlaceholderMeta = (val: string): boolean => /^(uploaded|custom|unknown|n\/a|none|null|undefined)$/i.test(val.trim());
+    const pickMetaField = (field: string, defaultVal: any = undefined): any => {
+        let fallback: string | undefined;
+        for (const chunk of validChunks) {
+            const raw = chunk?.examDetails?.[field];
+            if (typeof raw !== 'string') continue;
+            const trimmed = raw.trim();
+            if (!trimmed) continue;
+            if (!isPlaceholderMeta(trimmed)) return trimmed;
+            if (fallback === undefined) fallback = trimmed;
+        }
+        return fallback !== undefined ? fallback : defaultVal;
+    };
+
+    let paperTotalMarks: number | null = null;
+    for (const chunk of validChunks) {
+        const total = toPositiveInt(chunk?.examDetails?.paperTotalMarks);
+        if (total !== null) {
+            paperTotalMarks = total;
+            break;
+        }
+    }
+
+    const examDetails: Record<string, any> = {
+        board: pickMetaField('board', 'Custom'),
+        subject: pickMetaField('subject', ''),
+        qualification: pickMetaField('qualification', ''),
+        paperCode: pickMetaField('paperCode', 'Uploaded'),
+        tier: pickMetaField('tier', 'N/A'),
+        exam_series: pickMetaField('exam_series', 'N/A'),
+        paperTotalMarks
+    };
+
+    const mergedQuestions: Record<string, any> = {};
+    const mergedSubQuestionMaxScores: Record<string, number> = {};
+
+    for (const chunk of validChunks) {
+        const chunkScores: Record<string, number> = {};
+        if (chunk.subQuestionMaxScores && typeof chunk.subQuestionMaxScores === 'object') {
+            for (const [rawKey, rawScore] of Object.entries(chunk.subQuestionMaxScores)) {
+                const nk = normQuestionKey(rawKey);
+                if (!nk) continue;
+                chunkScores[nk] = Number(rawScore) || 0;
+                if (chunkScores[nk] > 0) {
+                    mergedSubQuestionMaxScores[nk] = Math.max(mergedSubQuestionMaxScores[nk] || 0, chunkScores[nk]);
+                } else if (mergedSubQuestionMaxScores[nk] === undefined) {
+                    mergedSubQuestionMaxScores[nk] = 0;
+                }
+            }
+        }
+
+        if (chunk.questions && typeof chunk.questions === 'object') {
+            for (const [rawKey, qEntry] of Object.entries(chunk.questions)) {
+                const nk = normQuestionKey(rawKey);
+                if (!nk || !qEntry || typeof qEntry !== 'object') continue;
+
+                const existing = mergedQuestions[nk];
+                if (!existing) {
+                    mergedQuestions[nk] = qEntry;
+                } else {
+                    const targetScore = toPositiveInt(mergedSubQuestionMaxScores[nk]) ?? toPositiveInt(chunkScores[nk]) ?? 0;
+                    const existingWeight = sumMarkCodeWeights(existing?.marks);
+                    const incomingWeight = sumMarkCodeWeights((qEntry as any)?.marks);
+                    const existingCount = Array.isArray(existing?.marks) ? existing.marks.length : 0;
+                    const incomingCount = Array.isArray((qEntry as any)?.marks) ? (qEntry as any).marks.length : 0;
+
+                    let shouldReplace = false;
+                    if (targetScore > 0) {
+                        const existingDiff = Math.abs(targetScore - existingWeight);
+                        const incomingDiff = Math.abs(targetScore - incomingWeight);
+                        if (incomingDiff < existingDiff) {
+                            shouldReplace = true;
+                        } else if (incomingDiff === existingDiff && incomingCount > existingCount) {
+                            shouldReplace = true;
+                        }
+                    } else if (incomingWeight > existingWeight || (incomingWeight === existingWeight && incomingCount > existingCount)) {
+                        shouldReplace = true;
+                    }
+
+                    if (shouldReplace) {
+                        mergedQuestions[nk] = qEntry;
+                    }
+                }
+            }
+        }
+    }
+
+    let generalMarkingGuidance = '';
+    for (const chunk of validChunks) {
+        const guidance = typeof chunk?.generalMarkingGuidance === 'string' ? chunk.generalMarkingGuidance.trim() : '';
+        if (guidance.length > generalMarkingGuidance.length) {
+            generalMarkingGuidance = guidance;
+        }
+    }
+
+    const baseNumbers = Object.keys(mergedQuestions)
+        .map(k => parseInt(getBaseQuestionNumber(k) || k, 10))
+        .filter(n => Number.isInteger(n) && n > 0);
+    const baseSet = new Set(baseNumbers);
+
+    let firstQuestion = '';
+    let lastQuestion = '';
+    let isComplete = false;
+    let reason = 'No questions extracted';
+
+    if (baseNumbers.length > 0) {
+        const minBase = Math.min(...baseNumbers);
+        const maxBase = Math.max(...baseNumbers);
+        firstQuestion = String(minBase);
+        lastQuestion = String(maxBase);
+
+        let allPresent = minBase === 1;
+        if (allPresent) {
+            for (let q = 1; q <= maxBase; q++) {
+                if (!baseSet.has(q)) {
+                    allPresent = false;
+                    break;
+                }
+            }
+        }
+        isComplete = allPresent;
+        reason = isComplete ? '' : `Missing base question(s) in range 1..${maxBase}`;
+    }
+
+    return {
+        examDetails,
+        documentCompleteness: {
+            isComplete,
+            firstQuestion,
+            lastQuestion,
+            reason
+        },
+        subQuestionMaxScores: mergedSubQuestionMaxScores,
+        questions: mergedQuestions,
+        generalMarkingGuidance
+    };
+}
+
 export class MarkingSchemeParserService {
     private static memoryCache = new Map<string, any>();
 
@@ -344,28 +500,86 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
                 base64Images.map(img => ImageUtils.createLightweightCopy(img, 1200).catch(() => img))
             );
 
-            const response = await ModelProvider.callGeminiChat(
-                prompt,
-                "Extract the marking scheme data from these images into the requested JSON format.",
-                lightweightSchemeImages,
-                PARSER_MODEL,
-                true, // forceJsonResponse
-                tracker,
-                'markingScheme'
-            );
+            let rawParsedObj: any;
+            let allChunksSucceeded = true;
+            if (lightweightSchemeImages.length <= 12) {
+                const response = await ModelProvider.callGeminiChat(
+                    prompt,
+                    "Extract the marking scheme data from these images into the requested JSON format.",
+                    lightweightSchemeImages,
+                    PARSER_MODEL,
+                    true, // forceJsonResponse
+                    tracker,
+                    'markingScheme'
+                );
+                rawParsedObj = JSON.parse(stripJsonCodeFences(response.content));
+            } else {
+                const CHUNK_SIZE = 12;
+                const OVERLAP = 1;
+                const MAX_CONCURRENT_CHUNKS = 3;
+                const chunks: string[][] = [];
+                for (let start = 0; start < lightweightSchemeImages.length; start += (CHUNK_SIZE - OVERLAP)) {
+                    const slice = lightweightSchemeImages.slice(start, start + CHUNK_SIZE);
+                    if (slice.length > 0) chunks.push(slice);
+                    if (start + CHUNK_SIZE >= lightweightSchemeImages.length) break;
+                }
+                console.log(`⚡ [MarkingSchemeParser] Splitting ${lightweightSchemeImages.length} pages into ${chunks.length} parallel batches (max ${MAX_CONCURRENT_CHUNKS} concurrent)...`);
 
-            let content = response.content.trim();
+                const parseChunkWithRetry = async (chunkImages: string[], idx: number): Promise<any | null> => {
+                    for (let attempt = 1; attempt <= 2; attempt++) {
+                        try {
+                            const res = await ModelProvider.callGeminiChat(
+                                prompt,
+                                `Extract the marking scheme data from these images (batch ${idx + 1} of ${chunks.length}) into the requested JSON format.`,
+                                chunkImages,
+                                PARSER_MODEL,
+                                true, // forceJsonResponse
+                                tracker,
+                                'markingScheme'
+                            );
+                            const parsed = JSON.parse(stripJsonCodeFences(res.content));
+                            if (parsed && typeof parsed === 'object') {
+                                return parsed;
+                            }
+                        } catch (err) {
+                            console.warn(`⚠️ [MarkingSchemeParser] Batch ${idx + 1}/${chunks.length} attempt ${attempt} failed:`, err);
+                        }
+                    }
+                    return null;
+                };
 
-            if (content.startsWith('\`\`\`json')) {
-                content = content.replace(/\`\`\`json/g, '').replace(/\`\`\`/g, '').trim();
-            } else if (content.startsWith('\`\`\`')) {
-                content = content.replace(/\`\`\`/g, '').trim();
+                const chunkObjects: Array<any | null> = new Array(chunks.length).fill(null);
+                let nextChunkIdx = 0;
+                const runWorker = async () => {
+                    while (nextChunkIdx < chunks.length) {
+                        const currentIdx = nextChunkIdx++;
+                        chunkObjects[currentIdx] = await parseChunkWithRetry(chunks[currentIdx], currentIdx);
+                    }
+                };
+                const workerCount = Math.min(MAX_CONCURRENT_CHUNKS, chunks.length);
+                await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+
+                allChunksSucceeded =
+                    chunkObjects.length === chunks.length &&
+                    chunkObjects.every(c => c && c.questions && Object.keys(c.questions).length > 0);
+
+                rawParsedObj = mergeParsedSchemeChunks(chunkObjects);
+                if (!rawParsedObj) {
+                    throw new Error('All parallel marking scheme batches failed to produce valid JSON.');
+                }
             }
 
-            const parsedObj = this.canonicalizeParsedScheme(JSON.parse(content));
+            const parsedObj = this.canonicalizeParsedScheme(rawParsedObj);
+            if (!allChunksSucceeded && parsedObj) {
+                parsedObj.documentCompleteness = {
+                    ...(parsedObj.documentCompleteness || {}),
+                    isComplete: false,
+                    reason: 'One or more parallel mark scheme chunks failed to parse'
+                };
+            }
             console.log(`✅ [MarkingSchemeParser] Successfully parsed custom scheme.`);
 
-            if (parsedObj && parsedObj.questions && Object.keys(parsedObj.questions).length > 0) {
+            if (allChunksSucceeded && parsedObj && parsedObj.questions && Object.keys(parsedObj.questions).length > 0) {
                 if (this.memoryCache.size > 100) {
                     const firstKey = this.memoryCache.keys().next().value;
                     if (firstKey) this.memoryCache.delete(firstKey);
