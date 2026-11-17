@@ -306,6 +306,7 @@ export class SVGOverlayService {
       });
 
       const deferredReasonings: DeferredReasoningItem[] = [];
+      const allSymbolRects: Rect2D[] = [];
 
       // PASS 1: Render all symbols (✓ P1, ✗ M0, ✗ A0, circles, underlines) and lock their positions
       // (Collision avoidance in createSymbolAnnotation handles exact-bbox stacking cleanly without double-shifting)
@@ -318,7 +319,8 @@ export class SVGOverlayService {
             actualHeight,
             0,
             occupiedRects,
-            deferredReasonings
+            deferredReasonings,
+            allSymbolRects
           );
         } catch (error) {
           console.error(`SVG Generation Error [Idx: ${index}]:`, error);
@@ -328,6 +330,9 @@ export class SVGOverlayService {
       // PASS 2: Place deferred reasoning text blocks into the nearest empty space (teacher-style)
       deferredReasonings.forEach((item) => {
         try {
+          const otherSymbolRects = allSymbolRects.filter(
+            r => !(r.x === item.symbolRect.x && r.y === item.symbolRect.y && r.w === item.symbolRect.w && r.h === item.symbolRect.h)
+          );
           svg += this.renderTeacherStyleReasoning(
             item,
             actualWidth,
@@ -335,7 +340,8 @@ export class SVGOverlayService {
             occupiedRects,
             studentWorkRects,
             flatZones,
-            inkMap
+            inkMap,
+            otherSymbolRects
           );
         } catch (error) {
           console.error('SVG Reasoning Placement Error:', error);
@@ -389,7 +395,8 @@ export class SVGOverlayService {
     actualHeight: number,
     yOffset: number,
     occupiedRects: Rect2D[],
-    deferredReasonings: DeferredReasoningItem[]
+    deferredReasonings: DeferredReasoningItem[],
+    allSymbolRects?: Rect2D[]
   ): string {
     // Priority: snappedBbox (Rescued/Authoritative) -> bbox (Original/Hallucinated)
     const [x, y, width, height] = (annotation as any).snappedBbox || annotation.bbox || [0, 0, 0, 0];
@@ -480,7 +487,8 @@ export class SVGOverlayService {
         actualHeight,
         classificationText,
         occupiedRects,
-        deferredReasonings
+        deferredReasonings,
+        allSymbolRects
       );
     } else if (action === 'circle') {
       svg += this.createCircleAnnotation(scaledX, scaledY, scaledWidth, scaledHeight);
@@ -499,7 +507,8 @@ export class SVGOverlayService {
           actualHeight,
           classificationText,
           occupiedRects,
-          deferredReasonings
+          deferredReasonings,
+          allSymbolRects
         );
       }
     } else if (action === 'underline') {
@@ -526,7 +535,8 @@ export class SVGOverlayService {
     actualHeight: number,
     classificationText: string | undefined,
     occupiedRects: Rect2D[],
-    deferredReasonings: DeferredReasoningItem[]
+    deferredReasonings: DeferredReasoningItem[],
+    allSymbolRects?: Rect2D[]
   ): string {
     const fontScaleFactor = Math.min(
       actualHeight / this.CONFIG.baseReferenceHeight,
@@ -663,6 +673,9 @@ export class SVGOverlayService {
     }
 
     occupiedRects.push({ ...symRect });
+    if (allSymbolRects) {
+      allSymbolRects.push({ ...symRect });
+    }
 
     // Queue reasoning text for Pass 2 (Teacher-Style Empty-Space Placement)
     // Supports: ✗ (Math/English/BYOMS errors), ⭕ (English SPaG circles), and ✓ / ↑ with English AO/Level tags (e.g. [AO2 L4], [AO2 L2])
@@ -677,9 +690,10 @@ export class SVGOverlayService {
         .replace(/[.\s]+$/, '')
         .trim();
 
-      // Keep on-page teacher margin notes concise so multiple notes never flood the page
-      const maxWords = isEnglishAoBadge ? 7 : 10;
-      const maxCharsLimit = isEnglishAoBadge ? 62 : 72;
+      // Keep on-page teacher margin notes concise, allowing slightly more room when two marks merged onto one line
+      const isMergedBadge = /\s/.test(cleanCodeText);
+      const maxWords = isEnglishAoBadge ? 7 : (isMergedBadge ? 14 : 10);
+      const maxCharsLimit = isEnglishAoBadge ? 62 : (isMergedBadge ? 85 : 72);
 
       // Preserve trailing `; ans: <value>` / `Ans: <value>` suffix when truncating so the correct answer is never cut off
       const trailingAnsMatch = !isEnglishAoBadge
@@ -713,8 +727,8 @@ export class SVGOverlayService {
             cleanReasoning = trimmedPrefix ? `${trimmedPrefix}${ansSuffix}` : ansSuffix.replace(/^;\s*/, '').trim();
           }
         } else {
-          // Prefer taking the first clause/sentence if it is self-contained (do not split on decimal points like 3.14)
-          const firstClause = cleanReasoning.split(/[;]|(?<!\d)\.(?!\d)|\(/)[0]?.trim();
+          // Prefer taking the first sentence if it is self-contained (do not split on semicolons or decimal points like 3.14)
+          const firstClause = cleanReasoning.split(/(?<!\d)\.(?!\d)|\(/)[0]?.trim();
           if (firstClause && firstClause.length >= 12 && firstClause.length <= maxCharsLimit) {
             cleanReasoning = firstClause;
           } else {
@@ -806,7 +820,8 @@ export class SVGOverlayService {
     occupiedRects: Rect2D[],
     studentWorkRects: Rect2D[],
     flatZones: any[],
-    inkMap?: InkDensityMap
+    inkMap?: InkDensityMap,
+    otherSymbolRects: Rect2D[] = []
   ): string {
     const fontScaleFactor = Math.min(
       actualHeight / this.CONFIG.baseReferenceHeight,
@@ -837,6 +852,8 @@ export class SVGOverlayService {
 
     const isEnglishPositiveAoComment = item.color === '#008000' || item.color === '#d97706';
     const isFinalAnswerZeroMark = /\b[AB]0\b/i.test(String(item.annotation?.text || ''));
+    const isNearPageBottom = symbolRect.y + symbolRect.h > actualHeight * 0.80;
+    const preferAboveSymbol = isFinalAnswerZeroMark && isNearPageBottom;
 
     // Search window around the symbol, respecting zone bounds when reasonable
     const searchMinY = Math.max(edgeMargin, Math.min(zoneMinY, symbolRect.y - 110 * fontScaleFactor));
@@ -879,8 +896,8 @@ export class SVGOverlayService {
         const flushRightBelowCandidate: [number, number] = [maxX, symbolRect.y + symbolRect.h + 6 * fontScaleFactor];
         const belowStudentWorkCandidate: [number, number] = [rightAnchorX, studentRect.y + studentRect.h + 10 * fontScaleFactor];
 
-        // Build candidate list: for A0/B0 final-answer marks, prioritize above-symbol first to avoid footer/total-mark line collisions
-        const candidates: Array<[number, number]> = isFinalAnswerZeroMark
+        // Build candidate list: for A0/B0 final-answer marks near the page bottom, prioritize above-symbol first to avoid footer/total-mark line collisions
+        const candidates: Array<[number, number]> = preferAboveSymbol
           ? [
               aboveSymbolCandidate,
               belowSymbolCandidate,
@@ -927,16 +944,36 @@ export class SVGOverlayService {
           }
           const studentOverlapRatio = Math.min(1, studentOverlapArea / Math.max(1, boxW * boxH));
 
-          // Distance from the ideal right-hand spot (above symbol for A0/B0, below symbol otherwise)
+          // Distance from the ideal right-hand spot (above symbol for A0/B0 near page bottom, right/below symbol otherwise)
           const belowIdealY = symbolRect.y + symbolRect.h + 6 * fontScaleFactor;
           const aboveIdealY = Math.max(minY, symbolRect.y - boxH - 8 * fontScaleFactor);
-          const dxNorm = Math.abs(cx - rightAnchorX) / normScale;
-          const dyNorm = isFinalAnswerZeroMark
-            ? Math.min(Math.abs(cy - aboveIdealY), Math.abs(cy - belowIdealY) + 6 * normScale) / normScale
-            : Math.abs(cy - belowIdealY) / normScale;
+          const isSameRowRight =
+            Math.abs(cy - symbolRect.y) <= lineHeight * 1.5 &&
+            cx >= symbolRect.x + symbolRect.w;
+          const idealRightX = symbolRect.x + symbolRect.w + Math.round(12 * fontScaleFactor);
+          const dxNorm = isSameRowRight
+            ? Math.abs(cx - idealRightX) / normScale
+            : Math.abs(cx - rightAnchorX) / normScale;
+          const dyNorm = isSameRowRight
+            ? 0
+            : preferAboveSymbol
+              ? Math.min(Math.abs(cy - aboveIdealY), Math.abs(cy - belowIdealY) + 6 * normScale) / normScale
+              : Math.abs(cy - belowIdealY) / normScale;
 
-          // Penalty for placing above the symbol vs beside/below (0 for A0/B0 final-answer annotations)
-          const abovePenalty = isFinalAnswerZeroMark ? 0 : ((cy + boxH < symbolRect.y) ? 80 : 0);
+          // Penalty for placing above the symbol vs beside/below (0 for A0/B0 final-answer annotations near page bottom)
+          const abovePenalty = preferAboveSymbol ? 0 : ((cy + boxH < symbolRect.y) ? 80 : 0);
+
+          // Non-Crossing Vertical Order Guard: prevent reasoning callout from jumping across an adjacent badge vertically
+          let crossOrderPenalty = 0;
+          for (const otherSym of otherSymbolRects) {
+            if (Math.abs(otherSym.x - symbolRect.x) < 250 * fontScaleFactor) {
+              if (otherSym.y > symbolRect.y + 4 && cy > otherSym.y) {
+                crossOrderPenalty += 1500;
+              } else if (otherSym.y + otherSym.h < symbolRect.y + 4 && cy < otherSym.y + otherSym.h) {
+                crossOrderPenalty += 1500;
+              }
+            }
+          }
           // Wrap penalty only for standard mode, not English compact margin
           const wrapPenalty = (charLimit <= 22) && !isEnglishPositiveAoComment ? 14 : 0;
           // Strict penalty if overlapping another placed symbol or reasoning block (NEVER allow smothering a badge)
@@ -958,6 +995,7 @@ export class SVGOverlayService {
             placedCollisionPenalty +
             inkPenalty +
             studentOverlapPenalty +
+            crossOrderPenalty +
             dxNorm * 1.35 +
             dyNorm * 0.95 +
             abovePenalty +
@@ -1399,6 +1437,49 @@ export class SVGOverlayService {
     return svg;
   }
 
+  private static getMarkTokenRank(token: string): number {
+    const clean = token.replace(/[\[\]()]/g, '').trim().toUpperCase();
+    if (/^d?B\d/i.test(clean)) return 1;
+    if (/^d?P\d/i.test(clean)) return 2;
+    if (/^d?M\d/i.test(clean)) return 3;
+    if (/^d?C\d/i.test(clean)) return 4;
+    if (/^d?A\d/i.test(clean)) return 5;
+    return 6;
+  }
+
+  private static sortMergedMarkCodes(textA?: string, textB?: string): string {
+    const tokens = [textA, textB]
+      .filter((t): t is string => Boolean(t && t.trim()))
+      .flatMap(t => t.trim().split(/\s+/))
+      .filter(Boolean);
+    if (tokens.length <= 1) return tokens.join(' ');
+    return tokens
+      .sort((a, b) => this.getMarkTokenRank(a) - this.getMarkTokenRank(b))
+      .join(' ');
+  }
+
+  private static mergeReasoningStrings(r1?: string, r2?: string): string | undefined {
+    const clean1 = (r1 || '').trim();
+    const clean2 = (r2 || '').trim();
+    if (!clean1) return clean2 || undefined;
+    if (!clean2) return clean1 || undefined;
+    if (clean1.toLowerCase() === clean2.toLowerCase()) return clean1;
+    if (clean1.toLowerCase().includes(clean2.toLowerCase())) return clean1;
+    if (clean2.toLowerCase().includes(clean1.toLowerCase())) return clean2;
+
+    const isAnsOnly = (s: string) => /^(?:ans|correct)\s*:/i.test(s);
+    // Always place the diagnostic reason first and "Ans: ..." second
+    if (isAnsOnly(clean1) && !isAnsOnly(clean2)) {
+      const ansPart = clean1.replace(/^Ans\s*:/i, 'ans:');
+      return `${clean2.replace(/[;.,\s]+$/, '')}; ${ansPart}`;
+    }
+    if (!isAnsOnly(clean1) && isAnsOnly(clean2)) {
+      const ansPart = clean2.replace(/^Ans\s*:/i, 'ans:');
+      return `${clean1.replace(/[;.,\s]+$/, '')}; ${ansPart}`;
+    }
+    return `${clean1.replace(/[;.,\s]+$/, '')}; ${clean2}`;
+  }
+
   private static mergeOverlappingAnnotations(annotations: Annotation[], width: number, height: number): Annotation[] {
     if (!annotations || annotations.length < 2) return annotations;
     const mergedInfos = new Map<string, Annotation>();
@@ -1414,8 +1495,16 @@ export class SVGOverlayService {
       const key = `${lineId}|${action}`;
       if (mergedInfos.has(key)) {
         const existing = mergedInfos.get(key)!;
-        const newText = [existing.text, anno.text].filter(t => t).join(' ');
-        mergedInfos.set(key, { ...existing, text: newText });
+        const newText = this.sortMergedMarkCodes(existing.text, anno.text);
+        const mergedReasoning = this.mergeReasoningStrings(
+          (existing as any).reasoning,
+          (anno as any).reasoning
+        );
+        mergedInfos.set(key, {
+          ...existing,
+          text: newText,
+          ...(mergedReasoning ? { reasoning: mergedReasoning } : {})
+        } as Annotation);
       } else {
         mergedInfos.set(key, anno);
       }
