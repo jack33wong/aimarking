@@ -79,7 +79,7 @@ const SearchPage: React.FC<SearchPageProps> = ({ setSidebarOpen, onNewChat }) =>
   };
 
   const handleSessionClick = (session: UnifiedSession) => {
-    navigate('/app');
+    navigate(`/app/${session.id}`);
     const event = new CustomEvent('loadMarkingSession', {
       detail: {
         session: { id: session.id, title: session.title }

@@ -89,7 +89,8 @@ const COLLECTIONS = {
   UNIFIED_SESSIONS: 'unifiedSessions',  // NEW: Single collection with nested messages
   SUBJECT_MARKING_RESULTS: 'subjectMarkingResults',  // NEW: Subject-based marking results
   USAGE_RECORDS: 'usageRecords',  // NEW: Usage statistics for analytics
-  USAGE_TRANSACTIONS: 'usageTransactions' // NEW: Transactional usage history
+  USAGE_TRANSACTIONS: 'usageTransactions', // NEW: Transactional usage history
+  MARKING_JOBS: 'markingJobs' // Active/recent marking job progress & status
 } as const;
 
 // Types for Firestore documents
@@ -1991,6 +1992,55 @@ export class FirestoreService {
       }
     } catch (err) {
       console.warn(`⚠️ [ENGAGEMENT] Failed to persist engagement for session ${sessionId}:`, err);
+    }
+  }
+
+  /**
+   * Upsert active/completed/failed marking job metadata for reload & background polling recovery.
+   */
+  static async upsertMarkingJob(jobId: string, data: Record<string, any>): Promise<void> {
+    try {
+      if (!db || !jobId) return;
+      const sanitized = sanitizeForFirestore(data) || {};
+      await db.collection(COLLECTIONS.MARKING_JOBS).doc(jobId).set(
+        {
+          ...sanitized,
+          updatedAt: Date.now()
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      console.warn(`⚠️ [MARKING-JOB] Failed to upsert marking job ${jobId}:`, err);
+    }
+  }
+
+  /**
+   * Retrieve marking job metadata by sessionId / submissionId.
+   */
+  static async getMarkingJob(jobId: string): Promise<any | null> {
+    try {
+      if (!db || !jobId) return null;
+      const doc = await db.collection(COLLECTIONS.MARKING_JOBS).doc(jobId).get();
+      if (!doc.exists) return null;
+      return {
+        id: doc.id,
+        ...doc.data()
+      };
+    } catch (err) {
+      console.warn(`⚠️ [MARKING-JOB] Failed to get marking job ${jobId}:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Delete marking job metadata.
+   */
+  static async clearMarkingJob(jobId: string): Promise<void> {
+    try {
+      if (!db || !jobId) return;
+      await db.collection(COLLECTIONS.MARKING_JOBS).doc(jobId).delete();
+    } catch (err) {
+      console.warn(`⚠️ [MARKING-JOB] Failed to clear marking job ${jobId}:`, err);
     }
   }
 }

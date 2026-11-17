@@ -1241,9 +1241,16 @@
   cursor: not-allowed;
 }
 
+.followup-rectification-wrapper {
+  margin-top: 14px;
+  margin-bottom: 18px;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
 .rectification-amend-btn {
-  height: 30px;
-  padding: 0 12px;
+  min-height: 30px;
+  padding: 5px 12px;
   background: var(--bg-surface-2);
   color: var(--text-secondary);
   border: 1px solid var(--border-main);
@@ -1254,6 +1261,9 @@
   gap: 8px;
   font-size: 12px;
   font-weight: 500;
+  line-height: 1.35;
+  text-align: left;
+  max-width: 100%;
   transition: all 0.16s ease;
 }
 
@@ -1266,4 +1276,27 @@
 .rectification-amend-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.rectification-amend-label-mobile {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .followup-rectification-wrapper {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .rectification-amend-btn {
+    padding: 6px 12px;
+  }
+
+  .rectification-amend-label-desktop {
+    display: none;
+  }
+
+  .rectification-amend-label-mobile {
+    display: inline;
+  }
 }

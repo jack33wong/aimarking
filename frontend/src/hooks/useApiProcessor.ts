@@ -6,6 +6,7 @@ import type { UnifiedMessage, UnifiedSession } from '../types';
 interface ApiState {
   isProcessing: boolean;
   isAIThinking: boolean;
+  processingSessionId: string | null;
   error: string | null;
   loadingProgress: number;
   loadingStep: number;
@@ -29,6 +30,7 @@ export const useApiProcessor = () => {
   const [apiState, setApiState] = useState<ApiState>({
     isProcessing: false,
     isAIThinking: false,
+    processingSessionId: null,
     error: null,
     loadingProgress: 0,
     loadingStep: 0,
@@ -40,16 +42,33 @@ export const useApiProcessor = () => {
     currentStepIndex: 0,
   });
 
-  const startProcessing = useCallback(() => {
-    setApiState(prev => ({ ...prev, isProcessing: true, error: null, loadingProgress: 0, loadingMessage: 'Processing...' }));
+  const startProcessing = useCallback((sessionId: string | null = null) => {
+    const resolvedSessionId = sessionId || (simpleSessionService.getCurrentSession() as any)?.id || null;
+    setApiState(prev => ({
+      ...prev,
+      isProcessing: true,
+      processingSessionId: resolvedSessionId,
+      error: null,
+      loadingProgress: 0,
+      loadingMessage: 'Processing...'
+    }));
   }, []);
 
-  const stopProcessing = useCallback(() => {
-    setApiState(prev => ({ ...prev, isProcessing: false }));
+  const stopProcessing = useCallback((targetSessionId: string | null = null) => {
+    setApiState(prev => {
+      if (targetSessionId && prev.processingSessionId && prev.processingSessionId !== targetSessionId) {
+        return prev;
+      }
+      return { ...prev, isProcessing: false, processingSessionId: null };
+    });
   }, []);
 
-  const startAIThinking = useCallback((progressData: any = null, aiMessageId?: string, imageDataArray?: any[]) => {
-    setApiState(prev => ({ ...prev, isAIThinking: true }));
+  const startAIThinking = useCallback((progressData: any = null, aiMessageId?: string, imageDataArray?: any[], targetSessionId: string | null = null) => {
+    setApiState(prev => ({
+      ...prev,
+      isAIThinking: true,
+      ...(targetSessionId ? { processingSessionId: targetSessionId } : {})
+    }));
 
     // Use provided aiMessageId or generate one
     // This ensures React treats processing and final messages as the same component
@@ -63,13 +82,21 @@ export const useApiProcessor = () => {
       imageDataArray: imageDataArray || [],
       timestamp: new Date().toISOString()
     };
-    simpleSessionService.addMessage(processingMessage);
+    (simpleSessionService.addMessage as any)(processingMessage, targetSessionId);
   }, []);
 
-  const stopAIThinking = useCallback(() => {
-    setApiState(prev => ({ ...prev, isAIThinking: false }));
+  const stopAIThinking = useCallback((targetSessionId: string | null = null) => {
+    setApiState(prev => {
+      if (targetSessionId && prev.processingSessionId && prev.processingSessionId !== targetSessionId) {
+        return prev;
+      }
+      return { ...prev, isAIThinking: false };
+    });
 
     const currentSession = simpleSessionService.getCurrentSession() as any;
+    if (targetSessionId && currentSession?.id && currentSession.id !== targetSessionId) {
+      return;
+    }
     if (currentSession?.messages && Array.isArray(currentSession.messages)) {
       const updatedMessages = currentSession.messages
         .map((msg: any) => {
@@ -93,26 +120,37 @@ export const useApiProcessor = () => {
     }
   }, []);
 
-  const handleError = useCallback((error: Error) => {
-    setApiState(prev => ({ ...prev, isProcessing: false, isAIThinking: false, error: error.message || 'An unknown error occurred' }));
+  const handleError = useCallback((error: Error & { isTransportDisconnect?: boolean }) => {
+    if (error?.isTransportDisconnect) {
+      return;
+    }
+    setApiState(prev => ({ ...prev, isProcessing: false, isAIThinking: false, processingSessionId: null, error: error.message || 'An unknown error occurred' }));
   }, []);
 
-  const updateProgress = useCallback((data: ProgressData) => {
+  const updateProgress = useCallback((data: ProgressData, targetSessionId: string | null = null) => {
     const currentStepIndex = data.currentStepIndex || 0;
     const totalSteps = (data.allSteps || []).length;
 
-    setApiState(prev => ({
-      ...prev,
-      loadingMessage: data.currentStepDescription || prev.loadingMessage,
-      progressData: data,
-      stepList: data.allSteps || [],
-      currentStepIndex: currentStepIndex,
-      loadingStep: currentStepIndex + (data.isComplete ? 0 : 1),
-      loadingTotalSteps: totalSteps,
-      loadingProgress: data.isComplete ? 100 : Math.round((currentStepIndex / (totalSteps || 1)) * 100)
-    }));
+    setApiState(prev => {
+      if (targetSessionId && prev.processingSessionId && prev.processingSessionId !== targetSessionId) {
+        return prev;
+      }
+      return {
+        ...prev,
+        loadingMessage: data.currentStepDescription || prev.loadingMessage,
+        progressData: data,
+        stepList: data.allSteps || [],
+        currentStepIndex: currentStepIndex,
+        loadingStep: currentStepIndex + (data.isComplete ? 0 : 1),
+        loadingTotalSteps: totalSteps,
+        loadingProgress: data.isComplete ? 100 : Math.round((currentStepIndex / (totalSteps || 1)) * 100)
+      };
+    });
 
     const currentSession = simpleSessionService.getCurrentSession() as UnifiedSession | null;
+    if (targetSessionId && currentSession?.id && currentSession.id !== targetSessionId) {
+      return;
+    }
     if (currentSession?.messages?.length) {
       const processingMessageIndex = [...currentSession.messages].reverse().findIndex(m => m.isProcessing);
 
@@ -127,32 +165,62 @@ export const useApiProcessor = () => {
         };
 
         // Use the simpler update method
-        simpleSessionService.updateMessageInCurrentSession(messageToUpdate.id, { progressData });
+        (simpleSessionService.updateMessageInCurrentSession as any)(messageToUpdate.id, { progressData }, targetSessionId);
       }
     }
   }, []);
 
-  const processImageAPI = useCallback(async (imageData: string, model: string, mode: string, customText?: string, aiMessageId?: string, originalFileName?: string) => {
+  const processImageAPI = useCallback(async (
+    imageData: string,
+    model: string,
+    mode: string,
+    customText?: string,
+    aiMessageId?: string,
+    originalFileName?: string,
+    extraParams?: any,
+    onProgressOverride?: (data: ProgressData) => void
+  ) => {
+    const targetSessionId = extraParams?.submissionId || extraParams?.sessionId || null;
     try {
-      // 👇 FIX: Use a type assertion `as any` for the callback as well to resolve the type mismatch.
-      const result = await simpleSessionService.processImageWithProgress(
-        imageData, model, mode, customText as any, updateProgress as any, aiMessageId as any, originalFileName as any
+      const onProgress = (data: ProgressData) => {
+        updateProgress(data, targetSessionId);
+        if (onProgressOverride) onProgressOverride(data);
+      };
+      const result = await (simpleSessionService.processImageWithProgress as any)(
+        imageData, model, mode, customText as any, onProgress as any, aiMessageId as any, originalFileName as any, extraParams
       );
       return result;
     } catch (error) {
-      handleError(error as Error);
+      if (!(error as any)?.isTransportDisconnect) {
+        handleError(error as Error);
+      }
       throw error;
     }
   }, [updateProgress, handleError]);
 
-  const processMultiImageAPI = useCallback(async (files: File[], model: string, mode: string, customText?: string, aiMessageId?: string, extraParams?: any) => {
+  const processMultiImageAPI = useCallback(async (
+    files: File[],
+    model: string,
+    mode: string,
+    customText?: string,
+    aiMessageId?: string,
+    extraParams?: any,
+    onProgressOverride?: (data: ProgressData) => void
+  ) => {
+    const targetSessionId = extraParams?.submissionId || extraParams?.sessionId || null;
     try {
+      const onProgress = (data: ProgressData) => {
+        updateProgress(data, targetSessionId);
+        if (onProgressOverride) onProgressOverride(data);
+      };
       const result = await simpleSessionService.processMultiImageWithProgress(
-        files, model, mode, customText as any, updateProgress as any, aiMessageId as any, extraParams
+        files, model, mode, customText as any, onProgress as any, aiMessageId as any, extraParams
       );
       return result;
     } catch (error) {
-      handleError(error as Error);
+      if (!(error as any)?.isTransportDisconnect) {
+        handleError(error as Error);
+      }
       throw error;
     }
   }, [updateProgress, handleError]);
@@ -160,8 +228,10 @@ export const useApiProcessor = () => {
   const processStreamRequest = useCallback(async (
     endpoint: string,
     body: any,
-    stepMapping: Record<string, number> = {}
+    stepMapping: Record<string, number> = {},
+    onProgressOverride?: (data: ProgressData) => void
   ) => {
+    const targetSessionId = body?.targetSessionId || body?.sessionId || null;
     try {
       // Wrapper to handle progress updates from stream
       const onProgress = (data: any) => {
@@ -174,7 +244,8 @@ export const useApiProcessor = () => {
         if (data.step && stepMapping[data.step] !== undefined) {
           data.currentStepIndex = stepMapping[data.step];
         }
-        updateProgress(data);
+        updateProgress(data, targetSessionId);
+        if (onProgressOverride) onProgressOverride(data);
       };
 
       // Call the generic stream processor
@@ -188,7 +259,9 @@ export const useApiProcessor = () => {
       );
       return result;
     } catch (error) {
-      handleError(error as Error);
+      if (!(error as any)?.isTransportDisconnect) {
+        handleError(error as Error);
+      }
       throw error;
     }
   }, [updateProgress, handleError]);
@@ -219,6 +292,7 @@ export const useApiProcessor = () => {
     updateProgress,
     processImageAPI,
     processMultiImageAPI,
+    processStreamRequest,
     setShowProgressDetails
   ]);
 };

@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, useLocat
 import { AuthProvider } from './contexts/AuthContext';
 import { ModelProvider } from './contexts/ModelContext';
 import { MarkingPageProvider } from './contexts/MarkingPageContext';
+import { MarkingJobProvider } from './contexts/MarkingJobContext';
 import ProtectedRoute from './components/auth/ProtectedRoute';
 import OptionalAuthRoute from './components/auth/OptionalAuthRoute';
 import { Sidebar, Header } from './components/layout';
@@ -131,6 +132,10 @@ function AppContent() {
       setAutoSplit(autoSplit || false);
       setInitialImageIndex(initialImageIndex || 0);
 
+      if (session?.id && !window.location.pathname.startsWith(`/app/${session.id}`)) {
+        navigate(`/app/${session.id}`);
+      }
+
       // If session is incomplete (missing messages), fetch it
       if (!session.messages) {
         try {
@@ -173,7 +178,7 @@ function AppContent() {
 
   const handleMarkingHistoryClick = async (result: MarkingResult & { id: string }) => {
     setIsHistoryLoading(true);
-    navigate('/app');
+    navigate(`/app/${result.id}`);
     try {
       const { simpleSessionService } = await import('./services/markingApiService');
       const response = await simpleSessionService.getSession(result.id);
@@ -194,6 +199,7 @@ function AppContent() {
     trackFunnelEvent('workspace_reset_clicked', {});
     setSelectedMarkingResult(null);
     setMarkHomeworkResetKey(prev => prev + 1);
+    navigate('/app');
   };
 
   // 👇 FIX: Add the missing handleMarkingResultSaved function.
@@ -269,12 +275,12 @@ function AppContent() {
         } />
 
 
-        <Route path="/app" element={
+        <Route path="/app/:sessionId?" element={
           <OptionalAuthRoute>
             <MainLayoutWrapper {...layoutProps} rightSideClass={isChatMode ? 'chat-mode' : ''}>
               <div className="mark-homework-main-content">
                 <MarkingPageProvider
-                  key={markHomeworkResetKey}
+                  resetSignal={markHomeworkResetKey}
                   selectedMarkingResult={selectedMarkingResult}
                   isHistoryLoading={isHistoryLoading}
                   onPageModeChange={setIsChatMode}
@@ -345,7 +351,9 @@ const App: React.FC = () => {
           }}>
             <ScrollToTop />
             <AnalyticsTracker />
-            <AppContent />
+            <MarkingJobProvider>
+              <AppContent />
+            </MarkingJobProvider>
             <UnifiedProfileModal />
           </Router>
         </ModelProvider>

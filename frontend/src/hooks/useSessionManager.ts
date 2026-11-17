@@ -64,8 +64,8 @@ export const useSessionManager = () => {
     };
   }, [getAuthToken]);
 
-  const addMessage = useCallback(async (message: Partial<UnifiedMessage>) => {
-    await simpleSessionService.addMessage(message);
+  const addMessage = useCallback(async (message: Partial<UnifiedMessage>, targetSessionId?: string | null) => {
+    await simpleSessionService.addMessage(message, targetSessionId);
   }, []);
 
   const clearSession = useCallback(() => {

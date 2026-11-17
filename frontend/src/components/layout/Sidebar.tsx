@@ -27,6 +27,7 @@ import {
   Search
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { useMarkingJob } from '../../contexts/MarkingJobContext';
 import { useSubscription } from '../../hooks/useSubscription';
 import MarkingHistoryService from '../../services/markingHistoryService';
 import { simpleSessionService } from '../../services/markingApiService';
@@ -60,6 +61,7 @@ const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const navigate = useNavigate();
   const { user, getAuthToken, isAdmin } = useAuth();
+  const { jobsBySessionId, dismissJob } = useMarkingJob();
   const [chatSessions, setChatSessions] = useState<UnifiedSession[]>([]);
   const [activeTab, setActiveTab] = useState<string>(() => (isAdmin() ? 'admin_all' : 'all'));
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
@@ -426,8 +428,11 @@ const Sidebar: React.FC<SidebarProps> = ({
       await MarkingHistoryService.deleteSession(sessionToDelete, authToken);
       const deletedId = sessionToDelete;
       setSessionToDelete(null);
+      dismissJob(deletedId);
       EventManager.dispatch(EVENT_TYPES.SESSION_DELETED, { sessionId: deletedId });
-      handleGoToMarkHomework();
+      if (selectedSessionId === deletedId || window.location.pathname === `/app/${deletedId}`) {
+        handleGoToMarkHomework();
+      }
     } catch (error) {
       console.error('Error deleting session:', error);
       setSessionToDelete(null);
@@ -783,6 +788,21 @@ const Sidebar: React.FC<SidebarProps> = ({
                               )}
                             </div>
                             <div className="mark-history-status-indicators">
+                              {jobsBySessionId[session.id]?.status === 'processing' && (
+                                <span
+                                  className="sidebar-job-spinner"
+                                  title="Marking in progress"
+                                  style={{
+                                    width: '12px',
+                                    height: '12px',
+                                    border: '2px solid rgba(148,163,184,0.3)',
+                                    borderTopColor: '#38bdf8',
+                                    borderRadius: '50%',
+                                    display: 'inline-block',
+                                    animation: 'spin 1s linear infinite'
+                                  }}
+                                />
+                              )}
                               {session.favorite && <Star size={12} className="favorite-star-sidebar" />}
                               {(session as any).pinned && <Pin size={12} className="pinned-icon-sidebar" />}
                             </div>

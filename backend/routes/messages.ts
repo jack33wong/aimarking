@@ -842,20 +842,88 @@ router.get('/session/:sessionId', optionalAuth, async (req, res) => {
   try {
     const { sessionId } = req.params;
 
-    const session = await FirestoreService.getUnifiedSession(sessionId);
+    const [session, job] = await Promise.all([
+      FirestoreService.getUnifiedSession(sessionId),
+      FirestoreService.getMarkingJob(sessionId)
+    ]);
 
-    if (!session) {
-      return res.status(404).json({
-        success: false,
-        error: 'Session not found'
+    const requesterId = req.user?.uid || null;
+    const isAdmin = req.user?.role === 'admin';
+
+    const hasOwnedId = (ownerId: any) =>
+      Boolean(ownerId && ownerId !== 'guest' && ownerId !== 'anonymous');
+
+    if (session && hasOwnedId(session.userId)) {
+      if (!isAdmin && (!requesterId || requesterId !== session.userId)) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied'
+        });
+      }
+    }
+
+    if (job && hasOwnedId(job.userId)) {
+      if (!isAdmin && (!requesterId || requesterId !== job.userId)) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied'
+        });
+      }
+    }
+
+    const JOB_FRESHNESS_MS = 15 * 60 * 1000;
+    const isJobFresh = Boolean(
+      job &&
+      typeof job.updatedAt === 'number' &&
+      (Date.now() - job.updatedAt) < JOB_FRESHNESS_MS
+    );
+
+    if (isJobFresh && job.status === 'processing') {
+      return res.json({
+        success: true,
+        status: 'processing',
+        sessionId,
+        progressData: job.progressData || null,
+        isRemark: Boolean(job.isRemark),
+        startedAt: job.startedAt || job.updatedAt,
+        ...(session ? { session, messages: session.messages } : {})
       });
     }
 
-    return res.json({
-      success: true,
-      session,
-      sessionId,
-      messages: session.messages,
+    if (isJobFresh && job.status === 'failed' && !(job.isRemark && session)) {
+      return res.json({
+        success: true,
+        status: 'failed',
+        sessionId,
+        error: job.error || 'Marking failed',
+        credits_exhausted: Boolean(job.credits_exhausted),
+        ...(job.fallbackResult ? { fallbackResult: job.fallbackResult } : {}),
+        ...(session ? { session, messages: session.messages } : {})
+      });
+    }
+
+    if (session) {
+      return res.json({
+        success: true,
+        status: 'completed',
+        session,
+        sessionId,
+        messages: session.messages,
+      });
+    }
+
+    if (job?.fallbackResult) {
+      return res.json({
+        success: true,
+        status: 'completed',
+        sessionId,
+        fallbackResult: job.fallbackResult
+      });
+    }
+
+    return res.status(404).json({
+      success: false,
+      error: 'Session not found'
     });
   } catch (error) {
     console.error('Failed to get UnifiedSession:', error);

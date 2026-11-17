@@ -278,7 +278,7 @@ const LibraryPage: React.FC<LibraryPageProps> = ({ setSidebarOpen }) => {
   // Handle thumbnail click - Navigate to marking page in split mode
   const handleThumbnailClick = (item: LibraryItem, imageIndex: number) => {
     // Navigate to marking page
-    navigate('/app');
+    navigate(`/app/${item.sessionId}`);
 
     // Dispatch event to load session with autoSplit instruction
     const event = new CustomEvent('loadMarkingSession', {

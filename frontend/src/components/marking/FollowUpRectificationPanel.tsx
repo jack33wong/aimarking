@@ -203,7 +203,7 @@ export const FollowUpRectificationPanel: React.FC<FollowUpRectificationPanelProp
   }
 
   return (
-    <div className="followup-rectification-wrapper" style={{ marginTop: '14px', marginBottom: '18px', paddingLeft: '12px', paddingRight: '12px' }}>
+    <div className="followup-rectification-wrapper">
       <input
         ref={fileInputRef}
         type="file"
@@ -317,7 +317,12 @@ export const FollowUpRectificationPanel: React.FC<FollowUpRectificationPanelProp
             onClick={() => setIsPaperDrawerOpen(true)}
           >
             <Link2 size={13} style={{ flexShrink: 0 }} />
-            <span>Wrong paper or question detected? Amend Official Paper</span>
+            <span className="rectification-amend-label-desktop">
+              Wrong paper or question detected? Amend Official Paper
+            </span>
+            <span className="rectification-amend-label-mobile">
+              Wrong paper or question? Amend Paper
+            </span>
           </button>
         </div>
       )}

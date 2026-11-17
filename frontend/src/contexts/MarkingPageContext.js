@@ -1,9 +1,10 @@
 import React, { createContext, useContext, useCallback, useReducer, useMemo, useRef, useEffect } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useImageUpload } from '../hooks/useImageUpload';
 import { useSessionManager } from '../hooks/useSessionManager';
 import { useApiProcessor } from '../hooks/useApiProcessor';
 import { useAuth } from './AuthContext';
+import { useMarkingJob } from './MarkingJobContext';
 import { simpleSessionService } from '../services/markingApiService';
 import apiClient from '../services/apiClient';
 import { useScrollManager } from '../hooks/useScrollManager';
@@ -53,6 +54,17 @@ const retrieveAndClearStash = async () => {
 };
 
 const MarkingPageContext = createContext();
+
+const MARKING_PIPELINE_STEPS = [
+  'Input Validation',
+  'Standardization',
+  'Preprocessing',
+  'OCR & Classification',
+  'Question Detection',
+  'Segmentation',
+  'Marking',
+  'Output Generation'
+];
 
 const getSavedModel = () => {
   try {
@@ -159,9 +171,14 @@ export const MarkingPageProvider = ({
   onProcessingChange,
   setSidebarOpen,
   autoSplit = false,
-  initialImageIndex = 0
+  initialImageIndex = 0,
+  resetSignal = 0
 }) => {
   const { user, loading: authLoading, getAuthToken } = useAuth();
+  const { sessionId: routeSessionId } = useParams();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { registerJob, updateJobProgress, completeJob, failJob, startPollingJob, getJobForSession } = useMarkingJob();
   const pendingUploadRef = useRef(null);
   const { selectedFile, processImage, clearFile, handleFileSelect } = useImageUpload();
 
@@ -207,16 +224,39 @@ export const MarkingPageProvider = ({
   const { isProcessing, isAIThinking, error } = apiProcessor;
   const { startProcessing, stopProcessing, startAIThinking, stopAIThinking, processImageAPI, processMultiImageAPI, handleError } = apiProcessor;
 
+  const activeViewedSessionId = routeSessionId || currentSession?.id || null;
+  const activeRouteJob = getJobForSession(activeViewedSessionId);
+  const isJobActiveForViewedSession = Boolean(activeRouteJob && activeRouteJob.status === 'processing');
+  const isProcessorForCurrentSession = !apiProcessor.processingSessionId || apiProcessor.processingSessionId === activeViewedSessionId;
+  const isCurrentSessionProcessing = Boolean((isProcessing && isProcessorForCurrentSession) || isJobActiveForViewedSession);
+  const isCurrentSessionThinking = Boolean((isAIThinking && isProcessorForCurrentSession) || isJobActiveForViewedSession);
+
   const progressProps = useMemo(() => {
     const {
       loadingProgress, loadingStep, loadingTotalSteps, loadingMessage,
       showProgressDetails, progressData, stepList, currentStepIndex, updateProgress, setShowProgressDetails
     } = apiProcessor;
+    const resolvedProgressData = isJobActiveForViewedSession
+      ? (activeRouteJob?.progressData || progressData)
+      : (isProcessorForCurrentSession ? progressData : null);
+    const resolvedStepIndex = resolvedProgressData?.currentStepIndex ?? (isProcessorForCurrentSession ? currentStepIndex : 0);
+    const resolvedStepList = resolvedProgressData?.allSteps ?? (isProcessorForCurrentSession ? stepList : []);
+    const resolvedTotalSteps = resolvedStepList.length || (isProcessorForCurrentSession ? loadingTotalSteps : null);
     return {
-      loadingProgress, loadingStep, loadingTotalSteps, loadingMessage,
-      showProgressDetails, progressData, stepList, currentStepIndex, updateProgress, setShowProgressDetails
+      loadingProgress: resolvedProgressData?.isComplete
+        ? 100
+        : (resolvedTotalSteps ? Math.round((resolvedStepIndex / resolvedTotalSteps) * 100) : (isProcessorForCurrentSession ? loadingProgress : 0)),
+      loadingStep: resolvedStepIndex + (resolvedProgressData?.isComplete ? 0 : 1),
+      loadingTotalSteps: resolvedTotalSteps,
+      loadingMessage: resolvedProgressData?.currentStepDescription || (isProcessorForCurrentSession ? loadingMessage : 'Processing...'),
+      showProgressDetails,
+      progressData: resolvedProgressData,
+      stepList: resolvedStepList,
+      currentStepIndex: resolvedStepIndex,
+      updateProgress,
+      setShowProgressDetails
     };
-  }, [apiProcessor]);
+  }, [apiProcessor, isJobActiveForViewedSession, activeRouteJob?.progressData, isProcessorForCurrentSession]);
 
   const { models, defaultModel: dynamicDefaultModel, isLoading: isModelsLoading } = useModels();
 
@@ -242,6 +282,21 @@ export const MarkingPageProvider = ({
   const lastSyncedModeSessionId = useRef(null);
   const userClosedSplitSessionIdRef = useRef(null);
   const lastUploadedStudentFilesRef = useRef([]);
+  const prevResetSignalRef = useRef(resetSignal);
+
+  useEffect(() => {
+    if (resetSignal !== prevResetSignalRef.current) {
+      prevResetSignalRef.current = resetSignal;
+      clearSession();
+      const savedModel = getSavedModel();
+      dispatch({ type: 'SET_SELECTED_MODEL', payload: savedModel });
+      window.dispatchEvent(new CustomEvent('modelChanged', { detail: savedModel }));
+      dispatch({ type: 'SET_PAGE_MODE', payload: 'upload' });
+      dispatch({ type: 'EXIT_SPLIT_MODE' });
+      lastSyncedSessionId.current = null;
+      lastHandledSessionIdRef.current = null;
+    }
+  }, [resetSignal, clearSession]);
 
   // Load session when selectedMarkingResult prop changes (e.g., from Sidebar history click)
   useEffect(() => {
@@ -276,7 +331,7 @@ export const MarkingPageProvider = ({
       dispatch({ type: 'SET_SELECTED_MODEL', payload: sessionModel });
       window.dispatchEvent(new CustomEvent('modelChanged', { detail: sessionModel }));
       dispatch({ type: 'SET_PAGE_MODE', payload: 'chat' });
-    } else {
+    } else if (!routeSessionId) {
       clearSession();
       const savedModel = getSavedModel();
       dispatch({ type: 'SET_SELECTED_MODEL', payload: savedModel });
@@ -285,7 +340,128 @@ export const MarkingPageProvider = ({
       dispatch({ type: 'EXIT_SPLIT_MODE' });
       lastSyncedSessionId.current = null;
     }
-  }, [selectedMarkingResult, loadSession, clearSession]);
+  }, [selectedMarkingResult, routeSessionId, loadSession, clearSession]);
+
+  const getJobForSessionRef = useRef(getJobForSession);
+  getJobForSessionRef.current = getJobForSession;
+
+  // URL hydration for /app/:sessionId (reload recovery & deep links)
+  useEffect(() => {
+    if (!routeSessionId || authLoading) return;
+
+    const liveSession = simpleSessionService.getCurrentSession();
+    if (liveSession?.id === routeSessionId && Array.isArray(liveSession.messages) && liveSession.messages.length > 0) {
+      dispatch({ type: 'SET_PAGE_MODE', payload: 'chat' });
+      const existingJob = getJobForSessionRef.current(routeSessionId);
+      if (existingJob?.status === 'processing' && apiProcessor.processingSessionId !== routeSessionId) {
+        startPollingJob(routeSessionId);
+      }
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await simpleSessionService.getSession(routeSessionId);
+        if (cancelled) return;
+
+        if (res?.status === 'processing') {
+          registerJob({
+            sessionId: routeSessionId,
+            title: res.session?.title || 'Marking...',
+            isRemark: Boolean(res.isRemark),
+            progressData: res.progressData || {
+              currentStepDescription: 'Processing...',
+              allSteps: MARKING_PIPELINE_STEPS,
+              currentStepIndex: 0,
+              isComplete: false
+            }
+          });
+          if (res.session) {
+            loadSession(res.session);
+          } else {
+            simpleSessionService.initClientSession(routeSessionId, 'Processing...');
+            const currentAfterInit = simpleSessionService.getCurrentSession();
+            const hasProcessingMsg = (currentAfterInit?.messages || []).some(m => m.isProcessing);
+            if (!hasProcessingMsg) {
+              await simpleSessionService.addMessage({
+                id: `ai-resume-${routeSessionId}`,
+                role: 'assistant',
+                content: '',
+                isProcessing: true,
+                progressData: res.progressData || {
+                  currentStepDescription: 'Processing...',
+                  allSteps: MARKING_PIPELINE_STEPS,
+                  currentStepIndex: 0,
+                  isComplete: false
+                },
+                timestamp: new Date().toISOString()
+              }, routeSessionId);
+            }
+          }
+          dispatch({ type: 'SET_PAGE_MODE', payload: 'chat' });
+          startPollingJob(routeSessionId);
+          return;
+        }
+
+        if (res?.status === 'failed') {
+          failJob(routeSessionId, res.error || 'Marking failed');
+          if (res.fallbackResult) {
+            simpleSessionService.initClientSession(routeSessionId, res.fallbackResult.sessionTitle || 'Upload Issue');
+            simpleSessionService.handleProcessComplete(
+              res.fallbackResult,
+              'fast',
+              res.fallbackResult?.aiMessage?.id || null,
+              routeSessionId
+            );
+            dispatch({ type: 'SET_PAGE_MODE', payload: 'chat' });
+          } else if (res.session) {
+            loadSession(res.session);
+            dispatch({ type: 'SET_PAGE_MODE', payload: 'chat' });
+          } else {
+            clearSession();
+            dispatch({ type: 'SET_PAGE_MODE', payload: 'upload' });
+            handleError(new Error(res.error || 'Marking failed'));
+          }
+          return;
+        }
+
+        if (res?.status === 'completed' || res?.session || res?.fallbackResult) {
+          completeJob(routeSessionId);
+          if (res.session) {
+            loadSession(res.session);
+            const sessionModel = getSessionModel(res.session);
+            dispatch({ type: 'SET_SELECTED_MODEL', payload: sessionModel });
+            window.dispatchEvent(new CustomEvent('modelChanged', { detail: sessionModel }));
+            dispatch({ type: 'SET_PAGE_MODE', payload: 'chat' });
+          } else if (res.fallbackResult) {
+            simpleSessionService.initClientSession(routeSessionId, res.fallbackResult.sessionTitle || 'Marking Session');
+            simpleSessionService.handleProcessComplete(
+              res.fallbackResult,
+              res.fallbackResult?.processingStats?.modelUsed || 'fast',
+              res.fallbackResult?.aiMessage?.id || null,
+              routeSessionId
+            );
+            dispatch({ type: 'SET_PAGE_MODE', payload: 'chat' });
+          }
+        }
+      } catch (err) {
+        if (cancelled) return;
+        const status = err?.response?.status;
+        if (status === 404 || status === 403) {
+          clearSession();
+          dispatch({ type: 'SET_PAGE_MODE', payload: 'upload' });
+          navigate('/app', { replace: true });
+        } else {
+          console.error('Failed to hydrate session from URL:', err);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [routeSessionId, authLoading, loadSession, clearSession, registerJob, completeJob, failJob, startPollingJob, apiProcessor.processingSessionId, handleError, navigate]);
 
   // Sync specialized mode flags based on session usageMode or chat content (to hide ribbon in history)
   // ONLY run on initial session load to avoid overwriting manual toggles
@@ -401,7 +577,8 @@ export const MarkingPageProvider = ({
     const sessionChanged = currentSession.id !== lastSyncedSessionId.current;
 
     // SAFETY: If we are in the middle of a history transition, don't revert to old session data
-    if (sessionChanged && selectedMarkingResult && currentSession.id !== selectedMarkingResult.id) {
+    const expectedSessionId = routeSessionId || selectedMarkingResult?.id;
+    if (sessionChanged && expectedSessionId && currentSession.id !== expectedSessionId) {
       return;
     }
 
@@ -413,7 +590,7 @@ export const MarkingPageProvider = ({
                            (currentSession.messages || []).some(m => m.type === 'question_response');
     
     // 🌟 SIMPLIFIED FIX: Detect any active processing
-    const isActivelyProcessing = isProcessing || isAIThinking;
+    const isActivelyProcessing = isCurrentSessionProcessing || isCurrentSessionThinking;
 
     const isUserClosed = userClosedSplitSessionIdRef.current === currentSession.id;
 
@@ -540,7 +717,7 @@ export const MarkingPageProvider = ({
     scrollToBottom,
     scrollToNewResponse,
     scrollToMessage,
-  } = useScrollManager(chatMessages, isAIThinking);
+  } = useScrollManager(chatMessages, isCurrentSessionThinking);
 
   // This effect connects the service to the API state controls from our hook.
   useEffect(() => {
@@ -557,9 +734,9 @@ export const MarkingPageProvider = ({
 
   useEffect(() => {
     if (onProcessingChange) {
-      onProcessingChange(isProcessing);
+      onProcessingChange(isCurrentSessionProcessing);
     }
-  }, [isProcessing, onProcessingChange]);
+  }, [isCurrentSessionProcessing, onProcessingChange]);
 
   const onSendMessage = useCallback(async (text) => {
     const trimmedText = text.trim();
@@ -581,9 +758,12 @@ export const MarkingPageProvider = ({
       return match ? match[1] : null;
     };
 
+    const liveSession = simpleSessionService.getCurrentSession() || currentSession;
+    const targetSessionId = liveSession?.id || null;
+
     try {
       textRequestInProgress.current = true;
-      startProcessing();
+      startProcessing(targetSessionId);
 
       const explicitQuestionId = extractQuestionNumber(trimmedText);
       const effectiveQuestionId = explicitQuestionId || activeQuestionId;
@@ -601,7 +781,7 @@ export const MarkingPageProvider = ({
         timestamp: new Date().toISOString(),
         type: 'text',
         contextQuestionId: effectiveQuestionId
-      });
+      }, targetSessionId);
       dispatch({ type: 'SET_PAGE_MODE', payload: 'chat' });
 
       const textProgressData = {
@@ -613,14 +793,14 @@ export const MarkingPageProvider = ({
 
       // Generate a predictable AI message ID that backend can use
       const aiMessageId = createAIMessageId(trimmedText);
-      startAIThinking(textProgressData, aiMessageId, []); // For text messages, imageDataArray is empty
+      startAIThinking(textProgressData, aiMessageId, [], targetSessionId); // For text messages, imageDataArray is empty
 
       // --- NEW: Context Chat Support for Guests ---
       // If the user is unauthenticated, the backend won't have the session context in DB.
       // We send the marking context from the latest AI message in the frontend state.
       let guestMarkingContext = null;
-      if (!user && currentSession?.messages) {
-        const lastMarkingMessage = [...currentSession.messages].reverse().find(msg => msg.markingContext);
+      if (!user && liveSession?.messages) {
+        const lastMarkingMessage = [...liveSession.messages].reverse().find(msg => msg.markingContext);
         if (lastMarkingMessage) {
           guestMarkingContext = lastMarkingMessage.markingContext;
         }
@@ -628,13 +808,13 @@ export const MarkingPageProvider = ({
 
       // Determine usageMode for prompt weighting
       let usageMode = isModelAnswerMode ? 'model-answer' : isMarkingSchemeMode ? 'marking-scheme' : 'chat';
-      const followUpModel = getSessionModel(currentSession) || selectedModel || 'fast';
+      const followUpModel = getSessionModel(liveSession) || selectedModel || 'fast';
 
       const response = await apiClient.post('/api/messages/chat', {
         message: trimmedText,
         messageId: userMessageId, // Pass the local user message ID to backend
         model: followUpModel,
-        sessionId: currentSession?.id || null,
+        sessionId: targetSessionId,
         markingContext: guestMarkingContext, // Send context for guest users
         aiMessageId: aiMessageId, // Pass the AI message ID to backend
         contextQuestionId: effectiveQuestionId, // Pass the active or overridden context
@@ -645,7 +825,7 @@ export const MarkingPageProvider = ({
 
       if (data.success) {
         // Use the new standardized completion handler
-        simpleSessionService.handleTextChatComplete(data, followUpModel);
+        simpleSessionService.handleTextChatComplete(data, followUpModel, targetSessionId);
       } else {
         throw new Error(data.error || 'Failed to get AI response');
       }
@@ -656,8 +836,8 @@ export const MarkingPageProvider = ({
     } catch (err) {
       const guestCheck = extractGuestLimitError(err);
       if (guestCheck.isGuestLimit) {
-        stopAIThinking();
-        stopProcessing();
+        stopAIThinking(targetSessionId);
+        stopProcessing(targetSessionId);
         setGuestLimitInfo({
           usageCount: guestCheck.usageCount,
           usageLimit: guestCheck.usageLimit,
@@ -667,8 +847,8 @@ export const MarkingPageProvider = ({
         textRequestInProgress.current = false;
 
         // If this session has no completed AI responses, clean up the dead chat view
-        const liveSession = simpleSessionService.getCurrentSession();
-        if (!hasCompletedAITurn(liveSession)) {
+        const liveSessionAfter = simpleSessionService.getCurrentSession();
+        if (!hasCompletedAITurn(liveSessionAfter)) {
           clearSession();
           dispatch({ type: 'SET_PAGE_MODE', payload: 'upload' });
         }
@@ -678,8 +858,8 @@ export const MarkingPageProvider = ({
         refreshCredits();
       }
       handleError(err);
-      stopAIThinking();
-      stopProcessing();
+      stopAIThinking(targetSessionId);
+      stopProcessing(targetSessionId);
       textRequestInProgress.current = false;
       return false;
     }
@@ -709,8 +889,11 @@ export const MarkingPageProvider = ({
       return false;
     }
 
+    const liveSession = simpleSessionService.getCurrentSession() || currentSession;
+    const targetSessionId = liveSession?.id || null;
+
     try {
-      startProcessing();
+      startProcessing(targetSessionId);
 
       const userMessageId = `user-${Date.now()}`;
       await addMessage({
@@ -719,7 +902,7 @@ export const MarkingPageProvider = ({
         content: `Generate model answers for: ${trimmedInput}`,
         timestamp: new Date().toISOString(),
         type: 'text'
-      });
+      }, targetSessionId);
       dispatch({ type: 'SET_PAGE_MODE', payload: 'chat' });
 
       // Generate AI message ID
@@ -732,14 +915,14 @@ export const MarkingPageProvider = ({
         currentStepIndex: 0,
       };
 
-      startAIThinking(progressData, aiMessageId, []);
+      startAIThinking(progressData, aiMessageId, [], targetSessionId);
 
       // IMMEDIATELY hide the ribbon - we know this is model-answer before SSE completes.
       // The session object won't have usageMode set yet (backend does that), so set eagerly.
       setIsModelAnswerMode(true);
       setIsMarkingSchemeMode(false);
       // Mark session as synced so the useEffect doesn't overwrite this on next fire
-      lastSyncedModeSessionId.current = currentSession?.id || 'pending-model-answer';
+      lastSyncedModeSessionId.current = targetSessionId || 'pending-model-answer';
 
       // Call the new SSE endpoint
       apiProcessor.processStreamRequest(
@@ -747,7 +930,7 @@ export const MarkingPageProvider = ({
         {
           paper: trimmedInput,
           model: selectedModel || 'fast',
-          sessionId: currentSession?.id || null,
+          sessionId: targetSessionId,
           aiMessageId: aiMessageId
         },
         // Step mapping
@@ -767,8 +950,8 @@ export const MarkingPageProvider = ({
           });
           setShowGuestLimitModal(true);
 
-          const liveSession = simpleSessionService.getCurrentSession();
-          if (!hasCompletedAITurn(liveSession)) {
+          const liveSessionAfter = simpleSessionService.getCurrentSession();
+          if (!hasCompletedAITurn(liveSessionAfter)) {
             clearSession();
             dispatch({ type: 'SET_PAGE_MODE', payload: 'upload' });
           }
@@ -776,21 +959,21 @@ export const MarkingPageProvider = ({
           setShowCreditsModal(true);
         } else {
           handleError(err);
-          const liveSession = simpleSessionService.getCurrentSession();
-          if (!hasCompletedAITurn(liveSession)) {
+          const liveSessionAfter = simpleSessionService.getCurrentSession();
+          if (!hasCompletedAITurn(liveSessionAfter)) {
             clearSession();
             dispatch({ type: 'SET_PAGE_MODE', payload: 'upload' });
           }
         }
-        stopAIThinking();
-        stopProcessing();
+        stopAIThinking(targetSessionId);
+        stopProcessing(targetSessionId);
       });
 
       return true;
     } catch (err) {
       handleError(err);
-      stopAIThinking();
-      stopProcessing();
+      stopAIThinking(targetSessionId);
+      stopProcessing(targetSessionId);
       return false;
     }
   }, [user, isNegative, checkNegativeCredits, selectedModel, currentSession, addMessage, clearSession, startProcessing, stopProcessing, startAIThinking, stopAIThinking, handleError, apiProcessor]);
@@ -815,8 +998,11 @@ export const MarkingPageProvider = ({
       return false;
     }
 
+    const liveSession = simpleSessionService.getCurrentSession() || currentSession;
+    const targetSessionId = liveSession?.id || null;
+
     try {
-      startProcessing();
+      startProcessing(targetSessionId);
 
       const userMessageId = `user-${Date.now()}`;
       await addMessage({
@@ -825,7 +1011,7 @@ export const MarkingPageProvider = ({
         content: `Explain marking scheme for: ${trimmedInput}`,
         timestamp: new Date().toISOString(),
         type: 'text'
-      });
+      }, targetSessionId);
       dispatch({ type: 'SET_PAGE_MODE', payload: 'chat' });
 
       // Generate AI message ID
@@ -838,13 +1024,13 @@ export const MarkingPageProvider = ({
         currentStepIndex: 0,
       };
 
-      startAIThinking(progressData, aiMessageId, []);
+      startAIThinking(progressData, aiMessageId, [], targetSessionId);
 
       // IMMEDIATELY hide the ribbon - we know this is marking-scheme before SSE completes.
       setIsMarkingSchemeMode(true);
       setIsModelAnswerMode(false);
       // Mark session as synced so the useEffect doesn't overwrite this on next fire
-      lastSyncedModeSessionId.current = currentSession?.id || 'pending-marking-scheme';
+      lastSyncedModeSessionId.current = targetSessionId || 'pending-marking-scheme';
 
       // Call the new SSE endpoint
       apiProcessor.processStreamRequest(
@@ -852,7 +1038,7 @@ export const MarkingPageProvider = ({
         {
           paper: trimmedInput,
           model: selectedModel || 'fast',
-          sessionId: currentSession?.id || null,
+          sessionId: targetSessionId,
           aiMessageId: aiMessageId
         },
         // Step mapping
@@ -872,8 +1058,8 @@ export const MarkingPageProvider = ({
           });
           setShowGuestLimitModal(true);
 
-          const liveSession = simpleSessionService.getCurrentSession();
-          if (!hasCompletedAITurn(liveSession)) {
+          const liveSessionAfter = simpleSessionService.getCurrentSession();
+          if (!hasCompletedAITurn(liveSessionAfter)) {
             clearSession();
             dispatch({ type: 'SET_PAGE_MODE', payload: 'upload' });
           }
@@ -881,29 +1067,27 @@ export const MarkingPageProvider = ({
           setShowCreditsModal(true);
         } else {
           handleError(err);
-          const liveSession = simpleSessionService.getCurrentSession();
-          if (!hasCompletedAITurn(liveSession)) {
+          const liveSessionAfter = simpleSessionService.getCurrentSession();
+          if (!hasCompletedAITurn(liveSessionAfter)) {
             clearSession();
             dispatch({ type: 'SET_PAGE_MODE', payload: 'upload' });
           }
         }
-        stopAIThinking();
-        stopProcessing();
+        stopAIThinking(targetSessionId);
+        stopProcessing(targetSessionId);
       });
 
       return true;
     } catch (err) {
       handleError(err);
-      stopAIThinking();
-      stopProcessing();
+      stopAIThinking(targetSessionId);
+      stopProcessing(targetSessionId);
       return false;
     }
   }, [user, isNegative, checkNegativeCredits, selectedModel, currentSession, addMessage, clearSession, startProcessing, stopProcessing, startAIThinking, stopAIThinking, handleError, apiProcessor]);
 
   // Ref to track the last handled session ID to prevent redundant scrolls on every message update
   const lastHandledSessionIdRef = useRef(null);
-  const location = useLocation();
-  const navigate = useNavigate();
 
   /**
    * Handle deep-links and URL parameters
@@ -938,7 +1122,8 @@ export const MarkingPageProvider = ({
   }, [location.search, location.pathname, navigate]);
 
   useEffect(() => {
-    if (selectedMarkingResult && currentSession?.id === selectedMarkingResult.id) {
+    const expectedSessionId = routeSessionId || selectedMarkingResult?.id;
+    if (expectedSessionId && currentSession?.id === expectedSessionId) {
       // Only trigger this "restore position" logic when the session ID actually changes (initial load)
       // OR if it's the very first time we see this session.
       if (lastHandledSessionIdRef.current === currentSession.id) {
@@ -958,7 +1143,7 @@ export const MarkingPageProvider = ({
       return () => clearTimeout(timeoutId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentSession?.id, selectedMarkingResult, scrollToMessage, scrollToBottom]);
+  }, [currentSession?.id, selectedMarkingResult, routeSessionId, scrollToMessage, scrollToBottom]);
 
   const handleImageAnalysis = useCallback(async (file = null, customText = null) => {
     const targetFile = file || selectedFile;
@@ -992,9 +1177,20 @@ export const MarkingPageProvider = ({
       return false;
     }
 
+    const liveSession = simpleSessionService.getCurrentSession();
+    const existingStableSessionId = liveSession?.id && !liveSession.id.startsWith('temp-') ? liveSession.id : null;
+    const clientSubmissionId = existingStableSessionId || `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
     try {
       userClosedSplitSessionIdRef.current = null;
-      startProcessing();
+      simpleSessionService.initClientSession(
+        clientSubmissionId,
+        existingStableSessionId ? liveSession.title : 'Processing...'
+      );
+      if (!existingStableSessionId || routeSessionId !== clientSubmissionId) {
+        navigate(`/app/${clientSubmissionId}`, { replace: true });
+      }
+      startProcessing(clientSubmissionId);
       const imageData = await processImage(targetFile);
       const optimisticMessage = {
         id: `user-${Date.now()}`,
@@ -1005,7 +1201,7 @@ export const MarkingPageProvider = ({
         fileName: targetFile.name,
         contextQuestionId: activeQuestionId
       };
-      await addMessage(optimisticMessage);
+      await addMessage(optimisticMessage, clientSubmissionId);
       dispatch({ type: 'SET_PAGE_MODE', payload: 'chat' });
       // Generate unique AI message ID for image processing
       const imageAiMessageId = createAIMessageId(imageData);
@@ -1013,19 +1209,42 @@ export const MarkingPageProvider = ({
       const imageProgressData = {
         isComplete: false,
         currentStepDescription: 'Analyzing image...',
-        allSteps: ['Analyzing image...'],
+        allSteps: MARKING_PIPELINE_STEPS,
         currentStepIndex: 0,
       };
 
-      startAIThinking(imageProgressData, imageAiMessageId, [imageData]);
+      registerJob({
+        sessionId: clientSubmissionId,
+        title: existingStableSessionId ? liveSession.title : 'Marking...',
+        progressData: imageProgressData
+      });
+      startAIThinking(imageProgressData, imageAiMessageId, [imageData], clientSubmissionId);
 
       // Execute API call in background so UI resets immediately
-      processImageAPI(imageData, selectedModel, 'marking', customText || undefined, imageAiMessageId, targetFile.name)
+      processImageAPI(
+        imageData,
+        selectedModel,
+        'marking',
+        customText || undefined,
+        imageAiMessageId,
+        targetFile.name,
+        { submissionId: clientSubmissionId },
+        (progressData) => updateJobProgress(clientSubmissionId, progressData)
+      )
+        .then(() => {
+          completeJob(clientSubmissionId);
+        })
         .catch(err => {
+          if (err?.isTransportDisconnect) {
+            startPollingJob(clientSubmissionId);
+            return;
+          }
+          failJob(clientSubmissionId, err?.message || 'Marking failed');
+
           const guestCheck = extractGuestLimitError(err);
           if (guestCheck.isGuestLimit) {
-            stopAIThinking();
-            stopProcessing();
+            stopAIThinking(clientSubmissionId);
+            stopProcessing(clientSubmissionId);
             setGuestLimitInfo({
               usageCount: guestCheck.usageCount,
               usageLimit: guestCheck.usageLimit,
@@ -1048,13 +1267,14 @@ export const MarkingPageProvider = ({
             errorMessage: err?.response?.data?.error || err?.message || 'Unknown upload error'
           }, user?.uid);
           handleError(err);
-          const liveSession = simpleSessionService.getCurrentSession();
-          if (!hasCompletedAITurn(liveSession)) {
+          const liveSessionAfter = simpleSessionService.getCurrentSession();
+          if (!hasCompletedAITurn(liveSessionAfter)) {
             clearSession();
             dispatch({ type: 'SET_PAGE_MODE', payload: 'upload' });
+            navigate('/app', { replace: true });
           }
-          stopAIThinking();
-          stopProcessing();
+          stopAIThinking(clientSubmissionId);
+          stopProcessing(clientSubmissionId);
         });
 
       clearFile();
@@ -1098,7 +1318,7 @@ export const MarkingPageProvider = ({
       stopProcessing();
       return false;
     }
-  }, [user, isNegative, checkNegativeCredits, selectedFile, selectedModel, activeQuestionId, processImage, addMessage, clearSession, startProcessing, stopProcessing, startAIThinking, stopAIThinking, processImageAPI, clearFile, handleError]);
+  }, [user, isNegative, checkNegativeCredits, selectedFile, selectedModel, activeQuestionId, routeSessionId, navigate, processImage, addMessage, clearSession, startProcessing, stopProcessing, startAIThinking, stopAIThinking, processImageAPI, clearFile, handleError, registerJob, updateJobProgress, completeJob, failJob, startPollingJob, refreshCredits]);
 
   const handleMultiImageAnalysis = useCallback(async (files = [], customText = null, extraParams = null) => {
     if (!files || files.length === 0) return;
@@ -1132,9 +1352,20 @@ export const MarkingPageProvider = ({
       return false;
     }
 
+    const liveSession = simpleSessionService.getCurrentSession();
+    const existingStableSessionId = liveSession?.id && !liveSession.id.startsWith('temp-') ? liveSession.id : null;
+    const clientSubmissionId = existingStableSessionId || `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
     try {
       userClosedSplitSessionIdRef.current = null;
-      startProcessing();
+      simpleSessionService.initClientSession(
+        clientSubmissionId,
+        existingStableSessionId ? liveSession.title : 'Processing...'
+      );
+      if (!existingStableSessionId || routeSessionId !== clientSubmissionId) {
+        navigate(`/app/${clientSubmissionId}`, { replace: true });
+      }
+      startProcessing(clientSubmissionId);
 
       // Separate PDFs and Images so mixed uploads display properly
       const isPdfFile = (file) => file?.type === 'application/pdf' || (file?.name || '').toLowerCase().endsWith('.pdf');
@@ -1186,7 +1417,7 @@ export const MarkingPageProvider = ({
         fileCount: files.length,
         originalFiles: files.map(f => ({ name: f.name, type: f.type }))
       };
-      await addMessage(optimisticMessage);
+      await addMessage(optimisticMessage, clientSubmissionId);
       dispatch({ type: 'SET_PAGE_MODE', payload: 'chat' });
 
       // Generate unique AI message ID for multi-image processing
@@ -1195,18 +1426,7 @@ export const MarkingPageProvider = ({
       const multiImageProgressData = {
         isComplete: false,
         currentStepDescription: `Processing ${files.length} image(s)...`,
-        allSteps: [
-          'Input Validation',
-          'Standardization',
-          'Preprocessing',
-          'Mapping',
-          'Bucket Allocation',
-          'Classification',
-          'OCR',
-          'Question Detection',
-          'Marking',
-          'Output Generation'
-        ],
+        allSteps: MARKING_PIPELINE_STEPS,
         currentStepIndex: 0,
       };
 
@@ -1214,15 +1434,37 @@ export const MarkingPageProvider = ({
         ...(optimisticMessage.pdfContexts || []),
         ...(optimisticMessage.imageDataArray || [])
       ];
-      startAIThinking(multiImageProgressData, multiImageAiMessageId, thinkingImages);
+      registerJob({
+        sessionId: clientSubmissionId,
+        title: existingStableSessionId ? liveSession.title : 'Marking...',
+        progressData: multiImageProgressData
+      });
+      startAIThinking(multiImageProgressData, multiImageAiMessageId, thinkingImages, clientSubmissionId);
 
       // Execute API call in background so UI resets immediately
-      processMultiImageAPI(files, selectedModel, 'marking', customText || undefined, multiImageAiMessageId, extraParams)
+      processMultiImageAPI(
+        files,
+        selectedModel,
+        'marking',
+        customText || undefined,
+        multiImageAiMessageId,
+        { ...(extraParams || {}), submissionId: clientSubmissionId },
+        (progressData) => updateJobProgress(clientSubmissionId, progressData)
+      )
+        .then(() => {
+          completeJob(clientSubmissionId);
+        })
         .catch(err => {
+          if (err?.isTransportDisconnect) {
+            startPollingJob(clientSubmissionId);
+            return;
+          }
+          failJob(clientSubmissionId, err?.message || 'Marking failed');
+
           const guestCheck = extractGuestLimitError(err);
           if (guestCheck.isGuestLimit) {
-            stopAIThinking();
-            stopProcessing();
+            stopAIThinking(clientSubmissionId);
+            stopProcessing(clientSubmissionId);
             setGuestLimitInfo({
               usageCount: guestCheck.usageCount,
               usageLimit: guestCheck.usageLimit,
@@ -1245,13 +1487,14 @@ export const MarkingPageProvider = ({
             errorMessage: err?.response?.data?.error || err?.message || 'Unknown upload error'
           }, user?.uid);
           handleError(err);
-          const liveSession = simpleSessionService.getCurrentSession();
-          if (!hasCompletedAITurn(liveSession)) {
+          const liveSessionAfter = simpleSessionService.getCurrentSession();
+          if (!hasCompletedAITurn(liveSessionAfter)) {
             clearSession();
             dispatch({ type: 'SET_PAGE_MODE', payload: 'upload' });
+            navigate('/app', { replace: true });
           }
-          stopAIThinking();
-          stopProcessing();
+          stopAIThinking(clientSubmissionId);
+          stopProcessing(clientSubmissionId);
         });
 
       return true;
@@ -1294,7 +1537,7 @@ export const MarkingPageProvider = ({
       stopProcessing();
       return false;
     }
-  }, [user, isNegative, checkNegativeCredits, selectedModel, addMessage, clearSession, startProcessing, stopProcessing, startAIThinking, stopAIThinking, processMultiImageAPI, handleError]);
+  }, [user, isNegative, checkNegativeCredits, selectedModel, routeSessionId, navigate, addMessage, clearSession, startProcessing, stopProcessing, startAIThinking, stopAIThinking, processMultiImageAPI, clearFile, handleError, registerJob, updateJobProgress, completeJob, failJob, startPollingJob, refreshCredits]);
 
   // Handle files passed from Landing Pages (SEO Phase 2)
   const handoverProcessedRef = useRef(false);
@@ -1361,10 +1604,11 @@ export const MarkingPageProvider = ({
   }, []);
 
   const remarkWithOfficialPaper = useCallback(async ({ sessionId, paperTitle, questionNumber }) => {
-    const targetSessionId = sessionId || currentSession?.id;
+    const liveSession = simpleSessionService.getCurrentSession() || currentSession;
+    const targetSessionId = sessionId || liveSession?.id;
     if (!targetSessionId || !paperTitle) return false;
 
-    const allMsgs = chatMessages || currentSession?.messages || [];
+    const allMsgs = liveSession?.messages || chatMessages || [];
     const existingAssistantMsg = [...allMsgs]
       .reverse()
       .find(m => m.role === 'assistant' && (m.performanceSummary || m.studentScore || m.requiresMarkingScheme));
@@ -1377,7 +1621,7 @@ export const MarkingPageProvider = ({
       : (existingAssistantMsg?.imageDataArray || []);
 
     try {
-      startProcessing();
+      startProcessing(targetSessionId);
       const progressData = {
         isComplete: false,
         currentStepDescription: `Re-marking with official scheme (${paperTitle})...`,
@@ -1390,21 +1634,29 @@ export const MarkingPageProvider = ({
         currentStepIndex: 0,
       };
 
+      registerJob({
+        sessionId: targetSessionId,
+        title: liveSession?.title || 'Re-marking...',
+        isRemark: true,
+        progressData
+      });
+
       if (existingAssistantMsg) {
         simpleSessionService.updateMessageInCurrentSession(targetAiMessageId, {
           isProcessing: true,
           progressData,
           imageDataArray: skeletonImages,
           remarkError: null
-        });
+        }, targetSessionId);
       } else {
-        startAIThinking(progressData, targetAiMessageId, skeletonImages);
+        startAIThinking(progressData, targetAiMessageId, skeletonImages, targetSessionId);
       }
 
       const streamResult = await apiProcessor.processStreamRequest(
         '/api/marking/remark-session',
         {
           sessionId: targetSessionId,
+          targetSessionId,
           paperTitle,
           questionNumber: questionNumber || null,
           model: selectedModel || 'fast',
@@ -1415,35 +1667,43 @@ export const MarkingPageProvider = ({
           'fetching_scheme': 1,
           'marking': 2,
           'generating_output': 3
-        }
+        },
+        (nextProgress) => updateJobProgress(targetSessionId, nextProgress)
       );
 
-      if (streamResult?.unifiedSession) {
+      completeJob(targetSessionId);
+      if (streamResult?.unifiedSession && simpleSessionService.getCurrentSession()?.id === targetSessionId) {
         loadSession(streamResult.unifiedSession);
       }
-      stopProcessing();
+      stopProcessing(targetSessionId);
       return true;
     } catch (err) {
+      if (err?.isTransportDisconnect) {
+        startPollingJob(targetSessionId);
+        return false;
+      }
+      failJob(targetSessionId, err?.message || 'Failed to re-mark session.');
       if (snapshotMsg) {
         simpleSessionService.updateMessageInCurrentSession(targetAiMessageId, {
           ...snapshotMsg,
           isProcessing: false,
           progressData: snapshotMsg.progressData ? { ...snapshotMsg.progressData, isComplete: true } : undefined,
           remarkError: err?.message || 'Failed to re-mark session.'
-        });
+        }, targetSessionId);
       }
       handleError(err);
-      stopProcessing();
+      stopProcessing(targetSessionId);
       return false;
     }
-  }, [currentSession?.id, currentSession?.messages, chatMessages, selectedModel, startProcessing, startAIThinking, stopProcessing, handleError, apiProcessor, loadSession]);
+  }, [currentSession, chatMessages, selectedModel, startProcessing, startAIThinking, stopProcessing, handleError, apiProcessor, loadSession, registerJob, updateJobProgress, completeJob, failJob, startPollingJob]);
 
   const attachMarkingSchemeAndRetry = useCallback(async (schemeFileList) => {
     const schemeFiles = Array.from(schemeFileList || []);
     if (schemeFiles.length === 0) return false;
 
-    const targetSessionId = currentSession?.id;
-    const allMsgs = chatMessages || currentSession?.messages || [];
+    const liveSession = simpleSessionService.getCurrentSession() || currentSession;
+    const targetSessionId = liveSession?.id;
+    const allMsgs = liveSession?.messages || chatMessages || [];
     const existingAssistantMsg = [...allMsgs]
       .reverse()
       .find(m => m.role === 'assistant');
@@ -1459,7 +1719,7 @@ export const MarkingPageProvider = ({
     if (!isEarlyRejectedUnsupportedSubject && targetSessionId && !targetSessionId.startsWith('temp-')) {
       const targetAiMessageId = existingAssistantMsg?.id || createAIMessageId(`remark-scheme-${Date.now()}`);
       try {
-        startProcessing();
+        startProcessing(targetSessionId);
         const progressData = {
           isComplete: false,
           currentStepDescription: 'Validating & parsing uploaded marking scheme...',
@@ -1472,13 +1732,20 @@ export const MarkingPageProvider = ({
           currentStepIndex: 0,
         };
 
+        registerJob({
+          sessionId: targetSessionId,
+          title: liveSession?.title || 'Re-marking...',
+          isRemark: true,
+          progressData
+        });
+
         if (existingAssistantMsg) {
           simpleSessionService.updateMessageInCurrentSession(targetAiMessageId, {
             isProcessing: true,
             progressData,
             imageDataArray: skeletonImages,
             remarkError: null
-          });
+          }, targetSessionId);
         }
 
         const fileToBase64Obj = (file) => new Promise((resolve, reject) => {
@@ -1498,6 +1765,7 @@ export const MarkingPageProvider = ({
           '/api/marking/remark-session',
           {
             sessionId: targetSessionId,
+            targetSessionId,
             uploadedSchemeFiles: uploadedSchemePayloads,
             model: selectedModel || 'fast',
             aiMessageId: targetAiMessageId
@@ -1507,15 +1775,22 @@ export const MarkingPageProvider = ({
             'fetching_scheme': 1,
             'marking': 2,
             'generating_output': 3
-          }
+          },
+          (nextProgress) => updateJobProgress(targetSessionId, nextProgress)
         );
 
-        if (streamResult?.unifiedSession) {
+        completeJob(targetSessionId);
+        if (streamResult?.unifiedSession && simpleSessionService.getCurrentSession()?.id === targetSessionId) {
           loadSession(streamResult.unifiedSession);
         }
-        stopProcessing();
+        stopProcessing(targetSessionId);
         return true;
       } catch (err) {
+        if (err?.isTransportDisconnect) {
+          startPollingJob(targetSessionId);
+          return false;
+        }
+        failJob(targetSessionId, (err?.message || 'Invalid marking scheme uploaded.').replace(/^INVALID_MARKING_SCHEME:\s*/i, ''));
         // Restore the exact original assistant message snapshot and attach remarkError so nothing is lost!
         if (snapshotMsg) {
           simpleSessionService.updateMessageInCurrentSession(targetAiMessageId, {
@@ -1523,9 +1798,9 @@ export const MarkingPageProvider = ({
             isProcessing: false,
             progressData: snapshotMsg.progressData ? { ...snapshotMsg.progressData, isComplete: true } : undefined,
             remarkError: (err?.message || 'Invalid marking scheme uploaded.').replace(/^INVALID_MARKING_SCHEME:\s*/i, '')
-          });
+          }, targetSessionId);
         }
-        stopProcessing();
+        stopProcessing(targetSessionId);
         return false;
       }
     }
@@ -1681,7 +1956,7 @@ export const MarkingPageProvider = ({
     user, pageMode, selectedFile, selectedModel, showInfoDropdown, hoveredRating,
     handleFileSelect, clearFile, handleModelChange, onModelChange: handleModelChange,
     handleImageAnalysis, currentSession, chatMessages, sessionTitle, isFavorite, rating, onFavoriteToggle, onRatingChange, onTitleUpdate,
-    setHoveredRating, onToggleInfoDropdown, isProcessing, isAIThinking, error,
+    setHoveredRating, onToggleInfoDropdown, isProcessing: isCurrentSessionProcessing, isAIThinking: isCurrentSessionThinking, error,
     onSendMessage, addMessage,
     onGenerateModelAnswer,
     onExplainMarkingScheme,
@@ -1731,7 +2006,7 @@ export const MarkingPageProvider = ({
     showModelAnswerConfirmation, setShowModelAnswerConfirmation,
     pendingModelAnswerPaper, setPendingModelAnswerPaper,
     pendingConfirmationMode, setPendingConfirmationMode,
-    onFavoriteToggle, onRatingChange, onTitleUpdate, setHoveredRating, onToggleInfoDropdown, isProcessing, isAIThinking, error,
+    onFavoriteToggle, onRatingChange, onTitleUpdate, setHoveredRating, onToggleInfoDropdown, isCurrentSessionProcessing, isCurrentSessionThinking, error,
     onSendMessage, addMessage, chatContainerRef,
     isHistoryLoading,
     scrollToBottom, showScrollButton, hasNewResponse, scrollToNewResponse, scrollToMessage,
@@ -1750,7 +2025,7 @@ export const MarkingPageProvider = ({
 
   // Track if a user refreshes or closes the browser tab while an upload/marking is actively running
   useEffect(() => {
-    if (!isProcessing && !isAIThinking) return;
+    if (!isCurrentSessionProcessing && !isCurrentSessionThinking) return;
 
     const startTime = Date.now();
     const handleBeforeUnload = () => {
@@ -1764,7 +2039,7 @@ export const MarkingPageProvider = ({
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [isProcessing, isAIThinking, progressProps.loadingMessage, progressProps.currentStepIndex, pageMode, user?.uid]);
+  }, [isCurrentSessionProcessing, isCurrentSessionThinking, progressProps.loadingMessage, progressProps.currentStepIndex, pageMode, user?.uid]);
 
   // Keep latest handlers in a ref so post-login auto-resume only triggers once per login and always uses fresh closures
   const resumeHandlersRef = useRef({

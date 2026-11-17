@@ -911,10 +911,10 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     // Clean Handoff and redirect
     setShowHandoff(false);
     // Clean URL
-    window.history.replaceState({}, '', '/app');
+    window.history.replaceState({}, '', window.location.pathname);
 
     // Redirect to mobile camera page with return URL
-    window.location.href = `/mobile-upload/${sessionId}?returnUrl=${encodeURIComponent('/app')}`;
+    window.location.href = `/mobile-upload/${sessionId}?returnUrl=${encodeURIComponent(window.location.pathname)}`;
   }, [mobileSessionId, isNegative, navigate]);
 
   // V16.5: Restore session on return from camera

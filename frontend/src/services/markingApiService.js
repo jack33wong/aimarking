@@ -13,6 +13,25 @@ let apiControls = {
   handleError: (err) => console.error("Service error handler not initialized", err),
 };
 
+const tagTransportError = (error) => {
+  if (!error) return error;
+  const msg = String(error.message || error);
+  if (
+    error.name === 'TypeError' ||
+    error.name === 'AbortError' ||
+    msg.includes('Failed to fetch') ||
+    msg.includes('NetworkError') ||
+    msg.includes('Load failed') ||
+    msg.includes('network error') ||
+    msg.includes('Stream disconnected unexpectedly') ||
+    msg.includes('ERR_NETWORK') ||
+    msg.includes('ERR_INTERNET_DISCONNECTED')
+  ) {
+    error.isTransportDisconnect = true;
+  }
+  return error;
+};
+
 class SimpleSessionService {
   constructor() {
     this.state = {
@@ -27,6 +46,45 @@ class SimpleSessionService {
   // A method to receive the state controls from the context.
   setApiControls = (controls) => {
     apiControls = controls;
+  }
+
+  /** @param {string | null} [targetSessionId] */
+  stopAIThinking = (targetSessionId = null) => {
+    apiControls.stopAIThinking(targetSessionId);
+  }
+
+  /** @param {string | null} [targetSessionId] */
+  stopProcessing = (targetSessionId = null) => {
+    apiControls.stopProcessing(targetSessionId);
+  }
+
+  /** @param {any} error */
+  handleError = (error) => {
+    apiControls.handleError(error);
+  }
+
+  /**
+   * @param {string} clientSessionId
+   * @param {string} [title]
+   * @param {Record<string, any>} [extra]
+   */
+  initClientSession = (clientSessionId, title = 'Processing...', extra = {}) => {
+    if (!clientSessionId) return null;
+    const existing = this.state.currentSession;
+    if (existing && existing.id === clientSessionId) {
+      return existing;
+    }
+    const newSession = {
+      id: clientSessionId,
+      title,
+      messages: [],
+      sessionStats: {},
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      ...extra
+    };
+    this.setState({ currentSession: newSession });
+    return newSession;
   }
 
   setAuthContext = (authContext) => {
@@ -77,8 +135,16 @@ class SimpleSessionService {
     });
   }
 
-  addMessage = async (message) => {
+  /**
+   * @param {any} message
+   * @param {string | null} [targetSessionId]
+   */
+  addMessage = async (message, targetSessionId = null) => {
     const session = this.state.currentSession;
+
+    if (targetSessionId && session && session.id !== targetSessionId) {
+      return;
+    }
 
     // Check if a message with the same ID already exists (for processing messages)
     const existingMessages = session?.messages || [];
@@ -95,7 +161,14 @@ class SimpleSessionService {
     }
 
     if (!session) {
-      this.setState({ currentSession: { id: `temp-${Date.now()}`, title: 'Processing...', messages: newMessages, sessionStats: {} } });
+      this.setState({
+        currentSession: {
+          id: targetSessionId || `temp-${Date.now()}`,
+          title: 'Processing...',
+          messages: newMessages,
+          sessionStats: {}
+        }
+      });
     } else {
       this.setState({ currentSession: { ...session, messages: newMessages } });
     }
@@ -218,9 +291,15 @@ class SimpleSessionService {
   }
 
   // Simple method to update just a message in the current session
-  updateMessageInCurrentSession = (messageId, updates) => {
+  /**
+   * @param {string} messageId
+   * @param {Record<string, any>} updates
+   * @param {string | null} [targetSessionId]
+   */
+  updateMessageInCurrentSession = (messageId, updates, targetSessionId = null) => {
     const currentSession = this.state.currentSession;
     if (!currentSession?.messages) return;
+    if (targetSessionId && currentSession.id !== targetSessionId) return;
 
     const updatedMessages = currentSession.messages.map(msg =>
       msg.id === messageId ? { ...msg, ...updates } : msg
@@ -251,10 +330,14 @@ class SimpleSessionService {
     return /^(Marking|Question|Single Message|Batch Session)\s*-\s*\d/i.test(trimmed);
   }
 
-  _commitServerSessionState = (serverId, serverTitle, messageType = null, userId = null) => {
+  _commitServerSessionState = (serverId, serverTitle, messageType = null, userId = null, targetSessionId = null) => {
     if (!serverId || !this.state.currentSession) return;
 
     const currentId = this.state.currentSession.id;
+    if (targetSessionId && currentId !== targetSessionId && currentId !== serverId) {
+      return;
+    }
+
     const isExistingStable = currentId && !currentId.startsWith('temp-');
     // If we already have a stable persistent session, do not let an intermediate handshake overwrite it
     const targetId = (isExistingStable && (serverTitle === 'Processing...' || !serverTitle)) ? currentId : serverId;
@@ -281,7 +364,14 @@ class SimpleSessionService {
     }
   }
 
-  handleProcessComplete = (data, modelUsed, aiMessageId = null) => {
+  /**
+   * @param {any} data
+   * @param {string | null} [modelUsed]
+   * @param {string | null} [aiMessageId]
+   * @param {string | null} [targetSessionId]
+   */
+  handleProcessComplete = (data, modelUsed, aiMessageId = null, targetSessionId = null) => {
+    const resolvedTargetId = targetSessionId || data?.unifiedSession?.id || data?.sessionId || null;
     try {
       // Trigger credit refresh after completion
       this.triggerCreditRefresh();
@@ -291,8 +381,16 @@ class SimpleSessionService {
         throw new Error(data.error || 'Failed to process image');
       }
 
+      const activeId = this.state.currentSession?.id;
+      const isViewingTarget = !targetSessionId || activeId === targetSessionId || (resolvedTargetId && activeId === resolvedTargetId);
+
       // Handle unifiedSession data (for both authenticated and unauthenticated users)
       if (data.unifiedSession) {
+        if (!isViewingTarget) {
+          this.updateSidebarSession(data.unifiedSession);
+          return this.state.currentSession;
+        }
+
         // Extract the AI message from unifiedSession and add it directly
         const aiMessages = (data.unifiedSession.messages || []).filter(msg => msg.role === 'assistant');
         const aiMessage = (aiMessageId && data.unifiedSession.messages?.find(msg => msg.id === aiMessageId)) ||
@@ -300,7 +398,7 @@ class SimpleSessionService {
           aiMessages[aiMessages.length - 1];
         if (aiMessage) {
           if (aiMessageId) aiMessage.id = aiMessageId;
-          this.addMessage(aiMessage);
+          this.addMessage(aiMessage, targetSessionId || activeId);
         }
 
         // Update session title and sidebar
@@ -319,7 +417,8 @@ class SimpleSessionService {
             data.unifiedSession.id,
             data.unifiedSession.title,
             data.unifiedSession.messageType || 'Marking',
-            data.unifiedSession.userId || null
+            data.unifiedSession.userId || null,
+            targetSessionId || activeId
           );
         }
 
@@ -328,6 +427,9 @@ class SimpleSessionService {
 
       // Handle new multi-image/PDF response structure
       if (data.annotatedOutput && data.processingStats) {
+        if (!isViewingTarget) {
+          return this.state.currentSession;
+        }
 
         // Create AI message with the same structure as original pipeline
         const aiMessage = {
@@ -380,19 +482,19 @@ class SimpleSessionService {
         };
 
         // Append to current session as an AI message
-        this.addMessage(aiMessage);
+        this.addMessage(aiMessage, targetSessionId || activeId);
 
         // 🛑 THE FIX: Sync the permanent Session ID and handle the Title!
-        this._commitServerSessionState(data.sessionId, data.sessionTitle, 'Marking');
+        this._commitServerSessionState(data.sessionId, data.sessionTitle, 'Marking', null, targetSessionId || activeId);
 
-        // Stop spinners
-        apiControls.stopAIThinking();
-        apiControls.stopProcessing();
         return this.state.currentSession;
       }
 
       // Handle PDF output without navigating or causing reloads (legacy single PDF)
       if (data.outputFormat === 'pdf' && data.annotatedOutput) {
+        if (!isViewingTarget) {
+          return this.state.currentSession;
+        }
         // Create a lightweight assistant message with a file card style hint
         const pdfMessage = {
           id: `ai-${Date.now()}`,
@@ -408,16 +510,16 @@ class SimpleSessionService {
           isProcessing: false
         };
         // Append to current session as an AI message
-        this.addMessage(pdfMessage);
-        // Stop spinners
-        apiControls.stopAIThinking();
-        apiControls.stopProcessing();
+        this.addMessage(pdfMessage, targetSessionId || activeId);
         return this.state.currentSession;
       }
 
       if (data.aiMessage) {
+        if (!isViewingTarget) {
+          return this.state.currentSession;
+        }
         // Unauthenticated users get only AI message - append to current session
-        this.addMessage(data.aiMessage);
+        this.addMessage(data.aiMessage, targetSessionId || activeId);
 
         // Update session title and ID in current session (for session header display only)
         // Don't update sidebar for unauthenticated users
@@ -462,7 +564,7 @@ class SimpleSessionService {
           const updatedSession = {
             ...this.state.currentSession,
             title: shouldUpdateTitle ? data.sessionTitle : this.state.currentSession.title,
-            id: data.sessionId, // Use backend's permanent session ID (no fallback to temp ID)
+            id: data.sessionId || this.state.currentSession.id, // Use backend's permanent session ID (no fallback to temp ID)
             sessionStats: sessionStats,
             updatedAt: new Date().toISOString(), // Add last updated time
             ...(usageMode ? { usageMode } : {}) // Persist usageMode so ribbon stays hidden
@@ -475,12 +577,18 @@ class SimpleSessionService {
         throw new Error('No AI message received from server');
       }
     } finally {
-      apiControls.stopAIThinking();
-      apiControls.stopProcessing();
+      apiControls.stopAIThinking(resolvedTargetId);
+      apiControls.stopProcessing(resolvedTargetId);
     }
   }
 
-  handleTextChatComplete = (data, modelUsed) => {
+  /**
+   * @param {any} data
+   * @param {string | null} [modelUsed]
+   * @param {string | null} [targetSessionId]
+   */
+  handleTextChatComplete = (data, modelUsed, targetSessionId = null) => {
+    const resolvedTargetId = targetSessionId || data?.sessionId || this.state.currentSession?.id || null;
     try {
       // Trigger credit refresh after completion
       this.triggerCreditRefresh();
@@ -488,9 +596,15 @@ class SimpleSessionService {
         throw new Error(data.error || 'Failed to process text chat');
       }
 
+      const activeId = this.state.currentSession?.id;
+      const isViewingTarget = !targetSessionId || activeId === targetSessionId || (resolvedTargetId && activeId === resolvedTargetId);
+
       if (data.aiMessage) {
+        if (!isViewingTarget) {
+          return this.state.currentSession;
+        }
         // All users (authenticated and unauthenticated) now get only AI message - append to current session
-        this.addMessage(data.aiMessage);
+        this.addMessage(data.aiMessage, targetSessionId || activeId);
 
         // Update session title and ID in current session (for session header display only)
         // Don't update sidebar for unauthenticated users
@@ -526,7 +640,7 @@ class SimpleSessionService {
           });
 
           // Then use the centralized single source of truth for ID and Title sync
-          this._commitServerSessionState(data.sessionId, data.sessionTitle);
+          this._commitServerSessionState(data.sessionId, data.sessionTitle, null, null, targetSessionId || activeId);
         }
 
         return this.state.currentSession;
@@ -534,8 +648,8 @@ class SimpleSessionService {
         throw new Error('No AI message received from server');
       }
     } finally {
-      apiControls.stopAIThinking();
-      apiControls.stopProcessing();
+      apiControls.stopAIThinking(resolvedTargetId);
+      apiControls.stopProcessing(resolvedTargetId);
     }
   }
 
@@ -563,16 +677,16 @@ class SimpleSessionService {
   }
 
   async processStream(endpoint, paper, model = 'thinking', onProgress = null, aiMessageId = null, extraBody = {}) {
+    const targetSessionId = extraBody?.targetSessionId || extraBody?.sessionId || (
+      (this.state.currentSession?.id || '').startsWith('temp-')
+        ? null
+        : this.state.currentSession?.id
+    );
+    let isTransportDisconnect = false;
     try {
       const authToken = await this.getAuthToken();
       const headers = { 'Content-Type': 'application/json' };
       if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-
-      const targetSessionId = extraBody?.sessionId || (
-        (this.state.currentSession?.id || '').startsWith('temp-')
-          ? null
-          : this.state.currentSession?.id
-      );
 
       const requestPayload = {
         paper,
@@ -614,24 +728,29 @@ class SimpleSessionService {
               }
 
               if (data.type === 'connected' && data.sessionId) {
-                this._commitServerSessionState(data.sessionId, 'Processing...');
+                this._commitServerSessionState(data.sessionId, 'Processing...', null, null, targetSessionId);
                 continue;
               }
 
               if (data.type === 'complete') {
                 if (endpoint.includes('remark-session')) {
+                  const isViewingTarget = !targetSessionId || this.state.currentSession?.id === targetSessionId;
                   if (data.result?.unifiedSession) {
-                    this.updateCurrentSession(data.result.unifiedSession);
-                  } else if (data.result?.aiMessage) {
+                    if (isViewingTarget) {
+                      this.updateCurrentSession(data.result.unifiedSession);
+                    } else {
+                      this.updateSidebarSession(data.result.unifiedSession);
+                    }
+                  } else if (data.result?.aiMessage && isViewingTarget) {
                     const aiMsg = data.result.aiMessage;
                     if (aiMessageId) aiMsg.id = aiMessageId;
-                    this.updateMessageInCurrentSession(aiMsg.id, aiMsg);
+                    this.updateMessageInCurrentSession(aiMsg.id, aiMsg, targetSessionId);
                   }
                   this.triggerCreditRefresh();
                 } else if (endpoint.includes('remark') || data.result?.annotatedOutput || data.result?.results) {
-                  this.handleProcessComplete(data.result, model, aiMessageId);
+                  this.handleProcessComplete(data.result, model, aiMessageId, targetSessionId);
                 } else {
-                  this.handleTextChatComplete(data.result, model);
+                  this.handleTextChatComplete(data.result, model, targetSessionId);
                 }
                 return data.result || true; // Stop processing
               }
@@ -679,19 +798,28 @@ class SimpleSessionService {
             }
           }
         } finally {
-          if (reader.locked) reader.releaseLock();
+          try {
+            reader.releaseLock();
+          } catch (_) {
+            // Reader may already be released
+          }
         }
       } finally {
-        // Ensure thinking state is stopped even if we return early from processChunk
-        apiControls.stopAIThinking();
-        apiControls.stopProcessing();
+        // Reader cleanup handled above; thinking state cleanup handled in outer finally
       }
     } catch (error) {
-      this.setState({ error: error.message });
-      apiControls.handleError(error);
-      apiControls.stopAIThinking();
-      apiControls.stopProcessing();
+      tagTransportError(error);
+      isTransportDisconnect = Boolean(error?.isTransportDisconnect);
+      if (!isTransportDisconnect) {
+        this.setState({ error: error.message });
+        apiControls.handleError(error);
+      }
       throw error;
+    } finally {
+      if (!isTransportDisconnect) {
+        apiControls.stopAIThinking(targetSessionId);
+        apiControls.stopProcessing(targetSessionId);
+      }
     }
   }
 
@@ -735,6 +863,12 @@ class SimpleSessionService {
   }
 
   async processMultiImageWithProgress(files, model = 'thinking', mode = 'marking', customText = null, onProgress = null, aiMessageId = null, extraParams = null) {
+    const clientSessionId = extraParams?.submissionId || extraParams?.sessionId || null;
+    const targetSessionId = clientSessionId || (
+      this.state.currentSession?.id?.startsWith('temp-')
+        ? null
+        : this.state.currentSession?.id
+    );
     try {
       const authToken = await this.getAuthToken();
       const headers = {};
@@ -750,9 +884,9 @@ class SimpleSessionService {
       await this._appendFilesOrUploadLargeBatch(formData, files);
 
       // Add other form data
-      const sessionId = this.state.currentSession?.id?.startsWith('temp-')
+      const sessionId = clientSessionId || (this.state.currentSession?.id?.startsWith('temp-')
         ? null
-        : this.state.currentSession?.id;
+        : this.state.currentSession?.id);
       if (sessionId) formData.append('sessionId', sessionId);
       formData.append('model', model);
       formData.append('clientCompressed', 'true');
@@ -803,13 +937,13 @@ class SimpleSessionService {
 
             // Handle Atomic Handshake
             if (data.type === 'connected' && data.sessionId) {
-              this._commitServerSessionState(data.sessionId, 'Processing...');
+              this._commitServerSessionState(data.sessionId, 'Processing...', null, null, targetSessionId);
               continue;
             }
 
             // Handle completion events
             if (data.type === 'complete') {
-              this.handleProcessComplete(data.result, model, aiMessageId);
+              this.handleProcessComplete(data.result, model, aiMessageId, targetSessionId);
               return true;
             }
             if (data.type === 'error') {
@@ -838,7 +972,10 @@ class SimpleSessionService {
         while (true) {
           const { done, value } = await reader.read();
           if (done) {
-            if (buffer) processChunk(buffer);
+            if (buffer && processChunk(buffer)) {
+              reader.releaseLock();
+              return;
+            }
             throw new Error("Stream disconnected unexpectedly before completion. The request may have timed out.");
           }
           buffer += decoder.decode(value, { stream: true });
@@ -854,26 +991,38 @@ class SimpleSessionService {
         }
       } finally {
         // Ensure reader is always released
-        if (reader.locked) {
+        try {
           reader.releaseLock();
+        } catch (_) {
+          // Reader may already be released
         }
       }
     } catch (error) {
       if (error.response?.data?.credits_exhausted) {
         error.credits_exhausted = true;
       }
+      tagTransportError(error);
+      if (!error.isTransportDisconnect) {
+        this.setState({ error: error.message });
+        apiControls.stopAIThinking(targetSessionId);
+        apiControls.stopProcessing(targetSessionId);
+      }
       console.error('❌ Multi-image processing error:', error);
       throw error;
     }
   }
 
-  async processImageWithProgress(imageData, model = 'thinking', mode = 'marking', customText = null, onProgress = null, aiMessageId = null, originalFileName = null) {
+  async processImageWithProgress(imageData, model = 'thinking', mode = 'marking', customText = null, onProgress = null, aiMessageId = null, originalFileName = null, extraParams = null) {
+    const clientSessionId = extraParams?.submissionId || extraParams?.sessionId || null;
+    const targetSessionId = clientSessionId || (
+      this.state.currentSession?.id?.startsWith('temp-') ? null : this.state.currentSession?.id
+    );
     try {
       const authToken = await this.getAuthToken();
       const headers = {};
       if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
 
-      const sessionId = this.state.currentSession?.id?.startsWith('temp-') ? null : this.state.currentSession?.id;
+      const sessionId = clientSessionId || (this.state.currentSession?.id?.startsWith('temp-') ? null : this.state.currentSession?.id);
 
       // Convert base64 data URL (image/pdf) to Blob for multipart/form-data upload
       const dataUrlParts = imageData.split(',');
@@ -927,6 +1076,7 @@ class SimpleSessionService {
       formData.append('model', model);
       formData.append('clientCompressed', 'true');
       if (sessionId) formData.append('sessionId', sessionId);
+      if (extraParams?.submissionId) formData.append('submissionId', extraParams.submissionId);
       if (aiMessageId) formData.append('aiMessageId', aiMessageId);
       if (customText) formData.append('customText', customText);
 
@@ -959,12 +1109,12 @@ class SimpleSessionService {
             }
 
             if (data.type === 'connected' && data.sessionId) {
-              this._commitServerSessionState(data.sessionId, 'Processing...');
+              this._commitServerSessionState(data.sessionId, 'Processing...', null, null, targetSessionId);
               continue;
             }
 
             if (data.type === 'complete') {
-              this.handleProcessComplete(data.result, model, aiMessageId);
+              this.handleProcessComplete(data.result, model, aiMessageId, targetSessionId);
               return true;
             }
             if (data.type === 'error') {
@@ -990,7 +1140,10 @@ class SimpleSessionService {
         while (true) {
           const { done, value } = await reader.read();
           if (done) {
-            if (buffer) processChunk(buffer);
+            if (buffer && processChunk(buffer)) {
+              reader.releaseLock();
+              return;
+            }
             throw new Error("Stream disconnected unexpectedly before completion. The request may have timed out.");
           }
           buffer += decoder.decode(value, { stream: true });
@@ -1006,18 +1159,23 @@ class SimpleSessionService {
         }
       } finally {
         // Ensure reader is always released
-        if (reader.locked) {
+        try {
           reader.releaseLock();
+        } catch (_) {
+          // Reader may already be released
         }
       }
     } catch (error) {
       if (error.response?.data?.credits_exhausted) {
         error.credits_exhausted = true;
       }
-      this.setState({ error: error.message });
-      apiControls.handleError(error);
-      apiControls.stopAIThinking();
-      apiControls.stopProcessing();
+      tagTransportError(error);
+      if (!error.isTransportDisconnect) {
+        this.setState({ error: error.message });
+        apiControls.handleError(error);
+        apiControls.stopAIThinking(targetSessionId);
+        apiControls.stopProcessing(targetSessionId);
+      }
       throw error;
     }
   }

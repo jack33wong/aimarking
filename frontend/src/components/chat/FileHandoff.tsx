@@ -36,7 +36,7 @@ export const FileHandoff: React.FC<FileHandoffProps> = ({ initialType = null, on
             onFilesSelected(files);
             setHandoffType(null);
             // Clean the URL
-            window.history.replaceState({}, '', '/app');
+            window.history.replaceState({}, '', window.location.pathname);
             onClose();
         }
     };

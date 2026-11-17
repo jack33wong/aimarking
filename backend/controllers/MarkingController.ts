@@ -20,6 +20,38 @@ const keepAliveAgent = new https.Agent({
   keepAliveMsecs: 30000
 });
 
+const MARKING_PIPELINE_STEPS = [
+    'Input Validation',
+    'Standardization',
+    'Preprocessing',
+    'OCR & Classification',
+    'Question Detection',
+    'Segmentation',
+    'Marking',
+    'Output Generation'
+];
+
+const REMARK_PIPELINE_STEPS = [
+    'Loading Cached Work',
+    'Fetching Mark Scheme',
+    'Re-marking',
+    'Updating Results'
+];
+
+function extractProgressData(data: any): any | undefined {
+    if (!data) return undefined;
+    if (data.progressData) return data.progressData;
+    if (Array.isArray(data.allSteps)) {
+        return {
+            currentStepDescription: data.currentStepDescription,
+            allSteps: data.allSteps,
+            currentStepIndex: data.currentStepIndex,
+            isComplete: Boolean(data.isComplete)
+        };
+    }
+    return undefined;
+}
+
 export class MarkingController {
     /**
      * Handles re-marking an existing session using an official past paper mark scheme
@@ -50,7 +82,37 @@ export class MarkingController {
         let capturedRemarkLogs: { logsText: string; lineCount: number; durationMs: number; truncated: boolean } | null = null;
         let remarkModel = model;
 
+        const resolvedRemarkAiMessageId = aiMessageId || `ai-${Date.now()}`;
+        const remarkJobUserId = (req as any).user?.uid || null;
+        let isRemarkJobFinished = false;
+        let lastRemarkJobUpsertPromise: Promise<void> = Promise.resolve();
+        const queueRemarkJobUpsert = (jobId: string, data: Record<string, any>): Promise<void> => {
+            lastRemarkJobUpsertPromise = lastRemarkJobUpsertPromise
+                .catch(() => {})
+                .then(() => FirestoreService.upsertMarkingJob(jobId, data))
+                .catch((err) => {
+                    console.warn(`⚠️ [MARKING-JOB] Failed to upsert remark job ${jobId}:`, err?.message || err);
+                });
+            return lastRemarkJobUpsertPromise;
+        };
+
         try {
+            void queueRemarkJobUpsert(sessionId, {
+                sessionId,
+                submissionId: `remark-${sessionId}`,
+                userId: remarkJobUserId,
+                status: 'processing',
+                isRemark: true,
+                aiMessageId: resolvedRemarkAiMessageId,
+                startedAt: Date.now(),
+                progressData: {
+                    currentStepDescription: 'Loading cached student work...',
+                    allSteps: REMARK_PIPELINE_STEPS,
+                    currentStepIndex: 0,
+                    isComplete: false
+                }
+            });
+
             let requestedModel = model;
             if (!requestedModel || requestedModel.toUpperCase() === 'AUTO') {
                 requestedModel = 'FAST';
@@ -64,13 +126,22 @@ export class MarkingController {
                 uploadedSchemeFiles: Array.isArray(uploadedSchemeFiles) ? uploadedSchemeFiles : undefined,
                 model: requestedModel,
                 userId: (req as any).user?.uid,
-                aiMessageId
+                aiMessageId: resolvedRemarkAiMessageId
             };
 
             let completeEventSent = false;
             const progressCallback = (data: any) => {
                 if (data?.type === 'complete') {
                     completeEventSent = true;
+                } else if (!isRemarkJobFinished && data?.type !== 'error') {
+                    const progressData = extractProgressData(data);
+                    if (progressData) {
+                        void queueRemarkJobUpsert(sessionId, {
+                            status: 'processing',
+                            isRemark: true,
+                            progressData
+                        });
+                    }
                 }
                 sendSseUpdate(res, data);
             };
@@ -94,6 +165,13 @@ export class MarkingController {
                 throw err;
             });
             remarkResult = result;
+            isRemarkJobFinished = true;
+            await queueRemarkJobUpsert(sessionId, {
+                status: 'completed',
+                sessionId,
+                isRemark: true,
+                completedAt: Date.now()
+            });
 
             if (result && !completeEventSent) {
                 sendSseUpdate(res, { type: 'complete', result });
@@ -125,6 +203,14 @@ export class MarkingController {
             res.end();
         } catch (error: any) {
             console.error('❌ [CONTROLLER] Remark request failed:', error);
+            isRemarkJobFinished = true;
+            await queueRemarkJobUpsert(sessionId, {
+                status: 'failed',
+                sessionId,
+                isRemark: true,
+                error: error.message?.replace(/^INVALID_MARKING_SCHEME:\s*/i, '') || 'Failed to re-mark session.',
+                completedAt: Date.now()
+            });
             if (capturedRemarkLogs) {
                 await AdminAlertService.notifyMarkingLog({
                     submissionId: `remark-${sessionId}`,
@@ -256,8 +342,36 @@ export class MarkingController {
         }, 15000); // Ping every 15 seconds
 
         let capturedMarkingLogs: { logsText: string; lineCount: number; durationMs: number; truncated: boolean } | null = null;
+        const aiMessageId = req.body?.aiMessageId || `ai-${Date.now()}`;
+        const jobUserId = (req as any).user?.uid || null;
+        let isJobFinished = false;
+        let lastJobUpsertPromise: Promise<void> = Promise.resolve();
+        const queueJobUpsert = (jobId: string, data: Record<string, any>): Promise<void> => {
+            lastJobUpsertPromise = lastJobUpsertPromise
+                .catch(() => {})
+                .then(() => FirestoreService.upsertMarkingJob(jobId, data))
+                .catch((err) => {
+                    console.warn(`⚠️ [MARKING-JOB] Failed to upsert job ${jobId}:`, err?.message || err);
+                });
+            return lastJobUpsertPromise;
+        };
 
         try {
+            void queueJobUpsert(submissionId, {
+                sessionId: submissionId,
+                submissionId,
+                userId: jobUserId,
+                status: 'processing',
+                isRemark: false,
+                aiMessageId,
+                startedAt: Date.now(),
+                progressData: {
+                    currentStepDescription: 'Processing started...',
+                    allSteps: MARKING_PIPELINE_STEPS,
+                    currentStepIndex: 0,
+                    isComplete: false
+                }
+            });
             // 3. Prepare Options
             let requestedModel = req.body.model;
             if (!requestedModel || requestedModel.toUpperCase() === 'AUTO') {
@@ -302,6 +416,14 @@ export class MarkingController {
             if (!isAuthenticated) {
                 const limitInfo = await GuestUsageService.checkLimit(userIP);
                 if (!limitInfo.allowed) {
+                    isJobFinished = true;
+                    await queueJobUpsert(submissionId, {
+                        status: 'failed',
+                        sessionId: submissionId,
+                        isRemark: false,
+                        error: 'Guest limit reached. Please sign up to continue.',
+                        completedAt: Date.now()
+                    });
                     sendSseUpdate(res, {
                         type: 'error',
                         error: 'Guest limit reached. Please sign up to continue.',
@@ -325,6 +447,15 @@ export class MarkingController {
             const progressCallback = (data: any) => {
                 if (data?.type === 'complete') {
                     completeEventSent = true;
+                } else if (!isJobFinished && data?.type !== 'error') {
+                    const progressData = extractProgressData(data);
+                    if (progressData) {
+                        void queueJobUpsert(submissionId, {
+                            status: 'processing',
+                            isRemark: false,
+                            progressData
+                        });
+                    }
                 }
                 if (process.env.CHAOS_MODE === 'true') {
                     // Randomly drop non-essential packets (progress updates, not 'complete' or 'error' or first packet)
@@ -368,6 +499,21 @@ export class MarkingController {
             }
 
             console.log(`✅ [CONTROLLER] Pipeline completed, result exists: ${!!result}, sessionId: ${result?.sessionId}`);
+
+            isJobFinished = true;
+            const resolvedCompletedSessionId = result?.sessionId || finalSessionId || submissionId;
+            const persistedToUnifiedSessions = Boolean(finalUserId && finalUserId !== 'anonymous' && resolvedCompletedSessionId);
+            const completedJobPayload: Record<string, any> = {
+                status: 'completed',
+                sessionId: resolvedCompletedSessionId,
+                isRemark: false,
+                completedAt: Date.now(),
+                ...(persistedToUnifiedSessions ? {} : { fallbackResult: result })
+            };
+            await queueJobUpsert(submissionId, completedJobPayload);
+            if (resolvedCompletedSessionId && resolvedCompletedSessionId !== submissionId) {
+                await queueJobUpsert(resolvedCompletedSessionId, completedJobPayload);
+            }
 
             // 6. Handle Completion (guarantee 'complete' event was sent before closing stream)
             if (result && !completeEventSent) {
@@ -417,6 +563,7 @@ export class MarkingController {
 
         } catch (error: any) {
             console.error(`❌ [CONTROLLER] Marking request failed: ${error.message}`);
+            isJobFinished = true;
 
             const isCreditExhausted = error.message?.includes('exhausted your credits');
             const isOverdraftLimit =
@@ -440,6 +587,18 @@ export class MarkingController {
             }
 
             if (isCreditExhausted) {
+                const creditFailPayload: Record<string, any> = {
+                    status: 'failed',
+                    sessionId: finalSessionId || submissionId,
+                    isRemark: false,
+                    error: error.message,
+                    credits_exhausted: true,
+                    completedAt: Date.now()
+                };
+                await queueJobUpsert(submissionId, creditFailPayload);
+                if (finalSessionId && finalSessionId !== submissionId) {
+                    await queueJobUpsert(finalSessionId, creditFailPayload);
+                }
                 if (capturedMarkingLogs) {
                     const resolvedUid = finalUserId || (req as any).user?.uid || `guest:${req.ip || '0.0.0.0'}`;
                     await AdminAlertService.notifyMarkingLog({
@@ -474,7 +633,6 @@ export class MarkingController {
             }
             
             // Safely extract IDs to tie the response back to the user's UI
-            const aiMessageId = req.body?.aiMessageId || `ai-${Date.now()}`;
             const resolvedSessionId = finalSessionId || sessionId;
 
             // 2-Bucket non-technical error message for the UI
@@ -646,6 +804,27 @@ export class MarkingController {
                     aiMessage: aiErrorMessage
                 }
             });
+
+            const persistedErrorToUnifiedSessions = Boolean(finalUserId && finalUserId !== 'anonymous' && resolvedSessionId);
+            const failJobPayload: Record<string, any> = {
+                status: 'failed',
+                sessionId: resolvedSessionId,
+                isRemark: false,
+                error: displayMessage,
+                completedAt: Date.now(),
+                ...(persistedErrorToUnifiedSessions ? {} : {
+                    fallbackResult: {
+                        success: true,
+                        sessionId: resolvedSessionId,
+                        sessionTitle: "Upload Issue",
+                        aiMessage: aiErrorMessage
+                    }
+                })
+            };
+            await queueJobUpsert(submissionId, failJobPayload);
+            if (resolvedSessionId && resolvedSessionId !== submissionId) {
+                await queueJobUpsert(resolvedSessionId, failJobPayload);
+            }
 
             // Ensure headers are set if the stream hasn't started yet
             if (!res.headersSent) {

@@ -173,7 +173,7 @@ const Header = ({ onMenuToggle, isSidebarOpen }) => {
     }
   };
 
-  const isAppPage = location.pathname === '/app';
+  const isAppPage = location.pathname.startsWith('/app');
 
 
 
