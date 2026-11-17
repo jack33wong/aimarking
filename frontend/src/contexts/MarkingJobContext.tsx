@@ -1,9 +1,11 @@
 import React, { createContext, useContext, useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { simpleSessionService } from '../services/markingApiService';
+import './MarkingJobToast.css';
 
 const ACTIVE_JOBS_STORAGE_KEY = 'intellimark_active_jobs_v1';
 const POLL_INTERVAL_MS = 2500;
+const AUTO_DISMISS_MS = 7000;
 const MAX_CONSECUTIVE_POLL_ERRORS = 12;
 
 export type MarkingJobStatus = 'processing' | 'completed' | 'failed';
@@ -32,7 +34,7 @@ interface MarkingJobContextValue {
   activeJobs: MarkingJob[];
   registerJob: (input: RegisterJobInput) => void;
   updateJobProgress: (sessionId: string, progressData: any) => void;
-  completeJob: (sessionId: string) => void;
+  completeJob: (sessionId: string, title?: string) => void;
   failJob: (sessionId: string, error?: string) => void;
   dismissJob: (sessionId: string) => void;
   startPollingJob: (sessionId: string) => void;
@@ -40,6 +42,12 @@ interface MarkingJobContextValue {
 }
 
 const MarkingJobContext = createContext<MarkingJobContextValue | null>(null);
+
+function isViewingSessionPath(pathname: string, sessionId: string): boolean {
+  if (!pathname.startsWith('/app/')) return false;
+  const routeSessionId = pathname.slice('/app/'.length).split('/')[0];
+  return routeSessionId === sessionId;
+}
 
 function loadPersistedJobs(): Record<string, MarkingJob> {
   try {
@@ -91,6 +99,7 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [jobsBySessionId, setJobsBySessionId] = useState<Record<string, MarkingJob>>(() => loadPersistedJobs());
   const jobsRef = useRef<Record<string, MarkingJob>>(jobsBySessionId);
   const pollingTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const autoDismissTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const pollInFlightRef = useRef<Set<string>>(new Set());
   const pollAttemptsRef = useRef<Record<string, number>>({});
   const mountedRef = useRef(true);
@@ -112,8 +121,17 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
   }, []);
 
+  const clearAutoDismissTimerForSession = useCallback((sessionId: string) => {
+    const timer = autoDismissTimersRef.current[sessionId];
+    if (timer) {
+      clearTimeout(timer);
+      delete autoDismissTimersRef.current[sessionId];
+    }
+  }, []);
+
   const registerJob = useCallback((input: RegisterJobInput) => {
     if (!input?.sessionId) return;
+    clearAutoDismissTimerForSession(input.sessionId);
     const now = Date.now();
     commitJobs(prev => ({
       ...prev,
@@ -127,7 +145,7 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         updatedAt: now
       }
     }));
-  }, [commitJobs]);
+  }, [clearAutoDismissTimerForSession, commitJobs]);
 
   const updateJobProgress = useCallback((sessionId: string, progressData: any) => {
     if (!sessionId || !progressData) return;
@@ -145,11 +163,26 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     });
   }, [commitJobs]);
 
-  const completeJob = useCallback((sessionId: string) => {
+  const dismissJob = useCallback((sessionId: string) => {
     if (!sessionId) return;
     clearTimerForSession(sessionId);
+    clearAutoDismissTimerForSession(sessionId);
     delete pollAttemptsRef.current[sessionId];
-    const isViewing = window.location.pathname === `/app/${sessionId}`;
+    commitJobs(prev => {
+      if (!prev[sessionId]) return prev;
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+  }, [clearAutoDismissTimerForSession, clearTimerForSession, commitJobs]);
+
+  const completeJob = useCallback((sessionId: string, title?: string) => {
+    if (!sessionId) return;
+    clearTimerForSession(sessionId);
+    clearAutoDismissTimerForSession(sessionId);
+    delete pollAttemptsRef.current[sessionId];
+    const trimmedTitle = typeof title === 'string' ? title.trim() : '';
+    const isViewing = isViewingSessionPath(window.location.pathname, sessionId);
     commitJobs(prev => {
       const existing = prev[sessionId];
       if (!existing) return prev;
@@ -162,19 +195,21 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         ...prev,
         [sessionId]: {
           ...existing,
+          ...(trimmedTitle ? { title: trimmedTitle } : {}),
           status: 'completed',
           updatedAt: Date.now(),
           completedAt: Date.now()
         }
       };
     });
-  }, [clearTimerForSession, commitJobs]);
+  }, [clearAutoDismissTimerForSession, clearTimerForSession, commitJobs]);
 
   const failJob = useCallback((sessionId: string, error?: string) => {
     if (!sessionId) return;
     clearTimerForSession(sessionId);
+    clearAutoDismissTimerForSession(sessionId);
     delete pollAttemptsRef.current[sessionId];
-    const isViewing = window.location.pathname === `/app/${sessionId}`;
+    const isViewing = isViewingSessionPath(window.location.pathname, sessionId);
     commitJobs(prev => {
       const existing = prev[sessionId];
       if (!existing) return prev;
@@ -194,19 +229,7 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         }
       };
     });
-  }, [clearTimerForSession, commitJobs]);
-
-  const dismissJob = useCallback((sessionId: string) => {
-    if (!sessionId) return;
-    clearTimerForSession(sessionId);
-    delete pollAttemptsRef.current[sessionId];
-    commitJobs(prev => {
-      if (!prev[sessionId]) return prev;
-      const next = { ...prev };
-      delete next[sessionId];
-      return next;
-    });
-  }, [clearTimerForSession, commitJobs]);
+  }, [clearAutoDismissTimerForSession, clearTimerForSession, commitJobs]);
 
   const pollOnce = useCallback(async (sessionId: string) => {
     if (!mountedRef.current || !sessionId || sessionId.startsWith('temp-')) return;
@@ -253,11 +276,12 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
 
       if (res?.status === 'completed' || (res?.success && (res?.session || res?.fallbackResult))) {
-        completeJob(sessionId);
+        const resolvedTitle = res?.session?.title || res?.fallbackResult?.sessionTitle;
+        completeJob(sessionId, resolvedTitle);
         const liveSession = simpleSessionService.getCurrentSession() as any;
         const isViewing =
           liveSession?.id === sessionId ||
-          window.location.pathname === `/app/${sessionId}`;
+          isViewingSessionPath(window.location.pathname, sessionId);
 
         if (res.session) {
           simpleSessionService.updateSidebarSession(res.session);
@@ -286,7 +310,7 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         const liveSession = simpleSessionService.getCurrentSession() as any;
         const isViewing =
           liveSession?.id === sessionId ||
-          window.location.pathname === `/app/${sessionId}`;
+          isViewingSessionPath(window.location.pathname, sessionId);
 
         if (res.fallbackResult && isViewing) {
           simpleSessionService.initClientSession(
@@ -338,6 +362,27 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     void pollOnce(sessionId);
   }, [pollOnce]);
 
+  // Auto-dismiss completed toasts after AUTO_DISMISS_MS
+  useEffect(() => {
+    for (const [sid, timer] of Object.entries(autoDismissTimersRef.current)) {
+      const job = jobsBySessionId[sid];
+      if (!job || job.status !== 'completed') {
+        clearTimeout(timer);
+        delete autoDismissTimersRef.current[sid];
+      }
+    }
+
+    for (const job of Object.values(jobsBySessionId)) {
+      if (job.status === 'completed' && !autoDismissTimersRef.current[job.sessionId]) {
+        autoDismissTimersRef.current[job.sessionId] = setTimeout(() => {
+          if (mountedRef.current) {
+            dismissJob(job.sessionId);
+          }
+        }, AUTO_DISMISS_MS);
+      }
+    }
+  }, [jobsBySessionId, dismissJob]);
+
   // Resume persisted active jobs on mount
   useEffect(() => {
     mountedRef.current = true;
@@ -352,6 +397,8 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       mountedRef.current = false;
       Object.values(pollingTimersRef.current).forEach(clearTimeout);
       pollingTimersRef.current = {};
+      Object.values(autoDismissTimersRef.current).forEach(clearTimeout);
+      autoDismissTimersRef.current = {};
     };
   }, [startPollingJob]);
 
@@ -430,46 +477,24 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     <MarkingJobContext.Provider value={contextValue}>
       {children}
       {visibleToastJobs.length > 0 && (
-        <div
-          style={{
-            position: 'fixed',
-            bottom: '20px',
-            right: '20px',
-            zIndex: 9999,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '8px',
-            maxWidth: '320px'
-          }}
-        >
+        <div className="marking-job-toast-container">
           {visibleToastJobs.map(job => {
             const isProcessing = job.status === 'processing';
             const isFailed = job.status === 'failed';
             const stepText = job.progressData?.currentStepDescription || (isProcessing ? 'Marking in background...' : isFailed ? 'Marking failed' : 'Marking complete');
 
+            const handleViewJob = () => {
+              navigate(`/app/${job.sessionId}`);
+              if (!isProcessing) {
+                dismissJob(job.sessionId);
+              }
+            };
+
             return (
               <div
                 key={job.sessionId}
-                onClick={() => {
-                  navigate(`/app/${job.sessionId}`);
-                  if (!isProcessing) {
-                    dismissJob(job.sessionId);
-                  }
-                }}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: '10px',
-                  padding: '10px 14px',
-                  borderRadius: '12px',
-                  background: isFailed ? '#7f1d1d' : '#1e293b',
-                  color: '#f8fafc',
-                  boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
-                  border: '1px solid rgba(255,255,255,0.12)',
-                  cursor: 'pointer',
-                  fontSize: '13px'
-                }}
+                onClick={handleViewJob}
+                className={`marking-job-toast${isFailed ? ' marking-job-toast--failed' : ''}`}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
                   {isProcessing ? (
@@ -482,7 +507,7 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                         borderRadius: '50%',
                         display: 'inline-block',
                         flexShrink: 0,
-                        animation: 'spin 1s linear infinite'
+                        animation: 'marking-job-spin 1s linear infinite'
                       }}
                     />
                   ) : (
@@ -497,27 +522,31 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                     </div>
                   </div>
                 </div>
-                {!isProcessing && (
+                <div className="marking-job-toast-actions">
                   <button
                     type="button"
-                    aria-label="Dismiss"
+                    className="marking-job-toast-view-btn"
                     onClick={(e) => {
                       e.stopPropagation();
-                      dismissJob(job.sessionId);
-                    }}
-                    style={{
-                      background: 'transparent',
-                      border: 'none',
-                      color: '#cbd5e1',
-                      cursor: 'pointer',
-                      fontSize: '14px',
-                      padding: '2px 4px',
-                      lineHeight: 1
+                      handleViewJob();
                     }}
                   >
-                    ×
+                    View
                   </button>
-                )}
+                  {!isProcessing && (
+                    <button
+                      type="button"
+                      aria-label="Dismiss"
+                      className="marking-job-toast-dismiss-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        dismissJob(job.sessionId);
+                      }}
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
               </div>
             );
           })}

@@ -427,7 +427,7 @@ export const MarkingPageProvider = ({
         }
 
         if (res?.status === 'completed' || res?.session || res?.fallbackResult) {
-          completeJob(routeSessionId);
+          completeJob(routeSessionId, res?.session?.title || res?.fallbackResult?.sessionTitle);
           if (res.session) {
             loadSession(res.session);
             const sessionModel = getSessionModel(res.session);
@@ -1231,8 +1231,14 @@ export const MarkingPageProvider = ({
         { submissionId: clientSubmissionId },
         (progressData) => updateJobProgress(clientSubmissionId, progressData)
       )
-        .then(() => {
-          completeJob(clientSubmissionId);
+        .then((result) => {
+          const liveAfter = simpleSessionService.getCurrentSession();
+          const resolvedTitle =
+            result?.sessionTitle ||
+            result?.session?.title ||
+            result?.unifiedSession?.title ||
+            (liveAfter?.id === clientSubmissionId ? liveAfter?.title : undefined);
+          completeJob(clientSubmissionId, resolvedTitle);
         })
         .catch(err => {
           if (err?.isTransportDisconnect) {
@@ -1451,8 +1457,14 @@ export const MarkingPageProvider = ({
         { ...(extraParams || {}), submissionId: clientSubmissionId },
         (progressData) => updateJobProgress(clientSubmissionId, progressData)
       )
-        .then(() => {
-          completeJob(clientSubmissionId);
+        .then((result) => {
+          const liveAfter = simpleSessionService.getCurrentSession();
+          const resolvedTitle =
+            result?.sessionTitle ||
+            result?.session?.title ||
+            result?.unifiedSession?.title ||
+            (liveAfter?.id === clientSubmissionId ? liveAfter?.title : undefined);
+          completeJob(clientSubmissionId, resolvedTitle);
         })
         .catch(err => {
           if (err?.isTransportDisconnect) {
@@ -1671,7 +1683,12 @@ export const MarkingPageProvider = ({
         (nextProgress) => updateJobProgress(targetSessionId, nextProgress)
       );
 
-      completeJob(targetSessionId);
+      completeJob(
+        targetSessionId,
+        streamResult?.unifiedSession?.title ||
+        streamResult?.sessionTitle ||
+        liveSession?.title
+      );
       if (streamResult?.unifiedSession && simpleSessionService.getCurrentSession()?.id === targetSessionId) {
         loadSession(streamResult.unifiedSession);
       }
@@ -1779,7 +1796,12 @@ export const MarkingPageProvider = ({
           (nextProgress) => updateJobProgress(targetSessionId, nextProgress)
         );
 
-        completeJob(targetSessionId);
+        completeJob(
+          targetSessionId,
+          streamResult?.unifiedSession?.title ||
+          streamResult?.sessionTitle ||
+          liveSession?.title
+        );
         if (streamResult?.unifiedSession && simpleSessionService.getCurrentSession()?.id === targetSessionId) {
           loadSession(streamResult.unifiedSession);
         }
