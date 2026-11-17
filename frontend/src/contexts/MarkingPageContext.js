@@ -293,6 +293,8 @@ export const MarkingPageProvider = ({
       window.dispatchEvent(new CustomEvent('modelChanged', { detail: savedModel }));
       dispatch({ type: 'SET_PAGE_MODE', payload: 'upload' });
       dispatch({ type: 'EXIT_SPLIT_MODE' });
+      dispatch({ type: 'SET_ACTIVE_QUESTION_ID', payload: null });
+      dispatch({ type: 'SET_CONTEXT_FILTER_ACTIVE', payload: false });
       lastSyncedSessionId.current = null;
       lastHandledSessionIdRef.current = null;
     }
@@ -301,6 +303,10 @@ export const MarkingPageProvider = ({
   // Load session when selectedMarkingResult prop changes (e.g., from Sidebar history click)
   useEffect(() => {
     if (selectedMarkingResult) {
+      if (selectedMarkingResult.id !== lastSyncedSessionId.current) {
+        dispatch({ type: 'SET_ACTIVE_QUESTION_ID', payload: null });
+        dispatch({ type: 'SET_CONTEXT_FILTER_ACTIVE', payload: false });
+      }
       userClosedSplitSessionIdRef.current = null;
       const images = getSessionImages(selectedMarkingResult);
       if (images && images.length > 0) {
@@ -338,16 +344,34 @@ export const MarkingPageProvider = ({
       window.dispatchEvent(new CustomEvent('modelChanged', { detail: savedModel }));
       dispatch({ type: 'SET_PAGE_MODE', payload: 'upload' });
       dispatch({ type: 'EXIT_SPLIT_MODE' });
+      dispatch({ type: 'SET_ACTIVE_QUESTION_ID', payload: null });
+      dispatch({ type: 'SET_CONTEXT_FILTER_ACTIVE', payload: false });
       lastSyncedSessionId.current = null;
     }
   }, [selectedMarkingResult, routeSessionId, loadSession, clearSession]);
 
   const getJobForSessionRef = useRef(getJobForSession);
   getJobForSessionRef.current = getJobForSession;
+  const prevRouteSessionIdRef = useRef(routeSessionId);
 
   // URL hydration for /app/:sessionId (reload recovery & deep links)
   useEffect(() => {
+    const prevRouteSessionId = prevRouteSessionIdRef.current;
+    prevRouteSessionIdRef.current = routeSessionId;
+
     if (!routeSessionId || authLoading) return;
+
+    const routeChanged = Boolean(prevRouteSessionId && prevRouteSessionId !== routeSessionId);
+    const syncedChanged = Boolean(
+      lastSyncedSessionId.current &&
+      !lastSyncedSessionId.current.startsWith('temp-') &&
+      routeSessionId !== lastSyncedSessionId.current
+    );
+
+    if (routeChanged || syncedChanged) {
+      dispatch({ type: 'SET_ACTIVE_QUESTION_ID', payload: null });
+      dispatch({ type: 'SET_CONTEXT_FILTER_ACTIVE', payload: false });
+    }
 
     const liveSession = simpleSessionService.getCurrentSession();
     if (liveSession?.id === routeSessionId && Array.isArray(liveSession.messages) && liveSession.messages.length > 0) {
@@ -570,6 +594,8 @@ export const MarkingPageProvider = ({
   useEffect(() => {
     if (!currentSession) {
       lastSyncedSessionId.current = null;
+      dispatch({ type: 'SET_ACTIVE_QUESTION_ID', payload: null });
+      dispatch({ type: 'SET_CONTEXT_FILTER_ACTIVE', payload: false });
       return;
     }
 
@@ -601,6 +627,8 @@ export const MarkingPageProvider = ({
       const wasTempSession = lastSyncedSessionId.current?.startsWith('temp-');
       if (!wasTempSession) {
         userClosedSplitSessionIdRef.current = null;
+        dispatch({ type: 'SET_ACTIVE_QUESTION_ID', payload: null });
+        dispatch({ type: 'SET_CONTEXT_FILTER_ACTIVE', payload: false });
       } else if (userClosedSplitSessionIdRef.current === lastSyncedSessionId.current || userClosedSplitSessionIdRef.current === 'active') {
         // Carry over the user's manual close decision from temp- ID to the permanent ID
         userClosedSplitSessionIdRef.current = currentSession.id;

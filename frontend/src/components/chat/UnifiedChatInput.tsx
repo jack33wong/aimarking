@@ -1273,7 +1273,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
 
       <div className={`followup-chat-input-bar ${isExpanded ? 'expanded' : ''} ${mode}`}>
         <div className="followup-input-wrapper">
-          {contextQuestionId && (
+          {mode !== 'first-time' && contextQuestionId && (
             <div className="context-chip-container">
               <div className="context-chip">
                 <Brain size={12} />

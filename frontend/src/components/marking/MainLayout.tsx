@@ -752,7 +752,7 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
                   onSendMessage={onSendMessage}
                   mode="first-time"
                   currentSession={currentSession}
-                  contextQuestionId={activeQuestionId}
+                  contextQuestionId={null}
                   setContextQuestionId={setActiveQuestionId}
                   isNegative={isNegative}
                   isFollowUp={isFollowUp}

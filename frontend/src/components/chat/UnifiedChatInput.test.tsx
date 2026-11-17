@@ -367,4 +367,17 @@ describe('UnifiedChatInput — Multi-File Finder Paste, Local Path Interception 
       expect(container.querySelectorAll('.multi-image-item').length).toBe(2);
     });
   });
+
+  test('renders context-chip-container in mode="follow-up" when contextQuestionId is set', () => {
+    const { container } = renderInput({ mode: 'follow-up', contextQuestionId: '3' });
+    expect(container.querySelector('.context-chip-container')).toBeInTheDocument();
+    expect(screen.getByText('Question 3 Focused')).toBeInTheDocument();
+    expect(screen.getByText('AUTO')).toBeInTheDocument();
+  });
+
+  test('does not render context-chip-container in mode="first-time" even if contextQuestionId is provided', () => {
+    const { container } = renderInput({ mode: 'first-time', contextQuestionId: '3' });
+    expect(container.querySelector('.context-chip-container')).not.toBeInTheDocument();
+    expect(screen.queryByText('Question 3 Focused')).not.toBeInTheDocument();
+  });
 });
