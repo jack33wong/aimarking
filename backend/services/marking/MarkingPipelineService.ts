@@ -521,7 +521,7 @@ export function detectIsFrontCover(params: {
 }
 
 export function computeIsScrambledPdf(params: {
-    pageSortMap: Array<{ minQ: number; isFrontCover: boolean }>;
+    pageSortMap: Array<{ minQ: number; isFrontCover: boolean; bookletPage?: number | null }>;
     isPdf: boolean;
     isMultiplePdfs: boolean;
 }): { majorQuestionInversions: number; hasDisplacedFrontCover: boolean; isScrambledPdf: boolean } {
@@ -537,7 +537,25 @@ export function computeIsScrambledPdf(params: {
     const hasDisplacedFrontCover = pageSortMap.some(
         (p, idx) => p.isFrontCover && p.minQ === 999999 && firstQuestionPageIdx >= 0 && idx > firstQuestionPageIdx
     );
-    const isScrambledPdf = (isPdf || isMultiplePdfs) && (
+
+    const bookletPages = pageSortMap
+        .filter(p => typeof p.bookletPage === 'number' && p.bookletPage > 0)
+        .map(p => p.bookletPage as number);
+    let hasStrictlyIncreasingBookletPages =
+        isPdf &&
+        !isMultiplePdfs &&
+        !hasDisplacedFrontCover &&
+        bookletPages.length >= Math.max(3, Math.floor(pageSortMap.length * 0.5));
+    if (hasStrictlyIncreasingBookletPages) {
+        for (let i = 1; i < bookletPages.length; i++) {
+            if (bookletPages[i] <= bookletPages[i - 1]) {
+                hasStrictlyIncreasingBookletPages = false;
+                break;
+            }
+        }
+    }
+
+    const isScrambledPdf = (isPdf || isMultiplePdfs) && !hasStrictlyIncreasingBookletPages && (
         majorQuestionInversions >= 2 ||
         (majorQuestionInversions >= 1 && hasDisplacedFrontCover)
     );
@@ -623,6 +641,284 @@ export function recoverGenericTotalMarks(params: {
             }
         }
     }
+}
+
+export function extractLeadingBaseQNum(qNum: unknown): string {
+    if (qNum === null || qNum === undefined) return '';
+    const str = String(qNum).trim();
+    if (!str) return '';
+    const cleaned = str.replace(/^(?:question|q)[.\s:]*/i, '');
+    const match = cleaned.match(/^(\d+)/);
+    return match ? match[1] : '';
+}
+
+export function resolvePageMinSortWeight(params: {
+    questions?: any[];
+    mapperHints?: string[];
+    isIntroStem?: boolean;
+}): { minSortWeight: number; pageWeights: Array<{ q: string; w: number }>; debugQList: string[] } {
+    const { questions, mapperHints, isIntroStem = false } = params;
+    const pageWeights: Array<{ q: string; w: number }> = [];
+    const debugQList: string[] = [];
+
+    const checkWeightRecursive = (node: any, parentQNum: string = '') => {
+        if (!node) return;
+        let qNumContext = parentQNum;
+
+        if (!parentQNum) {
+            const rootQNum = typeof node === 'string' ? node : (node.questionNumber || node.part || '');
+            qNumContext = String(rootQNum || '').trim();
+        } else {
+            const rawPart = typeof node === 'string' ? node : (node.part || node.questionNumber || '');
+            const cleanPart = String(rawPart || '').replace(/[()\s]/g, '').trim();
+            if (cleanPart) {
+                const isAlreadyPrefixed =
+                    cleanPart.toLowerCase().startsWith(parentQNum.toLowerCase()) &&
+                    (cleanPart.length === parentQNum.length || /^[^0-9]/.test(cleanPart.slice(parentQNum.length)));
+                if (isAlreadyPrefixed) {
+                    qNumContext = cleanPart;
+                } else if (/^\d/.test(cleanPart)) {
+                    // Numeric or decimal sub-part (e.g. "1", "1.1", "1.2", "2.1") must NEVER overwrite parentQNum
+                    qNumContext = parentQNum.endsWith('.') ? `${parentQNum}${cleanPart}` : `${parentQNum}.${cleanPart}`;
+                } else {
+                    // Alpha/roman sub-part (e.g. "a", "b", "i", "ii")
+                    qNumContext = `${parentQNum}${cleanPart}`;
+                }
+            }
+        }
+
+        if (qNumContext) {
+            debugQList.push(qNumContext);
+            const weight = getQuestionSortValue(qNumContext);
+            pageWeights.push({ q: qNumContext, w: weight });
+        }
+
+        if (typeof node === 'object' && Array.isArray(node.subQuestions)) {
+            node.subQuestions.forEach((sub: any) => checkWeightRecursive(sub, qNumContext));
+        }
+    };
+
+    if (Array.isArray(questions) && questions.length > 0) {
+        questions.forEach((q: any) => checkWeightRecursive(q));
+    } else if (Array.isArray(mapperHints) && mapperHints.length > 0) {
+        let currentParentBase = '';
+        mapperHints.forEach((rawHint: string) => {
+            const qStr = String(rawHint || '').trim();
+            if (!qStr) return;
+            let effectiveQStr = qStr;
+            if (/^\d+\.\d+/.test(qStr) && currentParentBase && !qStr.startsWith(`${currentParentBase}.`)) {
+                // Decimal sub-part (e.g. "1.1", "2.1") following a parent question in mapperHints
+                effectiveQStr = `${currentParentBase}.${qStr}`;
+            } else {
+                const leading = extractLeadingBaseQNum(qStr);
+                if (leading && !/^\d+\.\d+/.test(qStr)) {
+                    currentParentBase = leading;
+                }
+            }
+            debugQList.push(effectiveQStr);
+            pageWeights.push({ q: effectiveQStr, w: getQuestionSortValue(effectiveQStr) });
+        });
+    }
+
+    let minSortWeight = Infinity;
+    if (pageWeights.length > 0) {
+        const specificWeights = pageWeights.filter(pw => pw.w % 1 !== 0);
+        const genericWeights = pageWeights.filter(pw => pw.w % 1 === 0);
+
+        if (specificWeights.length > 0) {
+            minSortWeight = Math.min(...specificWeights.map(pw => pw.w));
+        } else if (genericWeights.length > 0) {
+            const baseWeight = Math.min(...genericWeights.map(pw => pw.w));
+            minSortWeight = isIntroStem ? (baseWeight + 0.00005) : (baseWeight + 0.9);
+        }
+    }
+
+    return { minSortWeight, pageWeights, debugQList };
+}
+
+export function getInstanceMinWeight(q: any, questionNumber: string): number {
+    const qNumClean = String(questionNumber || '').trim();
+    const weights: number[] = [];
+
+    const collectWeights = (subs: any[], parentPrefix: string) => {
+        if (!Array.isArray(subs)) return;
+        for (const sq of subs) {
+            if (!sq) continue;
+            const rawPart = String(sq.part || sq.questionNumber || '').trim();
+            let currentFull = parentPrefix;
+            if (rawPart) {
+                const cleanPart = rawPart.replace(/[()\s]/g, '');
+                if (cleanPart) {
+                    const isAlreadyPrefixed =
+                        parentPrefix.length > 0 &&
+                        cleanPart.toLowerCase().startsWith(parentPrefix.toLowerCase()) &&
+                        (cleanPart.length === parentPrefix.length || /^[^0-9]/.test(cleanPart.slice(parentPrefix.length)));
+                    if (isAlreadyPrefixed) {
+                        currentFull = cleanPart;
+                    } else if (/^\d/.test(cleanPart)) {
+                        currentFull = parentPrefix.endsWith('.') ? `${parentPrefix}${cleanPart}` : `${parentPrefix}.${cleanPart}`;
+                    } else {
+                        currentFull = `${parentPrefix}${cleanPart}`;
+                    }
+                    const w = getQuestionSortValue(currentFull);
+                    if (Number.isFinite(w)) weights.push(w);
+                }
+            }
+            if (Array.isArray(sq.subQuestions) && sq.subQuestions.length > 0) {
+                collectWeights(sq.subQuestions, currentFull);
+            }
+        }
+    };
+
+    if (Array.isArray(q?.subQuestions) && q.subQuestions.length > 0) {
+        collectWeights(q.subQuestions, qNumClean);
+    }
+
+    if (weights.length > 0) {
+        return Math.min(...weights);
+    }
+
+    const baseW = getQuestionSortValue(qNumClean);
+    return Number.isFinite(baseW) ? baseW : Infinity;
+}
+
+export function getAnnotationMarkVal(a: any): number {
+    if (!a || a.action === 'cross') return 0;
+    const text = (a.text || '').trim();
+    const isAwardedAction = a.action === 'tick' || a.action === 'mark';
+    const isMath = /[\\{}=\^_\(\)]/.test(text) || text.includes('sqrt') || text.includes('frac');
+    if (!isMath) {
+        const clean = text.replace(/[^a-zA-Z0-9]/g, '');
+        if (/^[BMAPC]0$/i.test(clean)) return 0;
+        if (/^[BMAPC][1-9]\d*$/i.test(clean)) {
+            return parseInt(clean.match(/\d+$/)?.[0] || '1', 10);
+        }
+    }
+    return isAwardedAction ? 1 : 0;
+}
+
+export function applyPointBasedGuillotine(params: {
+    annotations: any[];
+    questionNumber: string;
+    subQuestionBudgets: Record<string, number>;
+    totalBudget: number;
+    isGenericScheme: boolean;
+    hasIncompleteBudgets: boolean;
+}): {
+    finalizedAnnotations: any[];
+    rawTotalAwardedMarks: number;
+    hasAnyCrossOrZero: boolean;
+    bypassSubGuillotineForGeneric: boolean;
+} {
+    const {
+        annotations,
+        questionNumber,
+        subQuestionBudgets,
+        totalBudget,
+        isGenericScheme,
+        hasIncompleteBudgets
+    } = params;
+
+    const rawTotalAwardedMarks = annotations.reduce((sum: number, a: any) => sum + getAnnotationMarkVal(a), 0);
+    const hasAnyCrossOrZero = annotations.some((a: any) =>
+        a?.action === 'cross' || /\b[BMAPC]0\b/i.test((a?.text || '').trim())
+    );
+    const bypassSubGuillotineForGeneric = Boolean(
+        isGenericScheme && (
+            hasIncompleteBudgets ||
+            totalBudget <= 0 ||
+            rawTotalAwardedMarks <= totalBudget
+        )
+    );
+
+    const priorityMap: Record<string, number> = { 'A': 3, 'B': 2, 'M': 1 };
+    let finalizedAnnotations: any[] = [];
+
+    if (bypassSubGuillotineForGeneric) {
+        finalizedAnnotations = [...annotations];
+    } else {
+        // 1. Group by subQuestion
+        const groups = new Map<string, any[]>();
+        annotations.forEach(a => {
+            const rawSq = (a.subQuestion || 'root').toLowerCase();
+            const sq = rawSq.replace(/^\d+/, '').replace(/[()\s]/g, '');
+            if (!groups.has(sq)) groups.set(sq, []);
+            groups.get(sq)!.push(a);
+        });
+
+        // 2. Process each group (Sub-Question Guillotine)
+        for (const [sq, annos] of groups.entries()) {
+            const cleanDotSq = sq.replace(/^\./, '');
+            let subBudget =
+                subQuestionBudgets[sq] ??
+                subQuestionBudgets[`${questionNumber}${sq}`] ??
+                subQuestionBudgets[`${questionNumber}.${cleanDotSq}`] ??
+                99;
+
+            if (!subBudget || subBudget <= 0) {
+                subBudget = 99;
+            }
+
+            annos.sort((a: any, b: any) => {
+                const pA = priorityMap[(a.text || '').charAt(0).toUpperCase()] || 0;
+                const pB = priorityMap[(b.text || '').charAt(0).toUpperCase()] || 0;
+                return pB - pA;
+            });
+
+            const kept: any[] = [];
+            let currentSubScore = 0;
+
+            annos.forEach(a => {
+                const val = getAnnotationMarkVal(a);
+                if (val <= 0) {
+                    kept.push(a);
+                    return;
+                }
+
+                if (currentSubScore + val <= subBudget) {
+                    kept.push(a);
+                    currentSubScore += val;
+                } else if (currentSubScore < subBudget) {
+                    console.log(`[GUILLOTINE] Q${questionNumber}${sq} Cutting mark '${a.text}' to stay within budget ${subBudget}`);
+                }
+            });
+
+            if (kept.length < annos.length) {
+                console.log(`[GUILLOTINE] Q${questionNumber}${sq} exceeded budget! Kept ${kept.length}/${annos.length}, Budget ${subBudget}.`);
+            }
+            finalizedAnnotations.push(...kept);
+        }
+    }
+
+    // 3. Final Global Guillotine (just in case sum of subs > total)
+    const currentTotalAwarded = finalizedAnnotations.reduce((sum: number, a: any) => sum + getAnnotationMarkVal(a), 0);
+    if (totalBudget > 0 && currentTotalAwarded > totalBudget) {
+        console.log(`[GUILLOTINE] Q${questionNumber} GLOBAL exceeded budget! Total ${totalBudget}. Executing final cut...`);
+        finalizedAnnotations.sort((a, b) => {
+            const pA = priorityMap[(a.text || '').charAt(0).toUpperCase()] || 0;
+            const pB = priorityMap[(b.text || '').charAt(0).toUpperCase()] || 0;
+            return pB - pA;
+        });
+
+        let runningGlobal = 0;
+        const globalKept: any[] = [];
+        finalizedAnnotations.forEach(a => {
+            const val = getAnnotationMarkVal(a);
+            const isAwarded = val > 0;
+            if (!isAwarded || (runningGlobal + val <= totalBudget)) {
+                globalKept.push(a);
+                if (isAwarded) runningGlobal += val;
+            }
+        });
+        finalizedAnnotations = globalKept;
+    }
+
+    return {
+        finalizedAnnotations,
+        rawTotalAwardedMarks,
+        hasAnyCrossOrZero,
+        bypassSubGuillotineForGeneric
+    };
 }
 
 // Define the steps for re-marking processing
@@ -2173,7 +2469,7 @@ export class MarkingPipelineService {
             for (const item of allClassificationResults) {
                 if (item.result?.category === 'questionAnswer' && Array.isArray(item.result?.questions)) {
                     for (const q of item.result.questions) {
-                        const baseNum = String(q.questionNumber || '').replace(/[^0-9]/g, '');
+                        const baseNum = extractLeadingBaseQNum(q.questionNumber);
                         if (baseNum) answeredBaseQuestions.add(baseNum);
                     }
                 }
@@ -2207,7 +2503,7 @@ export class MarkingPipelineService {
                         const qText = q.text || q.questionText || '';
                         const subQuestions = Array.isArray(q.subQuestions) ? q.subQuestions : [];
                         const hasSubQuestionText = subQuestions.some((sq: any) => !isContinuationStubText(sq.text || sq.questionText));
-                        const baseNum = String(q.questionNumber || '').replace(/[^0-9]/g, '');
+                        const baseNum = extractLeadingBaseQNum(q.questionNumber);
 
                         const isStub = isContinuationStubText(qText) && !hasSubQuestionText;
                         const isAlreadyAnsweredBaseQ = Boolean(baseNum && answeredBaseQuestions.has(baseNum) && isStub);
@@ -2249,7 +2545,7 @@ export class MarkingPipelineService {
                     if (item.result?.category === 'questionOnly' && Array.isArray(item.result?.questions)) {
                         const donorPage = standardizedPages.find(p => p.pageIndex === item.pageIndex);
                         for (const q of item.result.questions) {
-                            const baseNum = String(q.questionNumber || '').replace(/[^0-9]/g, '');
+                            const baseNum = extractLeadingBaseQNum(q.questionNumber);
                             if (!baseNum || !answeredBaseQuestions.has(baseNum)) continue;
 
                             if (!donatedStemsByQNum.has(baseNum)) {
@@ -2381,12 +2677,15 @@ export class MarkingPipelineService {
                 for (const item of allClassificationResults) {
                     if (item.result?.category === 'questionOnly') {
                         const existingQs = Array.isArray(item.result.questions)
-                            ? item.result.questions.map((q: any) => String(q.questionNumber || '')).filter(Boolean)
+                            ? item.result.questions
+                                .map((q: any) => extractLeadingBaseQNum(q.questionNumber) || String(q.questionNumber || ''))
+                                .filter(Boolean)
                             : [];
                         if (existingQs.length > 0) {
                             (item.result as any).mapperHints = [
                                 ...new Set([...((item.result as any).mapperHints || []), ...existingQs])
                             ];
+                            (item.result as any)._isIntroStemPage = true;
                         }
                         console.log(
                             `🧹 [HYBRID-BOOKLET] Reclassifying blank/donor exam page ${item.pageIndex} (Qs: ${existingQs.join(', ') || 'none'}) from 'questionOnly' to 'metadata'.`
@@ -2625,6 +2924,12 @@ export class MarkingPipelineService {
                             const cB = isContaminatedStem(b.question);
                             if (cA && !cB) return 1;
                             if (!cA && cB) return -1;
+                        }
+
+                        const wA = getInstanceMinWeight(a.question, questionNumber);
+                        const wB = getInstanceMinWeight(b.question, questionNumber);
+                        if (Math.abs(wA - wB) > 0.00001) {
+                            return wA - wB;
                         }
 
                         return textB.length - textA.length;
@@ -3385,80 +3690,10 @@ export class MarkingPipelineService {
                 };
                 const physicalPageIndex = page.pageIndex;
 
-                let minSortWeight = Infinity;
-                const debugQList: string[] = [];
-
-                // 🏗️ TRUTH-FIRST: Look at database-verified questions and their SUB-QUENCES
-                const pageWeights: { q: string, w: number }[] = [];
-                const checkWeightRecursive = (node: any, parentQNum: string = '') => {
-                    const currentQNum = typeof node === 'string' ? node : (node.questionNumber || node.part || '');
-                    // Build full context (e.g. "11" + "c" = "11c")
-                    let qNumContext = parentQNum;
-                    if (currentQNum) {
-                        if (!qNumContext) qNumContext = currentQNum;
-                        else if (!qNumContext.endsWith(currentQNum) && !currentQNum.startsWith(qNumContext)) {
-                            // Only append if it looks like a sub-part (not a repetition)
-                            if (/^[a-z(]/.test(currentQNum)) qNumContext += currentQNum;
-                            else qNumContext = currentQNum;
-                        }
-                    }
-
-                    // 🛡️ [SCOPE FIX]: We no longer check `allIndicesOnNode` because `pageRawResult` is
-                    // ALREADY 1:1 mapped to this `physicalPageIndex` by ClassificationMapper!
-                    if (qNumContext) {
-                        debugQList.push(qNumContext);
-                        const weight = getQuestionSortValue(qNumContext);
-                        pageWeights.push({ q: qNumContext, w: weight });
-                    }
-
-                    // Recurse into sub-questions to find the earliest part on this page
-                    if (node.subQuestions && Array.isArray(node.subQuestions)) {
-                        node.subQuestions.forEach((sub: any) => checkWeightRecursive(sub, qNumContext));
-                    }
-                };
-
-                if (pageRawResult.questions && Array.isArray(pageRawResult.questions) && pageRawResult.questions.length > 0) {
-                    pageRawResult.questions.forEach((q: any) => checkWeightRecursive(q));
-                } else if ((pageRawResult as any).mapperHints && Array.isArray((pageRawResult as any).mapperHints)) {
-                    (pageRawResult as any).mapperHints.forEach((qStr: string) => {
-                        debugQList.push(qStr);
-                        pageWeights.push({ q: qStr, w: getQuestionSortValue(qStr) });
-                    });
-                }
-
-                // 🛡️ [ROLE-BASED TIE-BREAKER]: 
-                // A-Level Generic = Continuation (Follows Specific 11.01)
-                // GCSE Generic = Stem (Leads Specific 11.01)
-                if (pageWeights.length > 0) {
-                    const specificWeights = pageWeights.filter(pw => pw.w % 1 !== 0);
-                    const genericWeights = pageWeights.filter(pw => pw.w % 1 === 0);
-
-                    if (specificWeights.length > 0) {
-                        // Page has specific sub-questions (e.g. 11c). Use the earliest one.
-                        minSortWeight = Math.min(...specificWeights.map(pw => pw.w));
-                    } else if (genericWeights.length > 0) {
-                        // Page is GENERIC ONLY (e.g. "11" or "2"). Use Paper Type to decide.
-                        const baseWeight = Math.min(...genericWeights.map(pw => pw.w));
-                        minSortWeight = baseWeight + 0.9;
-                    }
-
-                    // 🔍 DEBUG: Log the decision
-                    if (process.env.LOG_REINDEX_DEBUG === 'true') {
-                        console.log(`   ⚖️ [PAGE-WEIGHT] Page ${originalIdx}: Weights=[${pageWeights.map(pw => `${pw.q}:${pw.w}`).join(', ')}] -> Selected: ${minSortWeight}`);
-                    }
-                }
-
                 // 🛡️ [METADATA IDENTITY]: DO NOT force minSortWeight = Infinity for meta-pages.
                 // ⚠️ [WARNING]: Cover pages MUST retain their question labels (identity) so the Zone Detector 
                 // can find top-of-page anchors. Physical sorting is handled by the 'isMeta' flag alone.
                 const isMeta = pageRawResult?.category === 'metadata' || pageRawResult?.category === 'frontPage';
-
-                // Detect true Exam Front Cover so out-of-order loose image uploads never treat it as an interior blank page
-                const pageOcrBlocks = (allPagesOcrData.find(o => o.pageIndex === page.pageIndex) || allPagesOcrData[originalIdx])?.ocrData?.mathBlocks || [];
-                const pageOcrText = pageOcrBlocks.map((b: any) => b.googleVisionText || b.mathpixLatex || b.text || '').join(' ');
-                const rawGeoIdx = typeof (page as any)._rawPageIndex === 'number' ? (page as any)._rawPageIndex : originalIdx;
-                const isGeoCover = Boolean(geometryResults?.[originalIdx]?.is_cover_page || geometryResults?.[rawGeoIdx]?.is_cover_page);
-                const isFrontCover = detectIsFrontCover({ isGeoCover, originalIdx, isMeta, pageOcrText });
 
                 // Detect whether this page contains a printed question prompt vs continuation text only
                 const isContaminatedStemLocal = (q: any): boolean => {
@@ -3476,6 +3711,25 @@ export class MarkingPipelineService {
                         return t.length > 20 && !isContaminatedStemLocal(q);
                     })
                 );
+
+                // 🏗️ TRUTH-FIRST: Look at database-verified questions and their SUB-SEQUENCES
+                const isIntroStem = hasPrintedStem || Boolean((pageRawResult as any)._isIntroStemPage);
+                const { minSortWeight, pageWeights, debugQList } = resolvePageMinSortWeight({
+                    questions: pageRawResult.questions,
+                    mapperHints: (pageRawResult as any).mapperHints,
+                    isIntroStem
+                });
+
+                if (pageWeights.length > 0 && process.env.LOG_REINDEX_DEBUG === 'true') {
+                    console.log(`   ⚖️ [PAGE-WEIGHT] Page ${originalIdx}: Weights=[${pageWeights.map(pw => `${pw.q}:${pw.w}`).join(', ')}] -> Selected: ${minSortWeight}`);
+                }
+
+                // Detect true Exam Front Cover so out-of-order loose image uploads never treat it as an interior blank page
+                const pageOcrBlocks = (allPagesOcrData.find(o => o.pageIndex === page.pageIndex) || allPagesOcrData[originalIdx])?.ocrData?.mathBlocks || [];
+                const pageOcrText = pageOcrBlocks.map((b: any) => b.googleVisionText || b.mathpixLatex || b.text || '').join(' ');
+                const rawGeoIdx = typeof (page as any)._rawPageIndex === 'number' ? (page as any)._rawPageIndex : originalIdx;
+                const isGeoCover = Boolean(geometryResults?.[originalIdx]?.is_cover_page || geometryResults?.[rawGeoIdx]?.is_cover_page);
+                const isFrontCover = detectIsFrontCover({ isGeoCover, originalIdx, isMeta, pageOcrText });
 
                 // Detect printed booklet page number from OCR (header or footer blocks)
                 let bookletPage: number | null = null;
@@ -4319,110 +4573,16 @@ export class MarkingPipelineService {
                                                     ? aiReportedTotalMarks
                                                     : (result.score.totalMarks || task.markingScheme.totalMarks || 0);
 
-                                                // 1. Group by subQuestion
-                                                const groups = new Map<string, any[]>();
-                                                anyAnnotations.forEach(a => {
-                                                    const rawSq = (a.subQuestion || 'root').toLowerCase();
-                                                    const sq = rawSq.replace(/^\d+/, '').replace(/[()\s]/g, '');
-                                                    if (!groups.has(sq)) groups.set(sq, []);
-                                                    groups.get(sq)!.push(a);
+                                                const {
+                                                    finalizedAnnotations
+                                                } = applyPointBasedGuillotine({
+                                                    annotations: anyAnnotations,
+                                                    questionNumber: String(task.questionNumber || ''),
+                                                    subQuestionBudgets,
+                                                    totalBudget,
+                                                    isGenericScheme,
+                                                    hasIncompleteBudgets
                                                 });
-
-                                                let finalizedAnnotations: any[] = [];
-                                                const priorityMap: Record<string, number> = { 'A': 3, 'B': 2, 'M': 1 };
-
-                                                // 2. Process each group (Sub-Question Guillotine)
-                                                for (const [sq, annos] of groups.entries()) {
-                                                    const cleanDotSq = sq.replace(/^\./, '');
-                                                    let subBudget =
-                                                        subQuestionBudgets[sq] ??
-                                                        subQuestionBudgets[`${task.questionNumber}${sq}`] ??
-                                                        subQuestionBudgets[`${task.questionNumber}.${cleanDotSq}`] ??
-                                                        99; // Default high if unknown
-
-                                                    // Never enforce a 0 budget! If budget is 0 or undefined, treat as unbounded (99)
-                                                    if (!subBudget || subBudget <= 0) {
-                                                        subBudget = 99;
-                                                    }
-
-                                                    // Sort by priority (A > B > M)
-                                                    annos.sort((a: any, b: any) => {
-                                                        const pA = priorityMap[(a.text || '').charAt(0).toUpperCase()] || 0;
-                                                        const pB = priorityMap[(b.text || '').charAt(0).toUpperCase()] || 0;
-                                                        return pB - pA;
-                                                    });
-
-                                                    const kept: any[] = [];
-                                                    let currentSubScore = 0;
-
-                                                    annos.forEach(a => {
-                                                        const isAwarded = a.action === 'tick' || a.action === 'mark' || (parseInt((a.text || '').replace(/\D/g, '') || '0') > 0);
-                                                        if (!isAwarded) {
-                                                            kept.push(a);
-                                                            return;
-                                                        }
-
-                                                        // Extract value (e.g., B2 is 2 marks)
-                                                        // Extract value carefully. Default to 1.
-                                                        // Look for "M1", "A2" at start. Avoid "UQ (47)" -> 47.
-                                                        const match = (a.text || '').match(/^([A-Za-z]+)(\d+)/);
-                                                        let val = 1;
-                                                        if (match && match[2]) {
-                                                            val = parseInt(match[2]);
-                                                        } else {
-                                                            // Fallback: If no code found, assume 1 mark if tick/mark
-                                                            val = 1;
-                                                        }
-
-                                                        if (currentSubScore + val <= subBudget) {
-                                                            kept.push(a);
-                                                            currentSubScore += val;
-                                                        } else if (currentSubScore < subBudget) {
-                                                            // Partial credit if applicable, or just cap it
-                                                            // For now, we cut the annotation if it would blow the budget
-                                                            console.log(`[GUILLOTINE] Q${task.questionNumber}${sq} Cutting mark '${a.text}' to stay within budget ${subBudget}`);
-                                                        } else {
-                                                            // Budget full
-                                                            // console.log(`[GUILLOTINE] Q${task.questionNumber}${sq} Section full. Cutting excess mark: ${a.text}`);
-                                                        }
-                                                    });
-
-                                                    if (kept.length < annos.length) {
-                                                        console.log(`[GUILLOTINE] Q${task.questionNumber}${sq} exceeded budget! Kept ${kept.length}/${annos.length}, Budget ${subBudget}.`);
-                                                    }
-                                                    finalizedAnnotations.push(...kept);
-                                                }
-
-                                                // 3. Final Global Guillotine (just in case sum of subs > total)
-                                                const currentTotalTicks = finalizedAnnotations.filter(a => a.action === 'tick' || (parseInt((a.text || '').replace(/\D/g, '') || '0') > 0)).length;
-                                                if (totalBudget > 0 && currentTotalTicks > totalBudget) {
-                                                    console.log(`[GUILLOTINE] Q${task.questionNumber} GLOBAL exceeded budget! Total ${totalBudget}. Executing final cut...`);
-                                                    // Note: This logic is slightly simplified and assumes 1 mark per annotation for global cut
-                                                    // For robust multi-mark handling, we'd need to iterate and count values similar to the loop above
-                                                    finalizedAnnotations.sort((a, b) => {
-                                                        const pA = priorityMap[(a.text || '').charAt(0).toUpperCase()] || 0;
-                                                        const pB = priorityMap[(b.text || '').charAt(0).toUpperCase()] || 0;
-                                                        return pB - pA;
-                                                    });
-
-                                                    let runningGlobal = 0;
-                                                    const globalKept: any[] = [];
-                                                    finalizedAnnotations.forEach(a => {
-                                                        const match = (a.text || '').match(/^([A-Za-z]+)(\d+)/);
-                                                        let val = 1;
-                                                        if (match && match[2]) {
-                                                            val = parseInt(match[2]);
-                                                        } else {
-                                                            val = 1;
-                                                        }
-                                                        const isAwarded = a.action === 'tick' || a.action === 'mark' || (parseInt((a.text || '').replace(/\D/g, '') || '0') > 0);
-                                                        if (!isAwarded || (runningGlobal + val <= totalBudget)) {
-                                                            globalKept.push(a);
-                                                            if (isAwarded) runningGlobal += val;
-                                                        }
-                                                    });
-                                                    finalizedAnnotations = globalKept;
-                                                }
 
                                                 result.annotations = finalizedAnnotations;
 
@@ -4432,31 +4592,7 @@ export class MarkingPipelineService {
 
                                                 if (countsChanged) {
                                                     const newAwarded = finalizedAnnotations.reduce((sum: number, a: any) => {
-                                                        const isAwardedAction = a.action === 'tick' || a.action === 'mark';
-                                                        const text = (a.text || '').trim();
-
-                                                        // ATOMIC MATH FIX: Treat math as 1 mark, avoid "27" error from \sqrt{27}
-                                                        const isMath = /[\\{}=\^_\(\)]/.test(text) || text.includes('sqrt') || text.includes('frac');
-
-                                                        let val = 1;
-                                                        if (!isMath) {
-                                                            const clean = text.replace(/[^a-zA-Z0-9]/g, '');
-                                                            if (/^[BMAPC][1-9]\d*$/i.test(clean)) {
-                                                                val = parseInt(clean.match(/\d+$/)?.[0] || '1', 10);
-                                                            } else {
-                                                                // Raw numbers or plain text are 1 mark
-                                                                val = 1;
-                                                            }
-                                                        }
-
-                                                        // Logic: Award if explicit tick AND positive value OR if no action but valid mark code (e.g. M1)
-                                                        // This handles both "visual" ticks and "logical" marks from the AI.
-                                                        const shouldAward = isAwardedAction || (val > 0 && !a.action);
-
-                                                        if (shouldAward) {
-                                                            return sum + val;
-                                                        }
-                                                        return sum;
+                                                        return sum + getAnnotationMarkVal(a);
                                                     }, 0);
 
                                                     result.score.awardedMarks = newAwarded;
