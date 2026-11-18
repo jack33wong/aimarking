@@ -140,6 +140,52 @@ export class MarkingOutputService {
                 );
                 const printedFooterRects = MarkingOutputService.extractPrintedBoilerplateRects(pageOcrEntry?.ocrData);
 
+                // Collect all student work bounding boxes on this page (including unannotated lines) from classification results
+                // so SVGOverlayService avoids placing margin reasoning over unannotated handwriting lines.
+                const pageClassification =
+                    (allClassificationResults || []).find(c => c.pageIndex === pageIndex) ||
+                    (page.originalPageIndex !== undefined
+                        ? (allClassificationResults || []).find(c => c.pageIndex === page.originalPageIndex)
+                        : undefined);
+                const extraStudentRects: Array<{ x: number; y: number; w: number; h: number }> = [];
+                const pushPercentRect = (pos: any) => {
+                    if (!pos || pos.x == null || pos.y == null) return;
+                    const px = Number(pos.x);
+                    const py = Number(pos.y);
+                    const pw = Number(pos.width ?? pos.w);
+                    const ph = Number(pos.height ?? pos.h);
+                    if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(pw) || !Number.isFinite(ph)) return;
+                    if (pw <= 0 || ph <= 0) return;
+                    const x = Math.round((px / 100) * burnW);
+                    const y = Math.round((py / 100) * burnH);
+                    const w = Math.round((pw / 100) * burnW);
+                    const h = Math.round((ph / 100) * burnH);
+                    if (w > 5 && h > 5) {
+                        extraStudentRects.push({ x, y, w, h });
+                    }
+                };
+                const clsQuestions = pageClassification?.result?.questions;
+                if (Array.isArray(clsQuestions)) {
+                    for (const q of clsQuestions) {
+                        if (Array.isArray(q.studentWorkLines)) {
+                            q.studentWorkLines.forEach((line: any) => pushPercentRect(line?.position));
+                        }
+                        if (q.studentDrawingPosition) {
+                            pushPercentRect(q.studentDrawingPosition);
+                        }
+                        if (Array.isArray(q.subQuestions)) {
+                            for (const sq of q.subQuestions) {
+                                if (Array.isArray(sq.studentWorkLines)) {
+                                    sq.studentWorkLines.forEach((line: any) => pushPercentRect(line?.position));
+                                }
+                                if (sq.studentDrawingPosition) {
+                                    pushPercentRect(sq.studentDrawingPosition);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 const annotatedImageData = await SVGOverlayService.burnSVGOverlayServerSide(
                     page.imageData,
                     annotationsForThisPage,
@@ -150,7 +196,8 @@ export class MarkingOutputService {
                     zonesForThisPageArray,
                     hasDensityError,
                     rubricStampsForThisPage,
-                    printedFooterRects
+                    printedFooterRects,
+                    extraStudentRects
                 );
                 return annotatedImageData;
             } catch (drawError) {

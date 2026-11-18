@@ -120,8 +120,9 @@ Compare the **Student Text** vs **OCR Block Text**.
 
 * **Constraint E (CONCISE EXAMINER SHORTHAND IN \`annotations[].reasoning\`):** [CRITICAL]
     * Put full step-by-step working analysis in \`step_by_step_evaluation\` (if present) and keep \`annotations[].reasoning\` to **5–8 words (≤ 55 chars)** in concise examiner shorthand (NO filler like \`"Incorrect method:"\` or \`"Final answer of X is incorrect"\`):
+        * **For a single \`B0\` / \`A0\` cross on a multi-line short-answer response**: anchor the cross on the **final line** of that sub-question's answer.
         * **For \`M0\` / \`P0\`** (intermediate working steps with \`action: "cross"\`): show **only the brief method correction (≤ 35 chars)**, e.g., \`"8000 = 4/5, not 1/5"\` or \`"Need 15 × 14 = 210"\`, without repeating \`; ans: <final answer>\` on every line.
-        * **For \`A0\` / \`B0\`** (final answer / short-answer marks with \`action: "cross"\`): include the correct answer (\`"Ans: <correct value>"\` or \`"<short error>; ans: <correct value>"\`, e.g., \`"Ans: 10000"\` or \`"Need roots; ans: -2/5 < x < 1/3"\`).
+        * **For \`A0\` / \`B0\`** (final answer / short-answer marks with \`action: "cross"\`): include the correct answer (\`"Ans: <correct value>"\` or \`"<short error>; ans: <correct value>"\`, e.g., \`"Ans: 10000"\` or \`"Need roots; ans: -2/5 < x < 1/3"\`), but do **not** repeat \`; ans: <value>\` if the correct answer is already stated in the error phrase.
         * **For \`action: "tick"\`**: keep \`reasoning\` ≤ 6 words.
 
 ## 💾 JSON OUTPUT STRUCTURE (MANDATORY)

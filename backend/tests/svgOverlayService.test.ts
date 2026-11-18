@@ -363,4 +363,211 @@ describe('SVGOverlayService', () => {
       expect(joinedText).toContain('Used wrong formula for area');
     });
   });
+
+  describe('Fix 2: allPageStudentRects expansion, multi-line continuation & rightBoxMargin', () => {
+    it('places single-cross reasoning below unannotated lower student work lines in the same subQuestion', () => {
+      const annotations: any[] = [
+        {
+          action: 'cross',
+          text: 'B0',
+          subQuestion: '1b',
+          reasoning: 'Missing comparative direction',
+          bbox: [200, 400, 600, 40]
+        }
+      ];
+      const semanticZones = [
+        { label: '1b', x: 150, startY: 380, width: 1200, endY: 620 }
+      ];
+      const allPageStudentRects = [
+        { x: 200, y: 400, w: 600, h: 40 },
+        { x: 200, y: 460, w: 620, h: 40 },
+        { x: 200, y: 520, w: 580, h: 40 } // bottom = 560
+      ];
+
+      const svg = (SVGOverlayService as any).createSVGOverlay(
+        annotations,
+        1650,
+        2339,
+        { width: 1650, height: 2339 },
+        undefined,
+        undefined,
+        false,
+        semanticZones,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        allPageStudentRects
+      ) as string;
+
+      const match = svg.match(/<text[^>]*\sy="([^"]+)"[^>]*>Missing comparative[^<]*<\/text>/);
+      expect(match).not.toBeNull();
+      const reasoningBaselineY = Number(match![1]);
+      // Must be placed below the lowest unannotated line (bottom = 560)
+      expect(reasoningBaselineY).toBeGreaterThanOrEqual(560);
+    });
+
+    it('does not expand M0 across A0 when a subQuestion has multiple deferred crosses', () => {
+      const annotations: any[] = [
+        {
+          action: 'cross',
+          text: 'M0',
+          subQuestion: '1b',
+          reasoning: 'Wrong substitution',
+          bbox: [200, 400, 500, 40]
+        },
+        {
+          action: 'cross',
+          text: 'A0',
+          subQuestion: '1b',
+          reasoning: 'Ans: 42',
+          bbox: [200, 520, 500, 40]
+        }
+      ];
+      const semanticZones = [
+        { label: '1b', x: 150, startY: 380, width: 1200, endY: 620 }
+      ];
+      const allPageStudentRects = [
+        { x: 200, y: 400, w: 500, h: 40 },
+        { x: 200, y: 460, w: 500, h: 40 },
+        { x: 200, y: 520, w: 500, h: 40 }
+      ];
+
+      const svg = (SVGOverlayService as any).createSVGOverlay(
+        annotations,
+        1650,
+        2339,
+        { width: 1650, height: 2339 },
+        undefined,
+        undefined,
+        false,
+        semanticZones,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        allPageStudentRects
+      ) as string;
+
+      const m0Match = svg.match(/<text[^>]*\sy="([^"]+)"[^>]*>Wrong substitution[^<]*<\/text>/);
+      const a0Match = svg.match(/<text[^>]*\sy="([^"]+)"[^>]*>Ans: 42[^<]*<\/text>/);
+      expect(m0Match).not.toBeNull();
+      expect(a0Match).not.toBeNull();
+      expect(Number(m0Match![1])).toBeLessThan(Number(a0Match![1]));
+    });
+
+    it('clamps reasoning box X to respect rightBoxMargin (9.5% of page width)', () => {
+      const actualWidth = 1650;
+      const actualHeight = 2339;
+      const symRect = { x: 1500, y: 800, w: 90, h: 42 };
+      const occupiedRects = [{ ...symRect }];
+      const item = {
+        annotation: { action: 'cross', text: 'B0', bbox: [300, 800, 600, 42] },
+        symbolRect: symRect,
+        studentRect: { x: 300, y: 800, w: 600, h: 42 },
+        reasoningText: 'Need comparative direction',
+        color: '#e60000'
+      };
+
+      (SVGOverlayService as any).renderTeacherStyleReasoning(
+        item,
+        actualWidth,
+        actualHeight,
+        occupiedRects,
+        [{ x: 300, y: 800, w: 600, h: 42 }],
+        [],
+        undefined,
+        []
+      );
+
+      const placed = occupiedRects[1];
+      const expectedRightMargin = Math.round(actualWidth * 0.095);
+      expect(placed.x + placed.w).toBeLessThanOrEqual(actualWidth - expectedRightMargin + 1);
+    });
+
+    it('does not expand single-cross studentRect onto printedFooterRects when allPageStudentRects is omitted', () => {
+      const annotations: any[] = [
+        {
+          action: 'cross',
+          text: 'B0',
+          subQuestion: '1b',
+          reasoning: 'Missing comparative direction',
+          bbox: [200, 400, 600, 40]
+        }
+      ];
+      const printedFooterRects = [
+        { x: 100, y: 2200, w: 1400, h: 40 }
+      ];
+
+      const svg = (SVGOverlayService as any).createSVGOverlay(
+        annotations,
+        1650,
+        2339,
+        { width: 1650, height: 2339 },
+        undefined,
+        undefined,
+        false,
+        [],
+        false,
+        undefined,
+        undefined,
+        printedFooterRects,
+        undefined
+      ) as string;
+
+      const match = svg.match(/<text[^>]*\sy="([^"]+)"[^>]*>Missing comparative[^<]*<\/text>/);
+      expect(match).not.toBeNull();
+      const reasoningBaselineY = Number(match![1]);
+      // Should stay near the annotation (y=400), NOT jump down to the printed footer (y=2200)
+      expect(reasoningBaselineY).toBeLessThan(700);
+    });
+  });
+
+  describe('Fix 3: createSymbolAnnotation redundant ans suffix deduplication', () => {
+    const runCreateSymbol = (text: string, reasoning: string, symbol = '✗') => {
+      const deferredReasonings: any[] = [];
+      const occupiedRects: any[] = [];
+      (SVGOverlayService as any).createSymbolAnnotation(
+        { action: symbol === '✓' ? 'tick' : 'cross', text, reasoning, bbox: [200, 300, 400, 40] },
+        200,
+        300,
+        400,
+        40,
+        symbol,
+        text,
+        reasoning,
+        1650,
+        2339,
+        undefined,
+        occupiedRects,
+        deferredReasonings
+      );
+      return deferredReasonings[0]?.reasoningText as string | undefined;
+    };
+
+    it('strips redundant ; ans: <value> when all significant answer tokens already appear in prefixText', () => {
+      const result = runCreateSymbol('A0', 'Should be x = 16/9; ans: x = 16/9');
+      expect(result).toBe('Should be x = 16/9');
+    });
+
+    it('does not strip ; ans: <value> on partial substring overlap (token-set boundary check)', () => {
+      const result = runCreateSymbol('A0', 'Should be 5, not 15; ans: 50');
+      expect(result).toBe('Should be 5, not 15; ans: 50');
+    });
+
+    it('does not strip ; ans: <value> when prefix has no prose word', () => {
+      const result = runCreateSymbol('A0', '5; ans: 5');
+      expect(result).toBe('5; ans: 5');
+    });
+
+    it('resets ansSuffix when stripped so truncation over maxCharsLimit does not re-attach it', () => {
+      const longRedundant =
+        'Used wrong sign when solving for x = 16/9 in the quadratic equation step here; ans: x = 16/9';
+      expect(longRedundant.length).toBeGreaterThan(72);
+
+      const result = runCreateSymbol('A0', longRedundant)!;
+      expect(result.length).toBeLessThanOrEqual(72);
+      expect(result).not.toMatch(/;\s*ans:/i);
+    });
+  });
 });

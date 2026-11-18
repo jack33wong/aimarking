@@ -7,7 +7,9 @@ export default (isGeneric: boolean = false): string => {
   let section6 = "";
   if (isGeneric) {
     section6 = `4. MANDATORY ANNOTATIONS: Output at least one annotation for EVERY sub-question found in the Transcript.
-    * GENERIC MODE RULE: Only return marks for discovered total count.`;
+    * GENERIC MODE RULE: Only return marks for discovered total count.
+    * If a sub-question is blank/wrong, explicitly output a 0-mark annotation (Action: "cross") anchored on its final line so we know you checked it.
+    * Match tick count to discovered/awarded marks per sub-question (e.g. N marks = N one-mark ticks).`;
   } else {
     section6 = `4. MANDATORY ANNOTATIONS: Output at least one annotation for EVERY sub-question listed in Scheme.
     * STRICT MODE RULE: You MUST output a result for every sub-question (e.g. 10a, 10bi, 10bii).
@@ -163,10 +165,10 @@ If NO matching OCR block is found:
 
 * **Constraint E (CONCISE EXAMINER SHORTHAND IN \`annotations[].reasoning\`):** [CRITICAL]
     * Put all full step-by-step working analysis and detailed coaching in \`step_by_step_evaluation\`.
-    * **WHEN 0 MARKS ARE AWARDED ON A MULTI-STEP WORKING ATTEMPT (including B2/B3 schemes):** If the student wrote multiple lines of working and earned 0 marks, emit a \`cross\` (\`M0\`/\`P0\`/\`B0\`) on the **first wrong working step** (with a brief ≤ 35 char correction of that step, e.g., \`"Cannot √(x²+x) as x+x"\` or \`"Set factors = 0, don't expand"\`) in addition to the final answer mark (\`A0\`/\`B0\` with \`"Ans: <correct value>"\`), so the student sees where their working went wrong.
+    * **WHEN 0 MARKS ARE AWARDED ON A MULTI-STEP WORKING ATTEMPT (including B2/B3 schemes):** If the student wrote multiple lines of working and earned 0 marks, emit a \`cross\` (\`M0\`/\`P0\`/\`B0\`) on the **first wrong working step** (with a brief ≤ 35 char correction of that step, e.g., \`"Cannot √(x²+x) as x+x"\` or \`"Set factors = 0, don't expand"\`) in addition to the final answer mark (\`A0\`/\`B0\` with \`"Ans: <correct value>"\`), so the student sees where their working went wrong. For a single \`B0\`/\`A0\` cross on a multi-line short-answer response, anchor the cross on the **final line** of that sub-question's answer.
     * Keep \`annotations[].reasoning\` to **5–8 words (≤ 55 chars)** in concise examiner shorthand (NO filler prefixes like \`"Incorrect method:"\` or \`"Final answer of X is incorrect"\` because it is rendered directly in the page margin):
         * **For \`M0\` / \`P0\` (or intermediate working \`B0\`)**: write **only the brief method correction (≤ 35 chars)**, e.g., \`"8000 = 4/5, not 1/5"\` or \`"Cannot √(x²+x) as x+x"\`. Do **NOT** repeat \`; ans: <final answer>\` on intermediate working lines.
-        * **For final answer \`A0\` / \`B0\`**: include the correct answer (\`"Ans: <correct value>"\` or \`"<short error>; ans: <correct value>"\`, e.g., \`"Ans: 10000"\` or \`"Need roots; ans: -2/5 < x < 1/3"\`).
+        * **For final answer \`A0\` / \`B0\`**: include the correct answer (\`"Ans: <correct value>"\` or \`"<short error>; ans: <correct value>"\`, e.g., \`"Ans: 10000"\` or \`"Need roots; ans: -2/5 < x < 1/3"\`), but do **not** repeat \`; ans: <value>\` if the correct answer is already stated in the error phrase.
         * **For \`action: "tick"\`**: keep \`reasoning\` ≤ 6 words (e.g., \`"Correct substitution into formula"\`).
 
 ## 💾 JSON OUTPUT STRUCTURE (MANDATORY)
@@ -193,7 +195,7 @@ If NO matching OCR block is found:
       "content_desc": "String (OPTIONAL. Only use if marking a DRAWING to describe what was found, e.g. 'Box plot with median at 40'. For text, leave null.)",
       "ocr_match_status": "MATCHED|UNMATCHED|VISUAL",
       "linked_ocr_id": "MANDATORY. The p0_ocr_... ID if matched, or null if unmatched. NEVER omit this field.",
-      "reasoning": "String (5-8 words, <=55 chars examiner shorthand; M0/P0: method correction <=35 chars; A0/B0: include '; ans: <value>' or 'Ans: <value>'; tick: <=6 words)",
+      "reasoning": "String (5-8 words, <=55 chars examiner shorthand; M0/P0: method correction <=35 chars; A0/B0: include '; ans: <value>' or 'Ans: <value>' unless already stated; tick: <=6 words)",
       "subQuestion": "String",
       "pageIndex": "Integer",
       "visual_position": { 
@@ -216,5 +218,5 @@ If NO matching OCR block is found:
 4. **VISUAL CHECK:** Did I use **PERCENTAGES (0-100)** for visual_position, NOT pixels?
 5. Did I output an entry for the LAST sub-question?
 6. Did I set \`linked_ocr_id\` to an OCR Block ID or \`null\` for EVERY annotation? (Never omit it)
-7. Is every \`annotations[].reasoning\` ≤ 8 words (≤ 55 chars) with NO filler prefixes, method-only on \`M0\`/\`P0\`, and \`ans: <value>\` included on \`A0\`/\`B0\`?`;
+7. Is every \`annotations[].reasoning\` ≤ 8 words (≤ 55 chars) with NO filler prefixes, method-only on \`M0\`/\`P0\`, and \`ans: <value>\` included on \`A0\`/\`B0\` (without duplicating an answer already stated)?`;
 };

@@ -139,7 +139,8 @@ export class SVGOverlayService {
     semanticZones?: any[],
     hasDensityError?: boolean,
     rubricStamps?: RubricStampItem[],
-    printedFooterRects?: Array<{ x: number; y: number; w: number; h: number }>
+    printedFooterRects?: Array<{ x: number; y: number; w: number; h: number }>,
+    allPageStudentRects?: Array<{ x: number; y: number; w: number; h: number }>
   ): Promise<string> {
     try {
       const hasScores = (Array.isArray(scoreToDraw) ? scoreToDraw.length > 0 : !!scoreToDraw);
@@ -178,7 +179,7 @@ export class SVGOverlayService {
         console.warn('[SVGOverlayService] Could not build ink integral map, falling back to bbox-only placement:', inkErr);
       }
 
-      const svgOverlay = this.createSVGOverlay(annotations, burnWidth, burnHeight, { width: burnWidth, height: burnHeight }, scoreToDraw, totalScoreText, hasMetaPage, semanticZones, hasDensityError, inkMap, rubricStamps, printedFooterRects);
+      const svgOverlay = this.createSVGOverlay(annotations, burnWidth, burnHeight, { width: burnWidth, height: burnHeight }, scoreToDraw, totalScoreText, hasMetaPage, semanticZones, hasDensityError, inkMap, rubricStamps, printedFooterRects, allPageStudentRects);
       const svgBuffer = Buffer.from(svgOverlay);
 
       const burnedImageBuffer = await sharp(uprightImageBuffer)
@@ -197,7 +198,7 @@ export class SVGOverlayService {
   // SVG GENERATION LOGIC
   // =========================================================================
 
-  private static createSVGOverlay(annotations: Annotation[], actualWidth: number, actualHeight: number, originalDimensions: ImageDimensions, scoreToDraw?: any, totalScoreText?: string, hasMetaPage?: boolean, semanticZones?: any[], hasDensityError?: boolean, inkMap?: InkDensityMap, rubricStamps?: RubricStampItem[], printedFooterRects?: Array<{ x: number; y: number; w: number; h: number }>): string {
+  private static createSVGOverlay(annotations: Annotation[], actualWidth: number, actualHeight: number, originalDimensions: ImageDimensions, scoreToDraw?: any, totalScoreText?: string, hasMetaPage?: boolean, semanticZones?: any[], hasDensityError?: boolean, inkMap?: InkDensityMap, rubricStamps?: RubricStampItem[], printedFooterRects?: Array<{ x: number; y: number; w: number; h: number }>, allPageStudentRects?: Array<{ x: number; y: number; w: number; h: number }>): string {
     const hasScores = (Array.isArray(scoreToDraw) ? scoreToDraw.length > 0 : !!scoreToDraw);
     const hasStamps = Array.isArray(rubricStamps) && rubricStamps.length > 0;
     if ((!annotations || annotations.length === 0) && !hasScores && !totalScoreText && (!semanticZones || semanticZones.length === 0) && !hasDensityError && !hasStamps) {
@@ -252,6 +253,14 @@ export class SVGOverlayService {
     const occupiedRects: Rect2D[] = [];
     // Track student handwriting bboxes so we avoid placing reasoning text over student work
     const studentWorkRects: Rect2D[] = [];
+
+    if (Array.isArray(allPageStudentRects) && allPageStudentRects.length > 0) {
+      allPageStudentRects.forEach(r => {
+        if (r && r.w > 5 && r.h > 5 && !isNaN(r.x) && !isNaN(r.y)) {
+          studentWorkRects.push({ x: r.x, y: r.y, w: r.w, h: r.h });
+        }
+      });
+    }
 
     if (Array.isArray(printedFooterRects) && printedFooterRects.length > 0) {
       printedFooterRects.forEach(r => {
@@ -324,6 +333,50 @@ export class SVGOverlayService {
           );
         } catch (error) {
           console.error(`SVG Generation Error [Idx: ${index}]:`, error);
+        }
+      });
+
+      // Expand studentRect.h for single-cross sub-questions that have unannotated lower lines
+      // so Pass 2 places margin reasoning cleanly below the full multi-line response.
+      const deferredCountBySubQ = new Map<string, number>();
+      deferredReasonings.forEach((d) => {
+        if (d.subQuestion) {
+          const norm = String(d.subQuestion).toLowerCase().replace(/\s+/g, '');
+          deferredCountBySubQ.set(norm, (deferredCountBySubQ.get(norm) || 0) + 1);
+        }
+      });
+
+      deferredReasonings.forEach((item) => {
+        if (item.annotation?.action !== 'cross' || !item.subQuestion) return;
+        const normSub = String(item.subQuestion).toLowerCase().replace(/\s+/g, '');
+        if ((deferredCountBySubQ.get(normSub) || 0) !== 1) return;
+
+        const matchingZone = flatZones.length > 0
+          ? flatZones.find(z => {
+              const zLabel = String(z.label || '').toLowerCase().replace(/\s+/g, '');
+              return zLabel === normSub || zLabel.endsWith(normSub) || normSub.endsWith(zLabel);
+            })
+          : undefined;
+
+        if (!Array.isArray(allPageStudentRects) || allPageStudentRects.length === 0) return;
+        const sourceRects = allPageStudentRects;
+
+        const nextSymY = allSymbolRects
+          .filter(r => r.y > item.symbolRect.y + 4)
+          .reduce((minY, r) => Math.min(minY, r.y), actualHeight);
+        const zoneTop = matchingZone ? matchingZone.startY - 15 * fontScaleFactor : item.studentRect.y - 10 * fontScaleFactor;
+        const zoneBottom = matchingZone ? Math.min(matchingZone.endY + 25 * fontScaleFactor, nextSymY) : nextSymY;
+
+        let maxSubQuestionLineBottomY = item.studentRect.y + item.studentRect.h;
+        for (const sw of sourceRects) {
+          const swCenterY = sw.y + sw.h / 2;
+          if (swCenterY >= zoneTop && swCenterY <= zoneBottom && sw.y + sw.h > maxSubQuestionLineBottomY) {
+            maxSubQuestionLineBottomY = sw.y + sw.h;
+          }
+        }
+
+        if (maxSubQuestionLineBottomY > item.studentRect.y + item.studentRect.h) {
+          item.studentRect.h = maxSubQuestionLineBottomY - item.studentRect.y;
         }
       });
 
@@ -699,10 +752,29 @@ export class SVGOverlayService {
       const trailingAnsMatch = !isEnglishAoBadge
         ? cleanReasoning.match(/((?:;\s*|\s+)(?:ans|correct)\s*:\s*[^;]+)$/i)
         : null;
-      const ansSuffix = trailingAnsMatch ? trailingAnsMatch[1].replace(/^\s+/, '; ') : '';
+      let ansSuffix = trailingAnsMatch ? trailingAnsMatch[1].replace(/^\s+/, '; ') : '';
       const prefixText = trailingAnsMatch
         ? cleanReasoning.slice(0, trailingAnsMatch.index).replace(/[;.,\s]+$/, '').trim()
         : cleanReasoning;
+
+      // Strip redundant `; ans: <value>` when all significant answer tokens already appear in prefixText
+      if (ansSuffix && prefixText) {
+        const ansValue = ansSuffix.replace(/^;\s*(?:ans|correct)\s*:\s*/i, '').trim();
+        const hasProseWord = /[a-zA-Z]{2,}/.test(prefixText);
+        const tokenize = (s: string): string[] =>
+          (s.toLowerCase().match(/-?[a-z0-9]+(?:[./][a-z0-9]+)*/g) || []);
+        const STOP_TOKENS = new Set(['the', 'a', 'an', 'is', 'are', 'be', 'to', 'of', 'in', 'on', 'for', 'and', 'or']);
+        const prefixTokens = new Set(tokenize(prefixText));
+        const significantAnsTokens = tokenize(ansValue).filter(t => !STOP_TOKENS.has(t));
+        if (
+          hasProseWord &&
+          significantAnsTokens.length > 0 &&
+          significantAnsTokens.every(t => prefixTokens.has(t))
+        ) {
+          cleanReasoning = prefixText;
+          ansSuffix = '';
+        }
+      }
 
       if (cleanReasoning.length > maxCharsLimit) {
         if (ansSuffix) {
@@ -854,10 +926,19 @@ export class SVGOverlayService {
     const isFinalAnswerZeroMark = /\b[AB]0\b/i.test(String(item.annotation?.text || ''));
     const isNearPageBottom = symbolRect.y + symbolRect.h > actualHeight * 0.80;
     const preferAboveSymbol = isFinalAnswerZeroMark && isNearPageBottom;
+    const hasMultiLineContinuationBelowSymbol =
+      (studentRect.y + studentRect.h) > (symbolRect.y + symbolRect.h + Math.round(20 * fontScaleFactor));
 
     // Search window around the symbol, respecting zone bounds when reasonable
     const searchMinY = Math.max(edgeMargin, Math.min(zoneMinY, symbolRect.y - 110 * fontScaleFactor));
-    const searchMaxY = Math.min(maxBottomY, Math.max(zoneMaxY, symbolRect.y + 240 * fontScaleFactor));
+    const searchMaxY = Math.min(
+      maxBottomY,
+      Math.max(
+        zoneMaxY,
+        symbolRect.y + 240 * fontScaleFactor,
+        studentRect.y + studentRect.h + Math.round(120 * fontScaleFactor)
+      )
+    );
 
     // Evaluate wrap profiles: 24 (clean natural margin phrasing) and 20 (compact)
     const charLimits = isEnglishPositiveAoComment ? [24, 20] : [32, 22];
@@ -881,7 +962,8 @@ export class SVGOverlayService {
         const boxH = lines.length * lineHeight + Math.max(2, Math.round(4 * fontScaleFactor));
 
         const minX = edgeMargin;
-        const maxX = Math.max(minX, actualWidth - boxW - edgeMargin);
+        const rightBoxMargin = Math.max(edgeMargin, Math.round(actualWidth * 0.095));
+        const maxX = Math.max(minX, actualWidth - boxW - rightBoxMargin);
         const minY = yStart;
         const maxY = Math.max(minY, yEnd - boxH);
 
@@ -889,12 +971,13 @@ export class SVGOverlayService {
         const rightAnchorX = Math.max(minX, Math.min(Math.round(symbolRect.x), maxX));
         const minRightRegionX = Math.max(minX, Math.round(rightAnchorX - 220 * fontScaleFactor));
 
+        const belowStudentWorkY = studentRect.y + studentRect.h + Math.round(8 * fontScaleFactor);
         const aboveSymbolCandidate: [number, number] = [rightAnchorX, symbolRect.y - boxH - 8 * fontScaleFactor];
         const leftOfSymbolCandidate: [number, number] = [Math.max(minX, symbolRect.x - boxW - 12 * fontScaleFactor), symbolRect.y];
         const belowSymbolCandidate: [number, number] = [rightAnchorX, symbolRect.y + symbolRect.h + 6 * fontScaleFactor];
         const rightOfSymbolCandidate: [number, number] = [symbolRect.x + symbolRect.w + 12 * fontScaleFactor, symbolRect.y];
         const flushRightBelowCandidate: [number, number] = [maxX, symbolRect.y + symbolRect.h + 6 * fontScaleFactor];
-        const belowStudentWorkCandidate: [number, number] = [rightAnchorX, studentRect.y + studentRect.h + 10 * fontScaleFactor];
+        const belowStudentWorkCandidate: [number, number] = [rightAnchorX, belowStudentWorkY];
 
         // Build candidate list: for A0/B0 final-answer marks near the page bottom, prioritize above-symbol first to avoid footer/total-mark line collisions
         const candidates: Array<[number, number]> = preferAboveSymbol
@@ -906,14 +989,23 @@ export class SVGOverlayService {
               flushRightBelowCandidate,
               belowStudentWorkCandidate
             ]
-          : [
-              belowSymbolCandidate,
-              rightOfSymbolCandidate,
-              flushRightBelowCandidate,
-              belowStudentWorkCandidate,
-              aboveSymbolCandidate,
-              leftOfSymbolCandidate
-            ];
+          : hasMultiLineContinuationBelowSymbol
+            ? [
+                belowStudentWorkCandidate,
+                rightOfSymbolCandidate,
+                flushRightBelowCandidate,
+                belowSymbolCandidate,
+                aboveSymbolCandidate,
+                leftOfSymbolCandidate
+              ]
+            : [
+                belowSymbolCandidate,
+                rightOfSymbolCandidate,
+                flushRightBelowCandidate,
+                belowStudentWorkCandidate,
+                aboveSymbolCandidate,
+                leftOfSymbolCandidate
+              ];
 
         // Add 2D grid candidates to avoid collisions & find empty space
         const stepX = Math.max(10, Math.round(40 * fontScaleFactor));
@@ -944,8 +1036,10 @@ export class SVGOverlayService {
           }
           const studentOverlapRatio = Math.min(1, studentOverlapArea / Math.max(1, boxW * boxH));
 
-          // Distance from the ideal right-hand spot (above symbol for A0/B0 near page bottom, right/below symbol otherwise)
-          const belowIdealY = symbolRect.y + symbolRect.h + 6 * fontScaleFactor;
+          // Distance from the ideal right-hand spot (above symbol for A0/B0 near page bottom, below expanded student work for multi-line continuation, right/below symbol otherwise)
+          const belowIdealY = hasMultiLineContinuationBelowSymbol
+            ? belowStudentWorkY
+            : symbolRect.y + symbolRect.h + 6 * fontScaleFactor;
           const aboveIdealY = Math.max(minY, symbolRect.y - boxH - 8 * fontScaleFactor);
           const isSameRowRight =
             Math.abs(cy - symbolRect.y) <= lineHeight * 1.5 &&

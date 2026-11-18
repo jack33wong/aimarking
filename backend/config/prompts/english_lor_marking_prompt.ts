@@ -62,7 +62,7 @@ Determine which mode applies to the current question:
    - e.g., AQA 8700 Paper 1 Question 1 (4 marks, AO1 — "List four things..." or shaded-circle/checkbox MCQs).
    - Marked deterministically: 1 mark per valid statement/choice from the specified lines.
    - **MCQ Visual Verification (CRITICAL)**: For shaded-circle (\`[o]\`) or checkbox MCQs, ALWAYS inspect every option's circle/box directly on the attached page image (checking for faint center dots, light pencil shading, crossed-out boxes, and circled reinstatements) rather than blindly trusting \`## 6. STUDENT WORK\` if transcription missed a faint mark. If a question asks for N box(es) and the student leaves more than N active (uncrossed) boxes marked, deduct 1 mark per extra active selection (min 0). Set \`linked_ocr_id\` to the \`RAW OCR BLOCKS\` ID of the **selected option's text/letter**.
-   - Place a \`"tick"\` (\`text: "[AO1]"\`) on each valid point and \`"cross"\` (\`text: "[AO1]"\`) on any incorrect/out-of-scope statement.
+   - Place a \`"tick"\` (\`text: "[AO1]"\`) on each valid point and \`"cross"\` (\`text: "[AO1]"\`) on any incorrect/out-of-scope statement (for \`maxMarks <= 4\` retrieval, if an incorrect statement spans multiple lines, anchor its \`"cross"\` on the **final line** of that statement so margin reasoning does not overlap lower lines).
 2. **Single-AO Extended Response (\`scoringType: "SINGLE_AO_LOR"\`)**:
    - e.g., AQA 8700/1 Q2 Language (8 marks, AO2), Q3 Structure (8 marks, AO2), Q4 Critical Evaluation (20 marks, AO4), or Literature essays without separate SPaG marks.
    - **Paper 2 Specifics**:
