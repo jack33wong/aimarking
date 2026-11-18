@@ -6,6 +6,7 @@ import { UserFacingError } from '../../utils/UserFacingError.js';
 export interface InterceptedSchemeImageMeta {
     imageData: string;
     sourceIndex?: number;
+    rawPageIndex?: number;
     originalFileName?: string;
 }
 
@@ -346,7 +347,7 @@ export class PaperSplitterService {
      */
     static assertSinglePaperClassification(
         allClassificationResults: Array<{ pageIndex: number; result?: any }>,
-        options: { isPdf?: boolean; pageCount?: number; fileName?: string } = {}
+        options: { isPdf?: boolean; pageCount?: number; fileName?: string; isUserSelectedPageChunk?: boolean } = {}
     ): void {
         const stemsByBaseQ = new Map<string, Array<{ pageIndex: number; tokens: Set<string> }>>();
 
@@ -399,6 +400,10 @@ export class PaperSplitterService {
             );
 
             if (options.isPdf) {
+                if (options.isUserSelectedPageChunk) {
+                    console.log(`ℹ️ [PAPER-SPLITTER] Skipping COMBINED_MULTI_PAPER_PDF_NOT_SUPPORTED for user-selected page chunk.`);
+                    return;
+                }
                 throw new UserFacingError({
                     code: 'COMBINED_MULTI_PAPER_PDF_NOT_SUPPORTED',
                     category: 'user_fixable',

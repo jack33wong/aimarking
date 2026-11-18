@@ -25,6 +25,7 @@ export interface DetectedPaperGroup {
   hasMarkScheme?: boolean;
   markSchemeCount?: number;
   storageUrls?: string[];
+  isPageChunk?: boolean;
 }
 
 export interface UserFacingErrorOptions {

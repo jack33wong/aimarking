@@ -391,12 +391,30 @@ export class MarkingController {
             // Write back so downstream services see the final string
             req.body.model = requestedModel;
 
+            let selectedRawPageIndices: number[] | undefined = undefined;
+            if (req.body.selectedRawPageIndices !== undefined && req.body.selectedRawPageIndices !== null && req.body.selectedRawPageIndices !== '') {
+                try {
+                    const parsed = typeof req.body.selectedRawPageIndices === 'string'
+                        ? JSON.parse(req.body.selectedRawPageIndices)
+                        : req.body.selectedRawPageIndices;
+                    if (Array.isArray(parsed)) {
+                        const nums = parsed.map(Number).filter(n => Number.isFinite(n));
+                        if (nums.length > 0) {
+                            selectedRawPageIndices = nums;
+                        }
+                    }
+                } catch {
+                    console.warn('⚠️ [MARKING] Ignoring invalid selectedRawPageIndices payload');
+                }
+            }
+
             const options = {
                 userId: (req as any).user?.uid,
                 sessionId: sessionId,
                 customText: req.body.customText,
                 model: requestedModel,
-                allowGenericSubjectMarking: req.body.allowGenericSubjectMarking === true || req.body.allowGenericSubjectMarking === 'true'
+                allowGenericSubjectMarking: req.body.allowGenericSubjectMarking === true || req.body.allowGenericSubjectMarking === 'true',
+                ...(selectedRawPageIndices ? { selectedRawPageIndices } : {})
             };
 
             const userId = options.userId;

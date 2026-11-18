@@ -23,7 +23,7 @@ import {
 } from './MarkingHelpers.js';
 import { withPerformanceLogging } from '../../utils/markingRouterHelpers.js';
 import UsageTracker from '../../utils/UsageTracker.js';
-import { UserFacingError } from '../../utils/UserFacingError.js';
+import { UserFacingError, type DetectedPaperGroup } from '../../utils/UserFacingError.js';
 
 import type { MarkingSessionContext, QuestionSessionContext } from '../../types/sessionManagement.js';
 import { getBaseQuestionNumber, extractQuestionNumberFromFilename } from '../../utils/TextNormalizationUtils.js';
@@ -55,7 +55,7 @@ import { ClassificationService } from './ClassificationService.js';
 import type { QuestionResult } from '../../types/marking.js';
 import { executeMarkingForQuestion, createMarkingTasksFromClassification } from './MarkingExecutor.js';
 import { MarkingSchemeOrchestrationService } from './MarkingSchemeOrchestrationService.js';
-import { PaperSplitterService } from './PaperSplitterService.js';
+import { PaperSplitterService, type PaperBucket, type InterceptedSchemeImageMeta } from './PaperSplitterService.js';
 import { QuestionModeHandlerService } from './QuestionModeHandlerService.js';
 import { ModeSplitService } from './ModeSplitService.js';
 import { SessionManagementService } from '../sessionManagementService.js';
@@ -958,6 +958,257 @@ export interface MarkingOptions {
     sessionId?: string;
     customText?: string;
     allowGenericSubjectMarking?: boolean;
+    selectedRawPageIndices?: number[];
+}
+
+export function filterPagesBySelectedRawIndices(params: {
+    standardizedPages: StandardizedPage[];
+    selectedRawPageIndices?: number[];
+    files: Express.Multer.File[];
+    isExplicitMarkSchemePdfFile: (f: Express.Multer.File) => boolean;
+}): { standardizedPages: StandardizedPage[]; isUserSelectedPageChunk: boolean } {
+    const { standardizedPages, selectedRawPageIndices, files, isExplicitMarkSchemePdfFile } = params;
+    if (!Array.isArray(selectedRawPageIndices) || selectedRawPageIndices.length === 0) {
+        return { standardizedPages, isUserSelectedPageChunk: false };
+    }
+    const selectedSet = new Set(
+        selectedRawPageIndices.map(Number).filter(n => Number.isFinite(n))
+    );
+    if (selectedSet.size === 0) {
+        return { standardizedPages, isUserSelectedPageChunk: false };
+    }
+    const filteredPages = standardizedPages.filter(page => {
+        const rawIdx = (page as any)._rawPageIndex ?? page.pageIndex;
+        if (selectedSet.has(rawIdx)) return true;
+        const srcIdx = (page as any)._sourceIndex ?? (page as any)._fileIndex;
+        const sourceFile = typeof srcIdx === 'number' ? files[srcIdx] : undefined;
+        return Boolean(sourceFile && isExplicitMarkSchemePdfFile(sourceFile));
+    });
+    if (filteredPages.length > 0) {
+        return { standardizedPages: filteredPages, isUserSelectedPageChunk: true };
+    }
+    return { standardizedPages, isUserSelectedPageChunk: false };
+}
+
+export function assertNoEarlyMultiCoverPdf(params: {
+    standardizedPages: StandardizedPage[];
+    geometryResults: any[];
+}): void {
+    const { standardizedPages, geometryResults } = params;
+    const isPdfPage = (p: StandardizedPage) =>
+        /\.pdf$/i.test(p.originalFileName || '') && (p as any)._sourceIndex !== undefined;
+    const studentPdfSourceIndices = new Set(
+        standardizedPages.filter(isPdfPage).map(p => Number((p as any)._sourceIndex))
+    );
+    const isSingleStudentPdf =
+        studentPdfSourceIndices.size === 1 &&
+        standardizedPages.length > 0 &&
+        standardizedPages.every(isPdfPage);
+
+    const coverIndices: number[] = [];
+    (geometryResults || []).forEach((g, idx) => {
+        if (g?.is_cover_page && !g?.is_marking_scheme) {
+            coverIndices.push(idx);
+        }
+    });
+
+    if (
+        isSingleStudentPdf &&
+        coverIndices.length >= 2 &&
+        (coverIndices[coverIndices.length - 1] - coverIndices[0]) >= 3
+    ) {
+        const fileName = standardizedPages[0]?.originalFileName;
+        throw new UserFacingError({
+            code: 'COMBINED_MULTI_PAPER_PDF_NOT_SUPPORTED',
+            category: 'user_fixable',
+            shouldAlertAdmin: false,
+            userMessage:
+                `This PDF${fileName ? ` ("${fileName}")` : ''} appears to contain **multiple exam papers combined into a single file** (${coverIndices.length} separate exam cover pages detected).\n\n` +
+                `**How to fix:** Please upload **each exam paper as a separate PDF file** (e.g. Paper 1 PDF, Paper 2 PDF, Paper 3 PDF) so they can be graded accurately in parallel.`,
+            technicalMessage: `Combined multi-paper PDF rejected before page gating: ${coverIndices.length} cover pages detected at indices [${coverIndices.join(', ')}].`
+        });
+    }
+}
+
+export function buildDetectedPaperGroupsHelper(params: {
+    paperBuckets: PaperBucket[];
+    studentRawPageCount: number;
+    maxFreePages: number;
+    files: Express.Multer.File[];
+    interceptedSchemeMeta: InterceptedSchemeImageMeta[];
+    computeSubjectVote: (geos: any[]) => string | undefined;
+}): DetectedPaperGroup[] | undefined {
+    const {
+        paperBuckets,
+        studentRawPageCount,
+        maxFreePages,
+        files,
+        interceptedSchemeMeta,
+        computeSubjectVote
+    } = params;
+
+    const formatPrettySubject = (subj: string | undefined, geos: any[]): string | undefined => {
+        if (!subj) return undefined;
+        if (subj === 'ENGLISH_LANGUAGE') return 'English Language';
+        if (subj === 'ENGLISH_LITERATURE') return 'English Literature';
+        if (subj === 'MATHS') return 'Mathematics';
+        return geos.find((g: any) => g?.unsupported_subject_name)?.unsupported_subject_name || subj;
+    };
+
+    const ejectedSchemeRawPageIndices = Array.from(
+        new Set(
+            interceptedSchemeMeta
+                .map(m => m.rawPageIndex)
+                .filter((idx): idx is number => typeof idx === 'number' && Number.isFinite(idx))
+        )
+    ).sort((a, b) => a - b);
+
+    const ejectedSchemeFileIndices = Array.from(
+        new Set(
+            interceptedSchemeMeta
+                .map(m => m.sourceIndex)
+                .filter((idx): idx is number => typeof idx === 'number' && Number.isFinite(idx))
+        )
+    ).sort((a, b) => a - b);
+
+    if (paperBuckets.length === 1 && studentRawPageCount > maxFreePages) {
+        const CHUNK_SIZE = 25;
+        const b = paperBuckets[0];
+        const studentRawIndices = Array.from(
+            new Set(b.standardizedPages.map(p => (p as any)._rawPageIndex ?? p.pageIndex))
+        ).sort((a, c) => a - c);
+        const schemeFileIndices = (b.deferredSchemePdfFiles || [])
+            .map(msFile => files.indexOf(msFile))
+            .filter(i => i >= 0);
+        const allFileIndices = Array.from(
+            new Set([
+                ...b.standardizedPages.map(
+                    p => (p as any)._fileIndex ?? (p as any)._sourceIndex ?? (p as any)._rawPageIndex ?? p.pageIndex
+                ),
+                ...schemeFileIndices,
+                ...ejectedSchemeFileIndices
+            ])
+        ).sort((a, c) => a - c);
+        const subj = computeSubjectVote(b.geometryResults) || b.subjectHint;
+        const prettySubj = formatPrettySubject(subj, b.geometryResults);
+        const markSchemeCount =
+            (b.deferredSchemePdfFiles?.length || 0) +
+            ((b.interceptedSchemeImages?.length || 0) > 0 ? 1 : 0);
+
+        const chunks: DetectedPaperGroup[] = [];
+        for (let start = 0; start < studentRawIndices.length; start += CHUNK_SIZE) {
+            const slice = studentRawIndices.slice(start, start + CHUNK_SIZE);
+            const combinedRawIndices = Array.from(
+                new Set([...slice, ...ejectedSchemeRawPageIndices])
+            ).sort((a, c) => a - c);
+            chunks.push({
+                paperIndex: chunks.length,
+                label: `Pages ${slice[0] + 1}–${slice[slice.length - 1] + 1}`,
+                subject: prettySubj,
+                pageCount: slice.length,
+                fileIndices: allFileIndices,
+                rawPageIndices: combinedRawIndices,
+                canGradeOnFree: slice.length <= maxFreePages,
+                hasMarkScheme: markSchemeCount > 0,
+                markSchemeCount,
+                isPageChunk: true
+            });
+        }
+        return chunks.length > 1 ? chunks : undefined;
+    }
+
+    if (paperBuckets.length <= 1) return undefined;
+
+    return paperBuckets.map((b, idx) => {
+        const rawPageIndices = Array.from(
+            new Set(b.standardizedPages.map(p => (p as any)._rawPageIndex ?? p.pageIndex))
+        ).sort((a, c) => a - c);
+        const schemeFileIndices = (b.deferredSchemePdfFiles || [])
+            .map(msFile => files.indexOf(msFile))
+            .filter(i => i >= 0);
+        const fileIndices = Array.from(
+            new Set([
+                ...b.standardizedPages.map(
+                    p => (p as any)._fileIndex ?? (p as any)._sourceIndex ?? (p as any)._rawPageIndex ?? p.pageIndex
+                ),
+                ...schemeFileIndices,
+                ...(ejectedSchemeFileIndices.length === 1 ? ejectedSchemeFileIndices : [])
+            ])
+        ).sort((a, c) => a - c);
+        const subj = computeSubjectVote(b.geometryResults) || b.subjectHint;
+        const prettySubj = formatPrettySubject(subj, b.geometryResults);
+        const markSchemeCount =
+            (b.deferredSchemePdfFiles?.length || 0) +
+            ((b.interceptedSchemeImages?.length || 0) > 0 ? 1 : 0);
+        return {
+            paperIndex: idx,
+            label: b.paperLabel,
+            subject: prettySubj,
+            pageCount: rawPageIndices.length,
+            fileIndices,
+            rawPageIndices,
+            canGradeOnFree: rawPageIndices.length <= maxFreePages,
+            hasMarkScheme: markSchemeCount > 0,
+            markSchemeCount
+        };
+    });
+}
+
+export function buildFreePageLimitExceededMessage(params: {
+    studentRawPageCount: number;
+    maxFreePages: number;
+    detectedPaperGroups?: DetectedPaperGroup[];
+}): string {
+    const { studentRawPageCount, maxFreePages, detectedPaperGroups } = params;
+    const isChunkedWorkbook = Boolean(detectedPaperGroups?.some(g => g.isPageChunk));
+    const hasGroups = Boolean(detectedPaperGroups && detectedPaperGroups.length > 1);
+    const paperBreakdownMd = hasGroups
+        ? (isChunkedWorkbook
+            ? `\n\nWe split your **${studentRawPageCount}-page** upload into **${detectedPaperGroups!.length} sections** (up to 25 pages each):\n`
+            : `\n\nWe detected **${detectedPaperGroups!.length} papers** in your upload:\n`) +
+          detectedPaperGroups!.map(g => `- **${g.label}:** ${g.pageCount} pages${g.hasMarkScheme ? ' (+ Mark Scheme)' : ''}`).join('\n')
+        : '';
+    const actionStepsMd = hasGroups
+        ? (isChunkedWorkbook
+            ? `**How to continue (no re-upload needed):**\n` +
+              `1. **Grade 1 section now for free:** Select a page range below to mark it immediately without uploading again.\n` +
+              `2. **Grade all ${studentRawPageCount} pages together:** Upgrade to Pro to unlock unlimited page limits.`
+            : `**How to continue (no re-upload needed):**\n` +
+              `1. **Grade 1 paper now for free:** Select a paper below to mark it immediately without uploading again.\n` +
+              `2. **Grade all ${detectedPaperGroups!.length} papers together:** Upgrade to Pro to unlock unlimited page limits and multi-paper marking.`)
+        : `**How to continue:**\n` +
+          `1. **Grade for free (1 paper at a time):** Upload 1 paper per submission (up to ${maxFreePages} pages each).\n` +
+          `2. **Grade multiple papers together:** Upgrade to Pro to unlock unlimited page limits and multi-paper marking.`;
+
+    return (
+        `You uploaded **${studentRawPageCount} pages**, which exceeds the **${maxFreePages}-page limit** per submission on the Free plan.${paperBreakdownMd}\n\n` +
+        actionStepsMd
+    );
+}
+
+export function buildOverdraftLimitExceededMessage(params: {
+    studentRawPageCount: number;
+    creditsNeeded: number;
+    remainingCredits: number;
+    detectedPaperGroups?: DetectedPaperGroup[];
+}): string {
+    const { studentRawPageCount, creditsNeeded, remainingCredits, detectedPaperGroups } = params;
+    const isChunkedWorkbook = Boolean(detectedPaperGroups?.some(g => g.isPageChunk));
+    const hasGroups = Boolean(detectedPaperGroups && detectedPaperGroups.length > 1);
+    const paperBreakdownMd = hasGroups
+        ? (isChunkedWorkbook
+            ? `\n\nWe split your **${studentRawPageCount}-page** upload into **${detectedPaperGroups!.length} sections** (up to 25 pages each):\n`
+            : `\n\nWe detected **${detectedPaperGroups!.length} papers** in your upload:\n`) +
+          detectedPaperGroups!.map(g => `- **${g.label}:** ${g.pageCount} pages${g.hasMarkScheme ? ' (+ Mark Scheme)' : ''}`).join('\n')
+        : '';
+    const continueActionMd = isChunkedWorkbook
+        ? `**How to continue:** Select **1 section** below to mark now without re-uploading, or top up / upgrade your plan to mark all ${studentRawPageCount} pages together.`
+        : `**How to continue:** Select **1 paper** below to mark now without re-uploading, or top up / upgrade your plan to mark all papers together.`;
+
+    return (
+        `This upload (${studentRawPageCount} student pages, estimated **${creditsNeeded} credits**) exceeds your remaining balance (**${remainingCredits.toFixed(0)} credits**) and the 100-credit overdraft safety limit.${paperBreakdownMd}\n\n` +
+        continueActionMd
+    );
 }
 
 export class MarkingPipelineService {
@@ -1119,7 +1370,8 @@ export class MarkingPipelineService {
             let lightweightPages: StandardizedPage[] = [];
             let geometryResults: any[] = [];
             let interceptedSchemeImages: string[] = [];
-            const interceptedSchemeMeta: Array<{ imageData: string; sourceIndex?: number; originalFileName?: string }> = [];
+            const interceptedSchemeMeta: InterceptedSchemeImageMeta[] = [];
+            let isUserSelectedPageChunk = false;
             let pagesEjected = false;
             let preUploadedOriginalFilesPromise: Promise<any> | undefined = undefined;
             let allPagesOcrData: PageOcrResult[] = [];
@@ -1560,6 +1812,20 @@ export class MarkingPipelineService {
                 }
             }));
 
+            if (Array.isArray(options.selectedRawPageIndices) && options.selectedRawPageIndices.length > 0) {
+                const filtered = filterPagesBySelectedRawIndices({
+                    standardizedPages,
+                    selectedRawPageIndices: options.selectedRawPageIndices,
+                    files,
+                    isExplicitMarkSchemePdfFile
+                });
+                if (filtered.isUserSelectedPageChunk) {
+                    standardizedPages = filtered.standardizedPages;
+                    isUserSelectedPageChunk = true;
+                    console.log(`✂️ [PAGE-CHUNK] Filtered to ${standardizedPages.length} user-selected page(s) (including any explicit Mark Scheme PDF pages).`);
+                }
+            }
+
             console.log(`📊 [RAW UPLOAD] User ${userId || 'anonymous'} (${userPlan}) uploaded ${standardizedPages.length} raw page(s) pre-geometry.`);
 
             // --- 1. Vision Orientation Fix (Deterministic) ---
@@ -1824,7 +2090,8 @@ export class MarkingPipelineService {
                     interceptedSchemeImages.push(stdPage.imageData);
                     interceptedSchemeMeta.push({
                         imageData: stdPage.imageData,
-                        sourceIndex: (stdPage as any)._sourceIndex,
+                        sourceIndex: (stdPage as any)._sourceIndex ?? (stdPage as any)._fileIndex,
+                        rawPageIndex: (stdPage as any)._rawPageIndex ?? stdPage.pageIndex,
                         originalFileName: stdPage.originalFileName
                     });
                     continue; // Skip pushing to student pages (exempt from student page quota)
@@ -1915,7 +2182,8 @@ export class MarkingPipelineService {
                             interceptedSchemeImages.push(page.imageData);
                             interceptedSchemeMeta.push({
                                 imageData: page.imageData,
-                                sourceIndex: (page as any)._sourceIndex,
+                                sourceIndex: (page as any)._sourceIndex ?? (page as any)._fileIndex,
+                                rawPageIndex: (page as any)._rawPageIndex ?? page.pageIndex,
                                 originalFileName: page.originalFileName
                             });
                         } else {
@@ -2113,78 +2381,42 @@ export class MarkingPipelineService {
                 files
             });
 
+            // Early multi-cover-page rejection for single combined student PDFs (even when paired with a separate MS PDF)
+            assertNoEarlyMultiCoverPdf({
+                standardizedPages,
+                geometryResults
+            });
+
             // --- Post-Geometry Input Page & Credit Gating (Mark Scheme & ejected pages are exempt!) ---
             const studentRawPageCount = new Set(
                 standardizedPages.map(p => (p as any)._rawPageIndex ?? p.pageIndex)
             ).size;
             console.log(`📊 [PAGE GATING] User ${userId || 'anonymous'} (${userPlan}): ${studentRawPageCount} student page(s) to grade (${standardizedPages.length} post-split page(s), ${interceptedSchemeImages.length} mark scheme page(s) exempted).`);
 
-            const buildDetectedPaperGroups = () => {
-                if (paperBuckets.length <= 1) return undefined;
-                return paperBuckets.map((b, idx) => {
-                    const rawPageIndices = Array.from(
-                        new Set(b.standardizedPages.map(p => (p as any)._rawPageIndex ?? p.pageIndex))
-                    ).sort((a, c) => a - c);
-                    const schemeFileIndices = (b.deferredSchemePdfFiles || [])
-                        .map(msFile => files.indexOf(msFile))
-                        .filter(i => i >= 0);
-                    const fileIndices = Array.from(
-                        new Set([
-                            ...b.standardizedPages.map(
-                                p => (p as any)._fileIndex ?? (p as any)._sourceIndex ?? (p as any)._rawPageIndex ?? p.pageIndex
-                            ),
-                            ...schemeFileIndices
-                        ])
-                    ).sort((a, c) => a - c);
-                    const subj = computeGeoSubjectVote(b.geometryResults) || b.subjectHint;
-                    const prettySubj = subj
-                        ? subj === 'ENGLISH_LANGUAGE'
-                            ? 'English Language'
-                            : subj === 'ENGLISH_LITERATURE'
-                                ? 'English Literature'
-                                : subj === 'MATHS'
-                                    ? 'Mathematics'
-                                    : (b.geometryResults.find((g: any) => g?.unsupported_subject_name)?.unsupported_subject_name || subj)
-                        : undefined;
-                    const markSchemeCount = (b.deferredSchemePdfFiles?.length || 0) + ((b.interceptedSchemeImages?.length || 0) > 0 ? 1 : 0);
-                    return {
-                        paperIndex: idx,
-                        label: b.paperLabel,
-                        subject: prettySubj,
-                        pageCount: rawPageIndices.length,
-                        fileIndices,
-                        rawPageIndices,
-                        canGradeOnFree: rawPageIndices.length <= MAX_FREE_PAGES,
-                        hasMarkScheme: markSchemeCount > 0,
-                        markSchemeCount
-                    };
+            const buildDetectedPaperGroups = () =>
+                buildDetectedPaperGroupsHelper({
+                    paperBuckets,
+                    studentRawPageCount,
+                    maxFreePages: MAX_FREE_PAGES,
+                    files,
+                    interceptedSchemeMeta,
+                    computeSubjectVote: computeGeoSubjectVote
                 });
-            };
 
             // 1. Check Product Tier & Upload Limits (excluding Mark Scheme pages)
             if (isFreeUser && studentRawPageCount > MAX_FREE_PAGES) {
                 const detectedPaperGroups = buildDetectedPaperGroups();
-                const paperBreakdownMd = detectedPaperGroups && detectedPaperGroups.length > 1
-                    ? `\n\nWe detected **${detectedPaperGroups.length} papers** in your upload:\n` +
-                      detectedPaperGroups.map(g => `- **${g.label}:** ${g.pageCount} pages${g.hasMarkScheme ? ' (+ Mark Scheme)' : ''}`).join('\n')
-                    : '';
-                const actionStepsMd = detectedPaperGroups && detectedPaperGroups.length > 1
-                    ? `**How to continue (no re-upload needed):**\n` +
-                      `1. **Grade 1 paper now for free:** Select a paper below to mark it immediately without uploading again.\n` +
-                      `2. **Grade all ${detectedPaperGroups.length} papers together:** Upgrade to Pro to unlock unlimited page limits and multi-paper marking.`
-                    : `**How to continue:**\n` +
-                      `1. **Grade for free (1 paper at a time):** Upload 1 paper per submission (up to ${MAX_FREE_PAGES} pages each).\n` +
-                      `2. **Grade multiple papers together:** Upgrade to Pro to unlock unlimited page limits and multi-paper marking.`;
-
                 throw new UserFacingError({
                     code: 'FREE_PAGE_LIMIT_EXCEEDED',
                     category: 'user_fixable',
                     shouldAlertAdmin: false,
                     requiresUpgrade: true,
                     detectedPaperGroups,
-                    userMessage:
-                        `You uploaded **${studentRawPageCount} pages**, which exceeds the **${MAX_FREE_PAGES}-page limit** per submission on the Free plan.${paperBreakdownMd}\n\n` +
-                        actionStepsMd,
+                    userMessage: buildFreePageLimitExceededMessage({
+                        studentRawPageCount,
+                        maxFreePages: MAX_FREE_PAGES,
+                        detectedPaperGroups
+                    }),
                     technicalMessage: `Free accounts are limited to grading ${MAX_FREE_PAGES} pages at a time (uploaded ${studentRawPageCount} student pages). Upgrade to Pro to grade full past papers.`
                 });
             }
@@ -2208,19 +2440,19 @@ export class MarkingPipelineService {
                 if (!creditCheck.canProceed) {
                     if (creditCheck.errorCode === 'OVERDRAFT_LIMIT_EXCEEDED') {
                         const detectedPaperGroups = buildDetectedPaperGroups();
-                        const paperBreakdownMd = detectedPaperGroups && detectedPaperGroups.length > 1
-                            ? `\n\nWe detected **${detectedPaperGroups.length} papers** in your upload:\n` +
-                              detectedPaperGroups.map(g => `- **${g.label}:** ${g.pageCount} pages${g.hasMarkScheme ? ' (+ Mark Scheme)' : ''}`).join('\n')
-                            : '';
+                        const creditsNeeded = creditCheck.creditsNeeded ?? Math.ceil(exactEstimatedCost * 100);
                         throw new UserFacingError({
                             code: 'OVERDRAFT_LIMIT_EXCEEDED',
                             category: 'user_fixable',
                             shouldAlertAdmin: false,
                             requiresUpgrade: true,
                             detectedPaperGroups,
-                            userMessage:
-                                `This upload (${studentRawPageCount} student pages, estimated **${creditCheck.creditsNeeded ?? Math.ceil(exactEstimatedCost * 100)} credits**) exceeds your remaining balance (**${creditCheck.remaining.toFixed(0)} credits**) and the 100-credit overdraft safety limit.${paperBreakdownMd}\n\n` +
-                                `**How to continue:** Select **1 paper** below to mark now without re-uploading, or top up / upgrade your plan to mark all papers together.`,
+                            userMessage: buildOverdraftLimitExceededMessage({
+                                studentRawPageCount,
+                                creditsNeeded,
+                                remainingCredits: creditCheck.remaining,
+                                detectedPaperGroups
+                            }),
                             technicalMessage: creditCheck.warning || 'Overdraft safety limit exceeded.'
                         });
                     }
@@ -2665,7 +2897,8 @@ export class MarkingPipelineService {
             PaperSplitterService.assertSinglePaperClassification(allClassificationResults, {
                 isPdf: standardizedPages.length > 0 && standardizedPages.every(p => /\.pdf$/i.test(p.originalFileName || '')),
                 pageCount: standardizedPages.length,
-                fileName: standardizedPages[0]?.originalFileName
+                fileName: standardizedPages[0]?.originalFileName,
+                isUserSelectedPageChunk
             });
 
             if (answeredBaseQuestions.size > 0 && !ejectedPureReferenceFiles && standardizedPages.length > 3) {
