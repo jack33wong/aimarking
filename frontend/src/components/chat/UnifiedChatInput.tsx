@@ -4,7 +4,7 @@
  */
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import imageCompression from 'browser-image-compression';
-import { Plus, Brain, X, Check, Sparkles, Smartphone, UploadCloud, BookOpen, Ruler, PenTool, FileCheck2, FolderOpen } from 'lucide-react';
+import { Plus, Brain, X, Check, Sparkles, Smartphone, UploadCloud, BookOpen, Library, Paperclip } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import LandingPageUploadWidget from '../common/LandingPageUploadWidget';
 import MobileUploadModal from '../upload/MobileUploadModal';
@@ -97,7 +97,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   const [canSelectModel, setCanSelectModel] = useState<boolean>(true); // Initialize with true, we'll check permission later
   const [chatInput, setChatInput] = useState<string>('');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
-  const [selectedSubject, setSelectedSubject] = useState<'maths' | 'english' | 'custom' | null>(null);
+  const [selectedSubject, setSelectedSubject] = useState<'maths' | 'english' | null>(null);
 
   const isEnglishPaper = useCallback((paperStr: string) => {
     return /\b(8700|8702|1EN0|1ET0|J351|J352|C700|C720)\b|english/i.test(paperStr);
@@ -120,7 +120,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     return `${subjectLabel} • ${paperStr}`;
   }, [isEnglishPaper]);
 
-  const handleSubjectSelect = (subject: 'maths' | 'english' | 'custom') => {
+  const handleSubjectSelect = (subject: 'maths' | 'english') => {
     if (selectedSubject === subject) {
       setSelectedSubject(null);
     } else {
@@ -131,14 +131,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
           prev.filter(t => !/a-level|foundation|higher/i.test(t))
         );
       }
-      if (subject === 'custom') {
-        setSelectedTags([]);
-        setIsModelAnswerMode(false);
-        setIsMarkingSchemeMode(false);
-        setShowAutocomplete(false);
-      } else {
-        setShowAutocomplete(true);
-      }
+      setShowAutocomplete(true);
       setHighlightedIndex(-1);
     }
   };
@@ -190,14 +183,36 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     codes: [],
   });
   const [showAutocomplete, setShowAutocomplete] = useState<boolean>(false);
+  const [showPlusMenu, setShowPlusMenu] = useState<boolean>(false);
+  const plusMenuRef = useRef<HTMLDivElement>(null);
   const [highlightedIndex, setHighlightedIndex] = useState<number>(-1);
+
+  useEffect(() => {
+    if (!showPlusMenu) return;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (plusMenuRef.current && !plusMenuRef.current.contains(e.target as Node)) {
+        setShowPlusMenu(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowPlusMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showPlusMenu]);
 
   // Dynamic filtering logic using useMemo (Modern React)
   const filteredResults = useMemo(() => {
     if (mode !== 'first-time') return [];
 
-    // If no text typed, no chip selected, and no subject pill active, show empty suggestions list
-    if (chatInput.trim().length === 0 && selectedTags.length === 0 && !selectedSubject) {
+    // If autocomplete is closed and no text/filters are active, skip computing suggestions
+    if (!showAutocomplete && chatInput.trim().length === 0 && selectedTags.length === 0 && !selectedSubject) {
       return [];
     }
 
@@ -283,7 +298,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       if (dateA.month !== dateB.month) return dateB.month - dateA.month;
       return a.localeCompare(b);
     }).slice(0, 10);
-  }, [metadata.papers, selectedTags, selectedSubject, isEnglishPaper, chatInput, mode]);
+  }, [metadata.papers, selectedTags, selectedSubject, isEnglishPaper, chatInput, mode, showAutocomplete]);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -324,7 +339,9 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     const value = e.target.value;
     setChatInput(value);
     if (mode === 'first-time') {
-      setShowAutocomplete(true);
+      if (value.trim().length > 0) {
+        setShowAutocomplete(true);
+      }
       setHighlightedIndex(-1);
     }
   };
@@ -1185,35 +1202,12 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     console.error("Component Error:", error);
   };
 
-  const getGreetingTitle = () => {
-    if (selectedSubject === 'english') {
-      return 'AI Marking for GCSE English Language';
-    }
-    if (selectedSubject === 'maths') {
-      return selectedTags.includes('A-Level')
-        ? 'AI Marking for A-Level Mathematics'
-        : 'AI Marking for GCSE & A-Level Mathematics';
-    }
-    if (selectedSubject === 'custom') {
-      return 'AI Marking for Other Subjects (With Mark Scheme)';
-    }
-    return 'AI Examiner for GCSE & A-Level';
-  };
-
-  const getGreetingDescription = () => {
-    if (selectedSubject === 'english') {
-      return 'Official mark schemes are built in (AQA 8700, Edexcel 1EN0 & OCR J351) — just upload your essay or response, no mark scheme upload needed.';
-    }
-    if (selectedSubject === 'maths') {
-      return selectedTags.includes('A-Level')
-        ? 'Official A-Level Maths mark schemes are built in — just upload your handwritten working (no mark scheme upload needed).'
-        : 'Official GCSE & A-Level Maths mark schemes are built in — just upload your handwritten paper or homework (no mark scheme upload needed).';
-    }
-    if (selectedSubject === 'custom') {
-      return 'Upload your question & answer pages together with the marking scheme (Science, History, Geography, English Lit, etc.). Marking scheme pages are free and do not count toward your page limit.';
-    }
-    return 'Official mark schemes built in for Maths & English Language — or mark other subjects by uploading your own mark scheme.';
-  };
+  const activeContextCount =
+    (isModelAnswerMode ? 1 : 0) +
+    (isMarkingSchemeMode ? 1 : 0) +
+    (selectedSubject ? 1 : 0) +
+    selectedTags.length;
+  const hasActiveContext = activeContextCount > 0;
 
   return (
     <>
@@ -1224,59 +1218,8 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
             <span>Hi {user?.displayName?.split(' ')[0] || 'there'}</span>
           </div>
           <p className="chat-title-greeting">
-            {getGreetingTitle()}
+            What are we marking today?
           </p>
-          <p className="chat-title-description">
-            {getGreetingDescription()}
-          </p>
-          <div className="subject-quick-pills">
-            <button
-              type="button"
-              className={`subject-pill ${selectedSubject === 'maths' ? 'active' : ''}`}
-              onClick={() => handleSubjectSelect('maths')}
-            >
-              <div className="subject-pill-top">
-                <span className="subject-pill-icon">
-                  <Ruler size={18} style={{ color: 'var(--text-blue)' }} />
-                </span>
-              </div>
-              <div className="subject-pill-text">
-                <span>GCSE &amp; A-Level Maths</span>
-                <span className="subject-pill-subtitle">Official mark schemes built in</span>
-              </div>
-            </button>
-            <button
-              type="button"
-              className={`subject-pill ${selectedSubject === 'english' ? 'active' : ''}`}
-              onClick={() => handleSubjectSelect('english')}
-            >
-              <div className="subject-pill-top">
-                <span className="subject-pill-icon">
-                  <PenTool size={18} style={{ color: 'var(--function-warning)' }} />
-                </span>
-              </div>
-              <div className="subject-pill-text">
-                <span>GCSE English Language</span>
-                <span className="subject-pill-subtitle">Official mark schemes built in</span>
-              </div>
-            </button>
-            <button
-              type="button"
-              className={`subject-pill ${selectedSubject === 'custom' ? 'active' : ''}`}
-              onClick={() => handleSubjectSelect('custom')}
-            >
-              <div className="subject-pill-top">
-                <span className="subject-pill-icon">
-                  <FileCheck2 size={18} style={{ color: 'var(--function-success)' }} />
-                </span>
-                <span className="pill-tag-new">NEW</span>
-              </div>
-              <div className="subject-pill-text">
-                <span>Other Subjects + Mark Scheme</span>
-                <span className="subject-pill-subtitle">Upload your own mark scheme</span>
-              </div>
-            </button>
-          </div>
         </div>
       )}
 
@@ -1322,50 +1265,69 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
             )}
 
 
-            {mode === 'first-time' && (
+            {mode === 'first-time' && hasActiveContext && (
               <div className="composer-context-tray">
                 <div className="composer-context-tray-left">
-                  <span className="composer-context-item">
-                    {selectedSubject === 'maths' ? (
-                      <>
-                        <Ruler size={13} style={{ color: 'var(--text-blue)' }} />
-                        <span className="context-item-active">GCSE &amp; A-Level Maths</span>
-                      </>
-                    ) : selectedSubject === 'english' ? (
-                      <>
-                        <PenTool size={13} style={{ color: 'var(--function-warning)' }} />
-                        <span className="context-item-active">GCSE English Language</span>
-                      </>
-                    ) : selectedSubject === 'custom' ? (
-                      <>
-                        <FileCheck2 size={13} style={{ color: 'var(--function-success)' }} />
-                        <span className="context-item-active">Other Subjects + Mark Scheme</span>
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles size={13} style={{ color: 'var(--text-tertiary)' }} />
-                        <span>All Subjects (Auto-detect)</span>
-                      </>
-                    )}
-                  </span>
-
-                  <span className="composer-context-divider">|</span>
-
-                  <span className="composer-context-item">
-                    <FolderOpen size={13} style={{ color: 'var(--text-tertiary)' }} />
-                    <span>
-                      {isModelAnswerMode
-                        ? 'Mode: Generate Model Answer'
-                        : isMarkingSchemeMode
-                          ? 'Mode: Explain Marking Scheme'
-                          : selectedTags.length > 0
-                            ? selectedTags.join(' • ')
-                            : 'Choose past paper or upload file'}
+                  {isModelAnswerMode && (
+                    <span className="composer-context-pill active-mode">
+                      <Sparkles size={12} />
+                      <span>Mode: Generate Model Answer</span>
+                      <button
+                        type="button"
+                        className="composer-context-pill-remove"
+                        onClick={() => setIsModelAnswerMode(false)}
+                        title="Exit Model Answer mode"
+                      >
+                        <X size={11} />
+                      </button>
                     </span>
-                  </span>
+                  )}
+
+                  {isMarkingSchemeMode && (
+                    <span className="composer-context-pill active-mode">
+                      <BookOpen size={12} />
+                      <span>Mode: Explain Mark Scheme</span>
+                      <button
+                        type="button"
+                        className="composer-context-pill-remove"
+                        onClick={() => setIsMarkingSchemeMode(false)}
+                        title="Exit Explain Mark Scheme mode"
+                      >
+                        <X size={11} />
+                      </button>
+                    </span>
+                  )}
+
+                  {selectedSubject && (
+                    <span className="composer-context-pill">
+                      <span>{selectedSubject === 'maths' ? 'Maths' : 'English Language'}</span>
+                      <button
+                        type="button"
+                        className="composer-context-pill-remove"
+                        onClick={() => setSelectedSubject(null)}
+                        title="Clear subject filter"
+                      >
+                        <X size={11} />
+                      </button>
+                    </span>
+                  )}
+
+                  {selectedTags.map((tag) => (
+                    <span key={tag} className="composer-context-pill">
+                      <span>{tag}</span>
+                      <button
+                        type="button"
+                        className="composer-context-pill-remove"
+                        onClick={() => removeTag(tag)}
+                        title={`Remove ${tag} filter`}
+                      >
+                        <X size={11} />
+                      </button>
+                    </span>
+                  ))}
                 </div>
 
-                {(selectedSubject || selectedTags.length > 0 || isModelAnswerMode || isMarkingSchemeMode) && (
+                {activeContextCount > 1 && (
                   <button
                     type="button"
                     className="composer-context-reset"
@@ -1376,7 +1338,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                       setIsMarkingSchemeMode(false);
                       setShowAutocomplete(false);
                     }}
-                    title="Reset subject and filters"
+                    title="Reset filters and mode"
                   >
                     <X size={12} />
                     <span>Reset</span>
@@ -1471,28 +1433,15 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                       : mode === 'follow-up'
                         ? "Ask a follow-up question about your marks..."
                         : isModelAnswerMode
-                          ? (selectedSubject === 'english'
-                              ? "Search for an English Language paper (e.g. AQA 8700/1, Edexcel 1EN0/01, OCR J351/01)..."
-                              : "Search for a Maths or English Language paper (e.g. Edexcel 1MA1/2H or AQA 8700/1)...")
+                          ? "Search or select a past paper to generate a model answer (e.g. 1MA1/2H, 8700/1)..."
                           : isMarkingSchemeMode
-                            ? (selectedSubject === 'english'
-                                ? "Search for an English Language paper to explain marking scheme..."
-                                : "Search for a Maths or English Language paper to explain marking scheme...")
-                            : selectedSubject === 'english'
-                              ? "Upload your GCSE English Language paper/essay (no mark scheme needed) or enter a code (e.g. AQA 8700/1)..."
-                              : selectedSubject === 'maths'
-                                ? "Upload your Maths paper (no mark scheme needed) or enter an exam code (e.g. Edexcel 1MA1/2H, AQA 8300)..."
-                                : selectedSubject === 'custom'
-                                  ? "Upload your question, student answer, and marking scheme together (mark scheme pages don't count toward page limits)..."
-                                  : "Upload Maths/English paper (no mark scheme needed), enter a code (1MA1/2H, 8700/1), or upload other subjects + mark scheme..."
+                            ? "Search or select a past paper to explain its mark scheme (e.g. 1MA1/2H, 8700/1)..."
+                            : (imageFile || imageFiles.length > 0)
+                              ? "Add instructions or press send to mark..."
+                              : "Drop an exam paper, photo, or enter an exam code (e.g. 1MA1/2H)..."
                   }
                   disabled={isProcessing}
                   className="followup-text-input"
-                  onFocus={() => {
-                    if (mode === 'first-time' && selectedSubject !== 'custom') {
-                      setShowAutocomplete(true);
-                    }
-                  }}
                 />
                 {fileSizeWarning && (
                   <div className="input-validation-message">
@@ -1523,82 +1472,226 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
               </div>
               <div className="followup-buttons-row">
                 <div className="followup-left-buttons">
-                  {/* Allow uploads if in follow-up mode OR if NO specialized mode is active in first-time mode */}
-                  {(mode === 'follow-up' || (!isModelAnswerMode && !isMarkingSchemeMode)) && (
-                    <button
-                      className={`followup-upload-button add-files-btn ${isNegative ? 'disabled' : ''}`}
-                      onClick={handleUploadClick}
-                      disabled={isProcessing || isNegative}
-                      title={isNegative ? "You have exhausted your credits. Please top up to continue." : "Upload image(s)/PDF(s)"}
-                    >
-                      <span className="btn-icon"><Plus size={16} /></span>
-                      <span className="btn-text">Add Files</span>
-                    </button>
-                  )}
-
-                  {!isMarkingSchemeMode && selectedSubject !== 'custom' && (
-                    <button
-                      className={`followup-upload-button mode-toggle-btn model-answer-btn ${isModelAnswerMode ? 'active' : ''} ${isNegative ? 'disabled' : ''}`}
-                      onClick={() => {
-                        if (isNegative) {
-                          handleNegativeCreditsRedirect('mode_toggle_blocked');
-                          return;
+                  {mode === 'first-time' ? (
+                    <div className="plus-menu-anchor" ref={plusMenuRef}>
+                      <button
+                        type="button"
+                        className={`followup-upload-button add-files-btn plus-menu-trigger ${showPlusMenu ? 'open' : ''} ${isNegative ? 'disabled' : ''}`}
+                        onClick={() => {
+                          if (isNegative) {
+                            handleNegativeCreditsRedirect('plus_menu_blocked');
+                            return;
+                          }
+                          setShowPlusMenu((prev) => !prev);
+                        }}
+                        disabled={isProcessing || isNegative}
+                        title={
+                          isNegative
+                            ? "You have exhausted your credits. Please top up to continue."
+                            : "Upload files, scan, browse past papers, or switch modes"
                         }
-                        const newVal = !isModelAnswerMode;
-                        setIsModelAnswerMode(newVal);
-                        if (newVal) setIsMarkingSchemeMode(false);
-                      }}
-                      disabled={isProcessing || isNegative}
-                      title={isNegative ? "You have exhausted your credits. Please top up to continue." : (isModelAnswerMode ? "Switch to Normal Mode" : "Generate Model Answer")}
-                    >
-                      <span className="btn-icon"><Sparkles size={16} /></span>
-                      <span className="btn-text">Generate Model Answer</span>
-                    </button>
-                  )}
+                        aria-expanded={showPlusMenu}
+                        aria-haspopup="menu"
+                      >
+                        <span className="btn-icon plus-menu-icon">
+                          <Plus size={20} />
+                        </span>
+                      </button>
 
-                  {!isModelAnswerMode && selectedSubject !== 'custom' && (
-                    <button
-                      className={`followup-upload-button mode-toggle-btn marking-scheme-btn ${isMarkingSchemeMode ? 'active' : ''} ${isNegative ? 'disabled' : ''}`}
-                      onClick={() => {
-                        if (isNegative) {
-                          handleNegativeCreditsRedirect('mode_toggle_blocked');
-                          return;
-                        }
-                        const newVal = !isMarkingSchemeMode;
-                        setIsMarkingSchemeMode(newVal);
-                        if (newVal) setIsModelAnswerMode(false);
-                      }}
-                      disabled={isProcessing || isNegative}
-                      title={isNegative ? "You have exhausted your credits. Please top up to continue." : (isMarkingSchemeMode ? "Switch to Normal Mode" : "Explain Marking Scheme")}
-                    >
-                      <span className="btn-icon"><BookOpen size={16} /></span>
-                      <span className="btn-text">Explain Marking Scheme</span>
-                    </button>
-                  )}
+                      {showPlusMenu && (
+                        <div className="plus-dropdown-menu" role="menu">
+                          <button
+                            type="button"
+                            className="plus-dropdown-item"
+                            role="menuitem"
+                            onClick={() => {
+                              setShowPlusMenu(false);
+                              setIsModelAnswerMode(false);
+                              setIsMarkingSchemeMode(false);
+                              handleUploadClick();
+                            }}
+                          >
+                            <Paperclip size={16} className="plus-dropdown-icon" />
+                            <span className="plus-dropdown-text">
+                              <span className="plus-dropdown-label">Upload files</span>
+                              <span className="plus-dropdown-hint">PDF or photos · Mark scheme optional &amp; free</span>
+                            </span>
+                          </button>
 
-                  {(mode === 'follow-up' || (!isModelAnswerMode && !isMarkingSchemeMode)) && (
-                    <button
-                      className={`followup-upload-button mobile-scan-btn scan-camera-btn ${isNegative ? 'disabled' : ''}`}
-                      onClick={() => {
-                        if (isNegative) {
-                          handleNegativeCreditsRedirect('camera_button_blocked');
-                          return;
-                        }
-                        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-                        if (isMobile) {
-                          handleOpenCameraHandoff();
-                        } else {
-                          setIsMobileUploadOpen(true);
-                        }
-                      }}
-                      disabled={isProcessing || isNegative}
-                      title={isNegative ? "You have exhausted your credits. Please top up to continue." : "Scan from Mobile"}
-                    >
-                      <span className="btn-icon"><Smartphone size={16} /></span>
-                      <span className="btn-text">Scan with Camera</span>
-                    </button>
-                  )}
+                          <button
+                            type="button"
+                            className="plus-dropdown-item"
+                            role="menuitem"
+                            onClick={() => {
+                              setShowPlusMenu(false);
+                              setIsModelAnswerMode(false);
+                              setIsMarkingSchemeMode(false);
+                              const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+                              if (isMobile) {
+                                handleOpenCameraHandoff();
+                              } else {
+                                setIsMobileUploadOpen(true);
+                              }
+                            }}
+                          >
+                            <Smartphone size={16} className="plus-dropdown-icon" />
+                            <span className="plus-dropdown-text">
+                              <span className="plus-dropdown-label">Scan with Camera</span>
+                            </span>
+                          </button>
 
+                          <button
+                            type="button"
+                            className={`plus-dropdown-item ${showAutocomplete ? 'active' : ''}`}
+                            role="menuitem"
+                            onClick={() => {
+                              setShowPlusMenu(false);
+                              setShowAutocomplete((prev) => {
+                                const next = !prev;
+                                if (next) {
+                                  inputRef.current?.focus();
+                                }
+                                return next;
+                              });
+                            }}
+                          >
+                            <Library size={16} className="plus-dropdown-icon" />
+                            <span className="plus-dropdown-text">
+                              <span className="plus-dropdown-label">Past Papers</span>
+                            </span>
+                            {showAutocomplete && <Check size={14} className="plus-dropdown-check" />}
+                          </button>
+
+                          <div className="plus-dropdown-divider" />
+
+                          <button
+                            type="button"
+                            className={`plus-dropdown-item ${isModelAnswerMode ? 'active' : ''}`}
+                            role="menuitem"
+                            onClick={() => {
+                              setShowPlusMenu(false);
+                              const newVal = !isModelAnswerMode;
+                              setIsModelAnswerMode(newVal);
+                              if (newVal) {
+                                setIsMarkingSchemeMode(false);
+                                setShowAutocomplete(true);
+                                inputRef.current?.focus();
+                              }
+                            }}
+                          >
+                            <Sparkles size={16} className="plus-dropdown-icon" />
+                            <span className="plus-dropdown-text">
+                              <span className="plus-dropdown-label">Generate Model Answer</span>
+                            </span>
+                            {isModelAnswerMode && <Check size={14} className="plus-dropdown-check" />}
+                          </button>
+
+                          <button
+                            type="button"
+                            className={`plus-dropdown-item ${isMarkingSchemeMode ? 'active' : ''}`}
+                            role="menuitem"
+                            onClick={() => {
+                              setShowPlusMenu(false);
+                              const newVal = !isMarkingSchemeMode;
+                              setIsMarkingSchemeMode(newVal);
+                              if (newVal) {
+                                setIsModelAnswerMode(false);
+                                setShowAutocomplete(true);
+                                inputRef.current?.focus();
+                              }
+                            }}
+                          >
+                            <BookOpen size={16} className="plus-dropdown-icon" />
+                            <span className="plus-dropdown-text">
+                              <span className="plus-dropdown-label">Explain Mark Scheme</span>
+                            </span>
+                            {isMarkingSchemeMode && <Check size={14} className="plus-dropdown-check" />}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className={`followup-upload-button add-files-btn ${isNegative ? 'disabled' : ''}`}
+                        onClick={handleUploadClick}
+                        disabled={isProcessing || isNegative}
+                        title={
+                          isNegative
+                            ? "You have exhausted your credits. Please top up to continue."
+                            : "Upload PDF or photos · Mark scheme optional (free, doesn't count toward page limit)"
+                        }
+                      >
+                        <span className="btn-icon"><Plus size={16} /></span>
+                        <span className="btn-text">Add Files</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        className={`followup-upload-button mobile-scan-btn scan-camera-btn ${isNegative ? 'disabled' : ''}`}
+                        onClick={() => {
+                          if (isNegative) {
+                            handleNegativeCreditsRedirect('camera_button_blocked');
+                            return;
+                          }
+                          const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+                          if (isMobile) {
+                            handleOpenCameraHandoff();
+                          } else {
+                            setIsMobileUploadOpen(true);
+                          }
+                        }}
+                        disabled={isProcessing || isNegative}
+                        title={isNegative ? "You have exhausted your credits. Please top up to continue." : "Scan from Mobile"}
+                      >
+                        <span className="btn-icon"><Smartphone size={16} /></span>
+                        <span className="btn-text">Scan with Camera</span>
+                      </button>
+
+                      {!isMarkingSchemeMode && (
+                        <button
+                          type="button"
+                          className={`followup-upload-button mode-toggle-btn model-answer-btn ${isModelAnswerMode ? 'active' : ''} ${isNegative ? 'disabled' : ''}`}
+                          onClick={() => {
+                            if (isNegative) {
+                              handleNegativeCreditsRedirect('mode_toggle_blocked');
+                              return;
+                            }
+                            const newVal = !isModelAnswerMode;
+                            setIsModelAnswerMode(newVal);
+                            if (newVal) setIsMarkingSchemeMode(false);
+                          }}
+                          disabled={isProcessing || isNegative}
+                          title={isNegative ? "You have exhausted your credits. Please top up to continue." : (isModelAnswerMode ? "Switch to Normal Mode" : "Generate Model Answer")}
+                        >
+                          <span className="btn-icon"><Sparkles size={15} /></span>
+                          <span className="btn-text">Generate Model Answer</span>
+                        </button>
+                      )}
+
+                      {!isModelAnswerMode && (
+                        <button
+                          type="button"
+                          className={`followup-upload-button mode-toggle-btn marking-scheme-btn ${isMarkingSchemeMode ? 'active' : ''} ${isNegative ? 'disabled' : ''}`}
+                          onClick={() => {
+                            if (isNegative) {
+                              handleNegativeCreditsRedirect('mode_toggle_blocked');
+                              return;
+                            }
+                            const newVal = !isMarkingSchemeMode;
+                            setIsMarkingSchemeMode(newVal);
+                            if (newVal) setIsModelAnswerMode(false);
+                          }}
+                          disabled={isProcessing || isNegative}
+                          title={isNegative ? "You have exhausted your credits. Please top up to continue." : (isMarkingSchemeMode ? "Switch to Normal Mode" : "Explain Mark Scheme")}
+                        >
+                          <span className="btn-icon"><BookOpen size={15} /></span>
+                          <span className="btn-text">Explain Mark Scheme</span>
+                        </button>
+                      )}
+                    </>
+                  )}
                 </div>
                 <div className="followup-right-buttons">
                   {/* 👇 Disable model selection if session exists and has messages (model cannot be changed after session creation) */}
@@ -1624,16 +1717,52 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
               </div>
             </div>
           </div>
-          {showAutocomplete && mode === 'first-time' && selectedSubject !== 'custom' && (
+
+          {mode === 'first-time' && !showAutocomplete && (
+            <div className="composer-below-section">
+              <p className="composer-capability-note">
+                Official GCSE &amp; A-Level Maths &amp; English mark schemes built in · Any other subject supported
+              </p>
+            </div>
+          )}
+
+          {showAutocomplete && mode === 'first-time' && (
             <div className="autocomplete-dropdown inline-style" ref={dropdownRef}>
               <div className="autocomplete-chips-section">
-                <div className="autocomplete-chips-label">Quick Filters:</div>
+                <div className="autocomplete-chips-header">
+                  <div className="autocomplete-chips-label">Quick Filters:</div>
+                  <button
+                    type="button"
+                    className="autocomplete-close-btn"
+                    onClick={() => setShowAutocomplete(false)}
+                    title="Close Past Papers"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
                 <div className="autocomplete-chips-container">
-                  {/* Qualification Chips (Hide A-Level when GCSE English Language pill is active) */}
+                  {/* Subject Chips */}
+                  <button
+                    type="button"
+                    className={`filter-chip subject ${selectedSubject === 'maths' ? 'active' : ''}`}
+                    onClick={() => handleSubjectSelect('maths')}
+                  >
+                    Maths
+                  </button>
+                  <button
+                    type="button"
+                    className={`filter-chip subject ${selectedSubject === 'english' ? 'active' : ''}`}
+                    onClick={() => handleSubjectSelect('english')}
+                  >
+                    English Language
+                  </button>
+
+                  {/* Qualification Chips (Hide A-Level when GCSE English Language chip is active) */}
                   {metadata.qualifications
                     .filter((qual: string) => !(selectedSubject === 'english' && /a-level/i.test(qual)))
                     .map((qual: string) => (
                       <button
+                        type="button"
                         key={qual}
                         className={`filter-chip qualification ${selectedTags.includes(qual) ? 'active' : ''}`}
                         onClick={() => toggleFilterTag(qual, metadata.qualifications)}
@@ -1645,6 +1774,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                   {/* Exam Board Chips */}
                   {metadata.boards.map((board: string) => (
                     <button
+                      type="button"
                       key={board}
                       className={`filter-chip board ${selectedTags.includes(board) ? 'active' : ''}`}
                       onClick={() => toggleFilterTag(board, metadata.boards)}
@@ -1656,6 +1786,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                   {/* Tier Chips (Only for GCSE Maths — English Language is untiered) */}
                   {!selectedTags.includes('A-Level') && selectedSubject !== 'english' && metadata.tiers.map((tier: string) => (
                     <button
+                      type="button"
                       key={tier}
                       className={`filter-chip tier ${selectedTags.includes(tier) ? 'active' : ''}`}
                       onClick={() => toggleFilterTag(tier, metadata.tiers)}
@@ -1673,7 +1804,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                       ? 'English Language Past Papers:'
                       : selectedSubject === 'maths'
                         ? 'Mathematics Past Papers:'
-                        : 'Suggestions:'}
+                        : 'Past Papers:'}
                   </div>
                   {filteredResults.map((result: string, index: number) => (
                     <div
