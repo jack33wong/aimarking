@@ -290,6 +290,7 @@ export class MarkingController {
         let finalSessionId: string | null = null;
         let finalModel: string = 'gemini-3.7-flash';
         let shouldDeductCredits = false;
+        let creditsDeducted = false;
 
         // 1. Validate Request
         console.log(`🚀 [MARKING] Controller started - Files: ${Array.isArray(req.files) ? req.files.length : 0}, Body Keys: ${Object.keys(req.body || {}).join(', ')}`);
@@ -462,9 +463,13 @@ export class MarkingController {
 
             // 4. Execute Pipeline
             let completeEventSent = false;
+            let pendingCompleteEvent: any = null;
             const progressCallback = (data: any) => {
                 if (data?.type === 'complete') {
-                    completeEventSent = true;
+                    // Defer sending 'complete' until credits are deducted & job status is persisted
+                    // so the frontend's immediate /api/credits refresh always reads post-deduction balance.
+                    pendingCompleteEvent = data;
+                    return;
                 } else if (!isJobFinished && data?.type !== 'error') {
                     const progressData = extractProgressData(data);
                     if (progressData) {
@@ -516,6 +521,22 @@ export class MarkingController {
                 shouldDeductCredits = true;
             }
 
+            // 💳 Commit credit deduction BEFORE emitting 'complete' / marking job completed,
+            // so the frontend's immediate /api/credits fetch always sees the updated balance (including negative).
+            if (shouldDeductCredits && !creditsDeducted && finalUserId && finalUserId !== 'anonymous') {
+                try {
+                    const finalCost = usageTracker.calculateCost(finalModel).total;
+                    if (finalCost > 0) {
+                        console.log(`💳 [CREDIT DEDUCT] Calculating final cost: $${finalCost} for user ${finalUserId}`);
+                        await deductCredits(finalUserId, finalCost, finalSessionId || 'unknown');
+                        creditsDeducted = true;
+                        console.log(`💳 ✅ Successfully deducted $${finalCost} from user ${finalUserId}`);
+                    }
+                } catch (deductionError) {
+                    console.error('❌ CRITICAL: Failed to deduct credits before completion:', deductionError);
+                }
+            }
+
             console.log(`✅ [CONTROLLER] Pipeline completed, result exists: ${!!result}, sessionId: ${result?.sessionId}`);
 
             isJobFinished = true;
@@ -533,9 +554,9 @@ export class MarkingController {
                 await queueJobUpsert(resolvedCompletedSessionId, completedJobPayload);
             }
 
-            // 6. Handle Completion (guarantee 'complete' event was sent before closing stream)
-            if (result && !completeEventSent) {
-                sendSseUpdate(res, { type: 'complete', result });
+            // 6. Handle Completion (guarantee 'complete' event was sent AFTER credits are deducted)
+            if (!completeEventSent && (pendingCompleteEvent || result)) {
+                sendSseUpdate(res, pendingCompleteEvent || { type: 'complete', result });
                 completeEventSent = true;
             }
 
@@ -862,11 +883,12 @@ export class MarkingController {
             try {
                 const finalCost = usageTracker.calculateCost(finalModel).total;
                 
-                if (shouldDeductCredits && finalCost > 0 && finalUserId && finalUserId !== 'anonymous') {
+                if (shouldDeductCredits && !creditsDeducted && finalCost > 0 && finalUserId && finalUserId !== 'anonymous') {
                     console.log(`💳 [CREDIT DEDUCT] Calculating final cost: $${finalCost} for user ${finalUserId}`);
                     await deductCredits(finalUserId, finalCost, finalSessionId || 'unknown');
+                    creditsDeducted = true;
                     console.log(`💳 ✅ Successfully deducted $${finalCost} from user ${finalUserId}`);
-                } else if (finalCost > 0) {
+                } else if (!creditsDeducted && finalCost > 0) {
                     console.log(`⏭️  [CREDIT DEDUCT] Skipped deduction for user ${finalUserId || 'anonymous'} (shouldDeductCredits=${shouldDeductCredits}, Cost: $${finalCost})`);
                 }
             } catch (deductionError) {

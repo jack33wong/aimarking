@@ -97,9 +97,18 @@ export const getSessionImages = (session: UnifiedSession | null): SessionImage[]
               return;
             }
 
-            // Filter strictly by the actual URL extension, not the original document name
-            const isPdfUrl = typeof src === 'string' && src.toLowerCase().split('?')[0].endsWith('.pdf');
-            if (isPdfUrl) return;
+            // Reject raw PDF sources (URLs ending in .pdf, data:application/pdf, or PDF blob URLs from user uploads)
+            // so thumbnail stacks never render broken <img> icons while waiting for server-rendered annotated pages.
+            const lowerSrc = src.toLowerCase();
+            const isPdfMimeOrName =
+              Boolean(imageItem && typeof imageItem === 'object' && (imageItem.mimeType === 'application/pdf' || imageItem.type === 'application/pdf')) ||
+              Boolean(originalFileName && originalFileName.toLowerCase().endsWith('.pdf'));
+            const isPdfSrc =
+              lowerSrc.split('?')[0].endsWith('.pdf') ||
+              lowerSrc.startsWith('data:application/pdf') ||
+              (lowerSrc.startsWith('blob:') && isPdfMimeOrName) ||
+              (!isAnnotated && (message as any)?.isPdf === true && (lowerSrc.startsWith('blob:') || lowerSrc.startsWith('data:application/pdf')));
+            if (isPdfSrc) return;
 
             seenImageSrcs.add(src);
 
@@ -140,8 +149,13 @@ export const getSessionImages = (session: UnifiedSession | null): SessionImage[]
         try {
           const src = getImageSrc(message);
           
-          // Filter strictly by the actual URL extension
-          const isPdfUrl = typeof src === 'string' && src.toLowerCase().split('?')[0].endsWith('.pdf');
+          // Reject raw PDF sources (URLs ending in .pdf, data:application/pdf, or PDF blob URLs)
+          const lowerSrc = typeof src === 'string' ? src.toLowerCase() : '';
+          const msgFileName = String((message as any)?.originalFileName || '').toLowerCase();
+          const isPdfUrl =
+            lowerSrc.split('?')[0].endsWith('.pdf') ||
+            lowerSrc.startsWith('data:application/pdf') ||
+            (lowerSrc.startsWith('blob:') && (msgFileName.endsWith('.pdf') || (message as any)?.isPdf === true));
           
           if (typeof src === 'string' && !seenImageSrcs.has(src) && !isPdfUrl) {
             seenImageSrcs.add(src);

@@ -210,6 +210,65 @@ export class QuestionDetectionService {
       const isRescueMode = isNarrowSearch && primaryPapers.length <= 2;
       const allowCroppedQ1Exemption = detectionOptions?.allowCroppedQ1Exemption ?? true;
 
+      // ⚡ [BLANK-QUESTION DIRECT DB LOOKUP]:
+      // When rescuing an unattempted blank question stub (e.g. Q22, Q23, Q24 from Map Pass with empty text)
+      // against an already-identified dominant DB paper, match directly by exact question number.
+      if (isRescueMode && cleanText.length === 0 && cleanQHint && primaryPapers.length >= 1) {
+        const targetBase = cleanQHint.match(/^\d+/)?.[0]?.replace(/^0+(?=\d)/, '');
+        if (targetBase) {
+          for (const paper of primaryPapers) {
+            const questions = paper.questions || {};
+            const questionIterator = Array.isArray(questions)
+              ? questions.map((q: any) => ({ num: String(q.question_number || q.number || ''), data: q }))
+              : Object.entries(questions).map(([k, v]) => ({ num: String((v as any)?.question_number || k), data: v }));
+            const directHit = questionIterator.find(({ num }) => {
+              const dbBase = num.match(/^\d+/)?.[0]?.replace(/^0+(?=\d)/, '');
+              return dbBase === targetBase;
+            });
+            if (directHit) {
+              const parentText = (directHit.data.question_text || directHit.data.text || directHit.data.question || '').trim();
+              const directCandidate: MatchCandidate = {
+                paper,
+                questionData: directHit.data,
+                questionNumber: directHit.num,
+                subQuestionNumber: '',
+                databaseText: parentText,
+                score: 0.95,
+                scoreDetails: { text: 0, numeric: 0, structure: 1.0, semanticCheck: true }
+              };
+              const matchResult = this.constructMatchResult(directCandidate, true);
+              const markingScheme = await this.findCorrespondingMarkingScheme(matchResult);
+              if (markingScheme) {
+                matchResult.markingScheme = markingScheme;
+                if (markingScheme.subQuestionMaxScores) {
+                  matchResult.subQuestionMaxScores = {
+                    ...(matchResult.subQuestionMaxScores || {}),
+                    ...markingScheme.subQuestionMaxScores
+                  };
+                }
+                if (!matchResult.subject && markingScheme.examDetails?.subject) {
+                  matchResult.subject = markingScheme.examDetails.subject;
+                }
+              }
+              return {
+                found: true,
+                match: matchResult,
+                message: `Direct rescue match for unattempted ${matchResult.paperCode} Q${matchResult.questionNumber}`,
+                hintMetadata: {
+                  hintUsed: cleanPaperHint,
+                  matchedPapersCount: primaryPapers.length,
+                  matchedPaperTitle: `${paper.metadata.exam_board} - ${paper.metadata.exam_code}`,
+                  thresholdRelaxed: false,
+                  deepSearchActive: false,
+                  poolSize: questionIterator.length,
+                  auditTrail: []
+                }
+              };
+            }
+          }
+        }
+      }
+
       // 3. Metadata Setup
       const currentPoolSize = searchPool.reduce((sum, paper) => {
         const questions = paper.questions || {};

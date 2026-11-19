@@ -723,8 +723,8 @@ export function extractQuestionsFromClassification(
 
     const hasStudentWork = q.studentWork || (q.studentWorkLines && q.studentWorkLines.length > 0) || q.hasStudentDrawing;
 
-    // Push if it has text or work
-    if (q.text || hasStudentWork) {
+    // Push if it has text, work, or is a mapped unattempted question stub (e.g. blank trailing exam page)
+    if (q.text || hasStudentWork || (q.isUnattempted && currentNum)) {
       extractedQuestions.push({
         questionNumber: currentNum,
         text: q.text || '',

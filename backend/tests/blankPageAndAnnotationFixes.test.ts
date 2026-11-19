@@ -2,10 +2,11 @@ import {
   parseMarkingScope,
   applyScopeAndBlankPageHandling
 } from '../services/marking/MarkingScopeUtils.js';
-import { calculateOverallScore } from '../services/marking/MarkingHelpers.js';
+import { calculateOverallScore, extractQuestionsFromClassification } from '../services/marking/MarkingHelpers.js';
 import {
   buildUnattemptedQuestionResult,
-  normalizeUnattemptedSubQuestionAnnotations
+  normalizeUnattemptedSubQuestionAnnotations,
+  executeMarkingForQuestion
 } from '../services/marking/MarkingExecutor.js';
 import { AnnotationLinker } from '../services/marking/core/AnnotationLinker.js';
 import { enrichAnnotationsWithPositions } from '../services/marking/AnnotationEnrichmentService.js';
@@ -404,5 +405,52 @@ describe('6. Marking Prompt Comment Rules', () => {
       expect(prompt).toContain('Divide by 1000; Ans: 56');
       expect(prompt).toContain('not_attempted');
     }
+  });
+});
+
+describe('7. Blank Trailing Stubs (Q22-Q24) & Shared-Page Blank Short-Circuit (Q13)', () => {
+  it('extractQuestionsFromClassification preserves isUnattempted blank question stubs with empty text', () => {
+    const classification = {
+      questions: [
+        { questionNumber: '21', text: 'Solve equation', studentWork: 'x = 2', sourceImageIndex: 19 },
+        { questionNumber: '22', text: '', studentWork: '', sourceImageIndex: 20, isUnattempted: true },
+        { questionNumber: '23', text: '', studentWork: '', sourceImageIndex: 21, isUnattempted: true },
+        { questionNumber: '24', text: '', studentWork: '', sourceImageIndex: 22, isUnattempted: true }
+      ]
+    };
+
+    const extracted = extractQuestionsFromClassification(classification);
+    expect(extracted.map(q => q.questionNumber)).toEqual(['21', '22', '23', '24']);
+  });
+
+  it('executeMarkingForQuestion short-circuits blank Q13 to 0/3 even when sibling Q12 has handwritten OCR on the same page', async () => {
+    const task: any = {
+      questionNumber: '13',
+      questionText: 'Prove that the sum of any two consecutive triangular numbers is a square number.',
+      sourcePages: [12],
+      pageDimensions: new Map([[12, { width: 1650, height: 2339 }]]),
+      classificationStudentWork: "Student's Work:\n",
+      aiSegmentationResults: [],
+      // Sibling Q12 handwritten OCR block is at y=400 (outside Q13's zone [1150..2100])
+      mathBlocks: [
+        { text: 'x^3 - 3x^2 - 13x - 15', isHandwritten: true, pageIndex: 12, coordinates: { x: 200, y: 400, width: 400, height: 40 } }
+      ],
+      semanticZones: {
+        '13': [{ pageIndex: 12, x: 150, startY: 1150, width: 1300, endY: 2100 }]
+      },
+      markingScheme: {
+        totalMarks: 3,
+        questionNumber: '13'
+      }
+    };
+
+    const mockRes = { write: () => {}, flush: () => {} };
+    const result = await executeMarkingForQuestion(task, mockRes, 'sub-test-q13', 'fast');
+    expect(result.score.awardedMarks).toBe(0);
+    expect(result.score.totalMarks).toBe(3);
+    expect(result.score.scoreText).toBe('0/3');
+    expect(result.usageTokens).toBe(0);
+    expect(result.annotations).toHaveLength(1);
+    expect(result.annotations[0].action).toBe('not_attempted');
   });
 });

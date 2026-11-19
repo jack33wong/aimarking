@@ -2172,6 +2172,34 @@ export class MarkingPipelineService {
                 })
             );
 
+            // ⚡ [EARLY DUPLICATE-QUESTION PRE-CHECK FOR >50-PAGE PDFs]:
+            // Before burning 50+ individual preFlight Semantic Geometry calls (~$0.12), sample ONLY the first
+            // 10 pages (1 Mapper batch, ~$0.011) to reject topic packs / duplicate-question PDFs immediately.
+            // (Bundled Exam+MarkScheme PDFs have unique questions in pages 0..9, so they pass through cleanly.)
+            if (deferVisionUntilAfterPageGate && lightweightPages.length > effectiveMaxPages) {
+                const earlySamplePages = lightweightPages.slice(0, 10)
+                    .filter(p => Boolean(p.imageData))
+                    .map(p => ({
+                        imageData: p.imageData,
+                        fileName: p.originalFileName,
+                        pageIndex: p.pageIndex ?? 0
+                    }));
+                if (earlySamplePages.length >= 2) {
+                    const { ClassificationMapper } = await import('./ClassificationMapper.js');
+                    const earlyMapperResults = await ClassificationMapper.mapQuestionsToPages(
+                        earlySamplePages,
+                        usageTracker,
+                        'fast',
+                        debugClassification
+                    );
+                    PaperSplitterService.assertNoDuplicateQuestionsInMapperResults(earlyMapperResults, {
+                        isPdf: standardizedPages.length > 0 && standardizedPages.every(p => /\.pdf$/i.test(p.originalFileName || '')),
+                        pageCount: standardizedPages.length,
+                        fileName: standardizedPages[0]?.originalFileName
+                    });
+                }
+            }
+
             geometryResults = await Promise.all(
                 lightweightPages.map(async (page, idx) => {
                     if ((standardizedPages[idx] as any)._isSolidBlackCorrupted) {
@@ -3044,6 +3072,12 @@ export class MarkingPipelineService {
                         const hasSubQuestionText = subQuestions.some((sq: any) => !isContinuationStubText(sq.text || sq.questionText));
                         const baseNum = extractLeadingBaseQNum(q.questionNumber);
 
+                        // Preserve explicit blank-page unattempted stubs from Map Pass (e.g. Q22, Q23, Q24)
+                        // as long as their base question was NOT already answered on an earlier page.
+                        if (q.isUnattempted === true && baseNum && !answeredBaseQuestions.has(baseNum)) {
+                            return true;
+                        }
+
                         const isStub = isContinuationStubText(qText) && !hasSubQuestionText;
                         const isAlreadyAnsweredBaseQ = Boolean(baseNum && answeredBaseQuestions.has(baseNum) && isStub);
 
@@ -3889,9 +3923,13 @@ export class MarkingPipelineService {
                 pagesToOcr = new Set([0]);
                 console.log(`🎯 [OCR ROUTING] Single image detected. Forcing OCR on the only page.`);
             } else if (allClassificationResults && allClassificationResults.length > 0) {
-                // Surgical Routing: Only OCR pages that have questions or student work
+                // Surgical Routing: Only OCR pages that have questions or student work (skip blank unattempted question pages)
                 const validIndices = allClassificationResults
-                    .filter(r => r.result?.category === 'questionAnswer' || r.result?.category === 'questionOnly')
+                    .filter(r =>
+                        (r.result?.category === 'questionAnswer' || r.result?.category === 'questionOnly') &&
+                        !(r.result as any)?._isBlankQuestionPage &&
+                        !(r.result as any)?._isBlankMappedPage
+                    )
                     .map(r => r.pageIndex);
                 pagesToOcr = new Set(validIndices);
                 console.log(`🎯 [OCR ROUTING] Surgical Mathpix routing: Skipping ${standardizedPages.length - pagesToOcr.size} non-exam pages.`);

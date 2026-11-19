@@ -523,6 +523,13 @@ class SimpleSessionService {
 
       if (data.aiMessage) {
         if (!isViewingTarget) {
+          if (resolvedTargetId && data.sessionTitle) {
+            this.updateSidebarSession({
+              id: resolvedTargetId,
+              title: data.sessionTitle,
+              updatedAt: new Date().toISOString()
+            });
+          }
           return this.state.currentSession;
         }
         // Unauthenticated users get only AI message - append to current session
@@ -568,15 +575,25 @@ class SimpleSessionService {
             : aiProgressType === 'marking-scheme' ? 'marking-scheme'
               : this.state.currentSession.usageMode || undefined;
 
+          const resolvedTitle = shouldUpdateTitle ? data.sessionTitle : this.state.currentSession.title;
+          const resolvedId = data.sessionId || this.state.currentSession.id;
           const updatedSession = {
             ...this.state.currentSession,
-            title: shouldUpdateTitle ? data.sessionTitle : this.state.currentSession.title,
-            id: data.sessionId || this.state.currentSession.id, // Use backend's permanent session ID (no fallback to temp ID)
+            title: resolvedTitle,
+            id: resolvedId, // Use backend's permanent session ID (no fallback to temp ID)
             sessionStats: sessionStats,
             updatedAt: new Date().toISOString(), // Add last updated time
             ...(usageMode ? { usageMode } : {}) // Persist usageMode so ribbon stays hidden
           };
           this.updateCurrentSessionOnly(updatedSession);
+          // Also sync title & ID to the sidebar history (fixes "Processing..." staying stuck on "Upload Issue" sessions)
+          this._commitServerSessionState(
+            resolvedId,
+            resolvedTitle,
+            'Marking',
+            null,
+            targetSessionId || activeId
+          );
         }
 
         return this.state.currentSession;
@@ -608,6 +625,13 @@ class SimpleSessionService {
 
       if (data.aiMessage) {
         if (!isViewingTarget) {
+          if (resolvedTargetId && data.sessionTitle) {
+            this.updateSidebarSession({
+              id: resolvedTargetId,
+              title: data.sessionTitle,
+              updatedAt: new Date().toISOString()
+            });
+          }
           return this.state.currentSession;
         }
         // All users (authenticated and unauthenticated) now get only AI message - append to current session

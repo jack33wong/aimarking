@@ -189,7 +189,28 @@ export async function executeMarkingForQuestion(
       const content = (r.content || '').trim();
       return content.length > 0 && content !== '--';
     });
-    const hasHandwrittenOcr = (task.mathBlocks || []).some(b => b.isHandwritten === true && ((b as any).text || (b as any).mathpixLatex || '').trim().length > 0);
+    // Zone-aware handwritten OCR check: on shared pages (e.g. Q12 + blank Q13 on the same page),
+    // only count handwritten OCR blocks that actually fall inside THIS question's own semantic zone(s).
+    const qIdStr = String(questionId).trim();
+    const qKeyRegex = new RegExp(`^${qIdStr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:$|[a-z.(])`, 'i');
+    const questionZonesFlat = Object.entries(semanticZones || {})
+      .filter(([key]) => qKeyRegex.test(String(key).trim()))
+      .flatMap(([, list]) => (Array.isArray(list) ? list : []))
+      .filter(Boolean);
+    const hasHandwrittenOcr = (task.mathBlocks || []).some(b => {
+      if (b.isHandwritten !== true) return false;
+      const txt = ((b as any).text || (b as any).mathpixLatex || '').trim();
+      if (txt.length === 0) return false;
+      if (questionZonesFlat.length === 0) return true;
+      const bY = b.coordinates?.y ?? (Array.isArray((b as any).bbox) ? (b as any).bbox[1] : undefined);
+      const bPage = Number((b as any).pageIndex ?? task.sourcePages?.[0] ?? 0);
+      if (bY === undefined) return true;
+      return questionZonesFlat.some((z: any) =>
+        (z.pageIndex === undefined || Number(z.pageIndex) === bPage) &&
+        typeof z.startY === 'number' && typeof z.endY === 'number' &&
+        bY >= z.startY - 15 && bY <= z.endY + 15
+      );
+    });
     const hasCleanedWorkText = (task.classificationStudentWork || '')
       .replace(/^Student's Work:\s*/i, '')
       .replace(/\[SUB-QUESTION[^\]]*\]/gi, '')

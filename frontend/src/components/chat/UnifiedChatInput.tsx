@@ -1195,24 +1195,24 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
         : 'AI Marking for GCSE & A-Level Mathematics';
     }
     if (selectedSubject === 'custom') {
-      return 'AI Marking for Any Subject (With Mark Scheme)';
+      return 'AI Marking for Other Subjects (With Mark Scheme)';
     }
     return 'AI Examiner for GCSE & A-Level';
   };
 
   const getGreetingDescription = () => {
     if (selectedSubject === 'english') {
-      return 'Upload your handwritten essay or extract response for instant LoR mark scheme grading and Grade 9 coaching (AQA 8700, Edexcel 1EN0 & OCR J351).';
+      return 'Official mark schemes are built in (AQA 8700, Edexcel 1EN0 & OCR J351) — just upload your essay or response, no mark scheme upload needed.';
     }
     if (selectedSubject === 'maths') {
       return selectedTags.includes('A-Level')
-        ? 'Upload your handwritten working for instant A-Level method mark (M/A/B) grading and step-by-step feedback.'
-        : 'Upload your handwritten Maths past paper or homework for instant method mark (M1/A1) grading and feedback.';
+        ? 'Official A-Level Maths mark schemes are built in — just upload your handwritten working (no mark scheme upload needed).'
+        : 'Official GCSE & A-Level Maths mark schemes are built in — just upload your handwritten paper or homework (no mark scheme upload needed).';
     }
     if (selectedSubject === 'custom') {
-      return 'Upload your question & answer pages together with the marking scheme (Science, English Lit, History, etc.). Marking scheme pages are free and do not count toward your page limit.';
+      return 'Upload your question & answer pages together with the marking scheme (Science, History, Geography, English Lit, etc.). Marking scheme pages are free and do not count toward your page limit.';
     }
-    return 'Instant, official-standard marking for Maths, English, or any subject with a mark scheme.';
+    return 'Official mark schemes built in for Maths & English Language — or mark other subjects by uploading your own mark scheme.';
   };
 
   return (
@@ -1240,7 +1240,10 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                   <Ruler size={18} style={{ color: 'var(--text-blue)' }} />
                 </span>
               </div>
-              <span>GCSE &amp; A-Level Maths</span>
+              <div className="subject-pill-text">
+                <span>GCSE &amp; A-Level Maths</span>
+                <span className="subject-pill-subtitle">Official mark schemes built in</span>
+              </div>
             </button>
             <button
               type="button"
@@ -1252,7 +1255,10 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                   <PenTool size={18} style={{ color: 'var(--function-warning)' }} />
                 </span>
               </div>
-              <span>GCSE English Language</span>
+              <div className="subject-pill-text">
+                <span>GCSE English Language</span>
+                <span className="subject-pill-subtitle">Official mark schemes built in</span>
+              </div>
             </button>
             <button
               type="button"
@@ -1265,7 +1271,10 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                 </span>
                 <span className="pill-tag-new">NEW</span>
               </div>
-              <span>Any Subject + Mark Scheme</span>
+              <div className="subject-pill-text">
+                <span>Other Subjects + Mark Scheme</span>
+                <span className="subject-pill-subtitle">Upload your own mark scheme</span>
+              </div>
             </button>
           </div>
         </div>
@@ -1330,7 +1339,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                     ) : selectedSubject === 'custom' ? (
                       <>
                         <FileCheck2 size={13} style={{ color: 'var(--function-success)' }} />
-                        <span className="context-item-active">Any Subject + Mark Scheme</span>
+                        <span className="context-item-active">Other Subjects + Mark Scheme</span>
                       </>
                     ) : (
                       <>
@@ -1470,12 +1479,12 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                                 ? "Search for an English Language paper to explain marking scheme..."
                                 : "Search for a Maths or English Language paper to explain marking scheme...")
                             : selectedSubject === 'english'
-                              ? "Upload your GCSE English Language paper/essay or enter a code (e.g. AQA 8700/1, Edexcel 1EN0, OCR J351)..."
+                              ? "Upload your GCSE English Language paper/essay (no mark scheme needed) or enter a code (e.g. AQA 8700/1)..."
                               : selectedSubject === 'maths'
-                                ? "Upload your Maths paper or enter an exam code (e.g. Edexcel 1MA1/2H, AQA 8300, OCR J560)..."
+                                ? "Upload your Maths paper (no mark scheme needed) or enter an exam code (e.g. Edexcel 1MA1/2H, AQA 8300)..."
                                 : selectedSubject === 'custom'
                                   ? "Upload your question, student answer, and marking scheme together (mark scheme pages don't count toward page limits)..."
-                                  : "Upload Maths/English paper, enter a code (1MA1/2H, 8700/1), or upload any subject + its mark scheme..."
+                                  : "Upload Maths/English paper (no mark scheme needed), enter a code (1MA1/2H, 8700/1), or upload other subjects + mark scheme..."
                   }
                   disabled={isProcessing}
                   className="followup-text-input"

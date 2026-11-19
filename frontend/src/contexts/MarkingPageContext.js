@@ -458,6 +458,7 @@ export const MarkingPageProvider = ({
 
         if (res?.status === 'completed' || res?.session || res?.fallbackResult) {
           completeJob(routeSessionId, res?.session?.title || res?.fallbackResult?.sessionTitle);
+          refreshCredits();
           if (res.session) {
             loadSession(res.session);
             const sessionModel = getSessionModel(res.session);
@@ -1276,6 +1277,7 @@ export const MarkingPageProvider = ({
             result?.unifiedSession?.title ||
             (liveAfter?.id === clientSubmissionId ? liveAfter?.title : undefined);
           completeJob(clientSubmissionId, resolvedTitle);
+          refreshCredits();
         })
         .catch(err => {
           if (err?.isTransportDisconnect) {
@@ -1505,6 +1507,7 @@ export const MarkingPageProvider = ({
             result?.unifiedSession?.title ||
             (liveAfter?.id === clientSubmissionId ? liveAfter?.title : undefined);
           completeJob(clientSubmissionId, resolvedTitle);
+          refreshCredits();
         })
         .catch(err => {
           if (err?.isTransportDisconnect) {

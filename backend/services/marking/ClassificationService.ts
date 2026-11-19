@@ -768,7 +768,7 @@ ${pageHints}
 
       await Promise.all(workers);
 
-      // Handle pages that were NOT mapped to any active question task (e.g., front pages, unattempted metadata pages)
+      // Handle pages that were NOT mapped to any active question task (e.g., front pages, unattempted question pages)
       for (let i = 0; i < images.length; i++) {
         const hasResult = results.some(r => r.pageIndex === i);
         if (!hasResult) {
@@ -780,27 +780,80 @@ ${pageHints}
                 ? mapResult.questions.map((q: any) => typeof q === 'string' ? q : q?.questionNumber).filter(Boolean)
                 : []);
 
-          const category: "questionOnly" | "questionAnswer" | "metadata" | "frontPage" =
-            preservedHints.length > 0
-              ? "metadata"
-              : (rawCategory === "frontPage" || rawCategory === "metadata")
+          if (preservedHints.length > 0) {
+            // Preserve Mapper-assigned question numbers as lightweight unattempted question stubs
+            // (category: 'questionOnly', $0 Classification LLM cost) so MarkingPipelineService can
+            // either keep them in Marking Mode for full-exam denominators (unscoped) or exclude them (scoped).
+            const groupedStubs = new Map<string, { questionNumber: string; subParts: string[] }>();
+            for (const rawHint of preservedHints) {
+              const str = String(rawHint || '').trim();
+              const baseMatch = str.match(/^(\d+)/);
+              if (!baseMatch) continue;
+              const baseNum = baseMatch[1];
+              const subPart = str.slice(baseNum.length).replace(/^[.\s()]+|[)\s]+$/g, '');
+              if (!groupedStubs.has(baseNum)) {
+                groupedStubs.set(baseNum, { questionNumber: baseNum, subParts: [] });
+              }
+              if (subPart && !groupedStubs.get(baseNum)!.subParts.includes(subPart)) {
+                groupedStubs.get(baseNum)!.subParts.push(subPart);
+              }
+            }
+
+            const stubQuestions = Array.from(groupedStubs.values()).map(g => ({
+              questionNumber: g.questionNumber,
+              text: '',
+              studentWork: '',
+              studentWorkLines: [],
+              pageIndex: i,
+              sourceImageIndex: i,
+              sourceImageIndices: [i],
+              isUnattempted: true,
+              ...(g.subParts.length > 0
+                ? {
+                    subQuestions: g.subParts.map(part => ({
+                      part,
+                      text: '',
+                      studentWork: '',
+                      studentWorkLines: [],
+                      pageIndex: i,
+                      isUnattempted: true
+                    }))
+                  }
+                : {})
+            }));
+
+            results.push({
+              pageIndex: i,
+              mapperCategory: 'questionOnly',
+              result: {
+                category: 'questionOnly',
+                reasoning: `Unattempted question page (${preservedHints.join(', ')}) preserved from Map Pass`,
+                questions: stubQuestions,
+                mapperHints: preservedHints,
+                _isBlankMappedPage: true,
+                apiUsed: "Map Pass Detection",
+                usageTokens: 0
+              } as any
+            });
+          } else {
+            const category: "questionOnly" | "questionAnswer" | "metadata" | "frontPage" =
+              (rawCategory === "frontPage" || rawCategory === "metadata")
                 ? rawCategory
                 : "frontPage";
 
-          results.push({
-            pageIndex: i,
-            mapperCategory: category,
-            result: {
-              category: category,
-              reasoning: preservedHints.length > 0
-                ? `Unattempted question page (${preservedHints.join(', ')}) skipped in Marking Mode`
-                : "Front page or blank booklet page detected by Map Pass - contains no questions",
-              questions: [],
-              mapperHints: preservedHints,
-              apiUsed: "Map Pass Detection",
-              usageTokens: 0
-            }
-          });
+            results.push({
+              pageIndex: i,
+              mapperCategory: category,
+              result: {
+                category: category,
+                reasoning: "Front page or blank booklet page detected by Map Pass - contains no questions",
+                questions: [],
+                mapperHints: [],
+                apiUsed: "Map Pass Detection",
+                usageTokens: 0
+              }
+            });
+          }
         }
       }
 

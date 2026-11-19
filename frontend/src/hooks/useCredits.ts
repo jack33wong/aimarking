@@ -29,6 +29,19 @@ const globalCreditCache: {
     userId: null
 };
 
+// Shared subscribers so Header, UnifiedChatInput, SubscriptionPage, etc. stay 100% in sync
+const creditSubscribers = new Set<(credits: UserCredits | null) => void>();
+
+const broadcastCredits = (nextCredits: UserCredits | null) => {
+    creditSubscribers.forEach((listener) => {
+        try {
+            listener(nextCredits);
+        } catch {
+            // ignore listener errors
+        }
+    });
+};
+
 export const useCredits = () => {
     const { user } = useAuth();
     const isCacheValidForUser = globalCreditCache.loaded && globalCreditCache.userId === user?.uid;
@@ -63,8 +76,8 @@ export const useCredits = () => {
             return globalCreditCache.credits;
         }
 
-        // 2. Dedup parallel requests for the same user
-        if (globalCreditCache.inProgressPromise && globalCreditCache.userId === user.uid) {
+        // 2. Dedup parallel requests for the same user (skip dedup when force=true so post-marking refresh never returns a stale in-flight response)
+        if (!force && globalCreditCache.inProgressPromise && globalCreditCache.userId === user.uid) {
             setLoading(true);
             try {
                 const data = await globalCreditCache.inProgressPromise;
@@ -107,6 +120,7 @@ export const useCredits = () => {
             globalCreditCache.loaded = true;
             globalCreditCache.timestamp = Date.now();
             globalCreditCache.userId = user.uid;
+            broadcastCredits(data);
             return data;
         };
 
@@ -173,6 +187,18 @@ export const useCredits = () => {
         }
     }, [fetchCredits, user?.uid]);
 
+    // Subscribe this hook instance to shared credit updates across all components (Header, UnifiedChatInput, etc.)
+    useEffect(() => {
+        const listener = (nextCredits: UserCredits | null) => {
+            setCredits(nextCredits);
+            setLoading(false);
+        };
+        creditSubscribers.add(listener);
+        return () => {
+            creditSubscribers.delete(listener);
+        };
+    }, []);
+
     // Listen for events that should trigger a credit refresh or logout cache purge
     useEffect(() => {
         const creditsRefreshUnsubscribe = EventManager.listen('refreshCredits', () => {
@@ -189,6 +215,7 @@ export const useCredits = () => {
             globalCreditCache.timestamp = 0;
             globalCreditCache.userId = null;
             globalCreditCache.inProgressPromise = null;
+            broadcastCredits(null);
             setCredits(null);
             setLoading(false);
             lastFetchedUidRef.current = null;
