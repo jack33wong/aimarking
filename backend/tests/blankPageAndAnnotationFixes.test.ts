@@ -281,6 +281,49 @@ describe('3. PATH 3 Right-Edge Recovery, Shared line_id Stacking & VISUAL Diagra
     expect(enriched[0].bbox[1]).toBeCloseTo(1052.55, 0);
     expect(enriched[0].bbox[2]).toBeCloseTo(825, 0);
   });
+
+  it('never shifts not_attempted or out-of-task VISUAL annotations to an excluded page via HIGH-PAGE', () => {
+    const annotations: any[] = [
+      {
+        action: 'not_attempted',
+        text: 'Not attempted',
+        subQuestion: '1b',
+        ocr_match_status: 'VISUAL',
+        pageIndex: 0,
+        visual_position: { x: 65, y: 24, width: 20, height: 2 }
+      }
+    ];
+
+    const task: any = {
+      questionNumber: '1',
+      sourcePages: [1],
+      pageMap: { 1: 0 }
+    };
+
+    // Simulate leaked semanticZones from excluded Page 19 (e.g. Q29b)
+    const semanticZones: Record<string, Array<{ startY: number; endY: number; pageIndex: number; x: number }>> = {
+      '1b': [
+        { startY: 20, endY: 35, pageIndex: 1, x: 10 },
+        { startY: 50, endY: 70, pageIndex: 19, x: 10 }
+      ]
+    };
+
+    const enriched = enrichAnnotationsWithPositions(
+      annotations,
+      [],
+      '1',
+      1,
+      new Map([[1, { width: 1650, height: 2339 }], [19, { width: 1650, height: 2339 }]]),
+      undefined,
+      task,
+      undefined,
+      0,
+      0,
+      semanticZones
+    );
+
+    expect(enriched[0].pageIndex).toBe(1);
+  });
 });
 
 describe('4. Margin Clamping, Cover-Page Offset & Row-End Anchoring', () => {

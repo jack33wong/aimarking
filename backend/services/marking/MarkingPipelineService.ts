@@ -2995,6 +2995,13 @@ export class MarkingPipelineService {
             // --- Perform Classification on ALL Images (Question & Student Work) ---
             const logClassificationComplete = logStep('Classification', actualModel);
 
+            // Parse explicit user marking scope from Student Input early so Stage-2 Classification
+            // can skip out-of-scope pages/questions ($0 Stage-2 LLM cost) before meta-page filtering.
+            const markingScope = parseMarkingScope(options.customText);
+            if (markingScope) {
+                console.log(`🎯 [MARKING-SCOPE] Parsed explicit user scope: ${markingScope.label}`);
+            }
+
             // Classify ALL images at once for better cross-page context (solves continuation page question number detection)
             // 🛑 CRITICAL: We pass the lightweightPages (Tier 2) which was already generated before Semantic Geometry
             // This prevents Gemini from doing massive inference on 2000px Mathpix images.
@@ -3003,7 +3010,9 @@ export class MarkingPipelineService {
                 actualModel as ModelType,  // Cast to ModelType
                 debugClassification,  // debug (controlled by ENV)
                 usageTracker,  // Pass tracker for auto-recording
-                subjectProfile.ocrStrategy === 'VISION_VERBATIM'
+                subjectProfile.ocrStrategy === 'VISION_VERBATIM',
+                undefined,
+                markingScope
             );
 
             logClassificationComplete();
@@ -3242,13 +3251,7 @@ export class MarkingPipelineService {
                 isUserSelectedPageChunk
             });
 
-            // Parse explicit user marking scope from Student Input before meta-page filtering
-            // (e.g., "only mark to page 8", "mark Q1-Q12").
-            const markingScope = parseMarkingScope(options.customText);
-            if (markingScope) {
-                console.log(`🎯 [MARKING-SCOPE] Parsed explicit user scope: ${markingScope.label}`);
-            }
-
+            // Apply explicit user marking scope (parsed above) and blank-page preservation before meta-page filtering
             const hasAnyStudentWorkBeforeScope =
                 answeredBaseQuestions.size > 0 ||
                 allClassificationResults.some(r => r.result?.category === 'questionAnswer');

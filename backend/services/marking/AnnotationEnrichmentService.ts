@@ -131,10 +131,21 @@ export const enrichAnnotationsWithPositions = (
 
         // 🛡️ [HIGH-PAGE PREFERENCE]: For Drawings/Visuals on multi-page questions.
         // If AI didn't provide a specific ID, default to the HIGHEST valid page index.
-        // 🚨 [PARENT-AWARE FIX]: Only shift if target page belongs to same main question.
-        if (status === "VISUAL" && !activePointer && semanticZones) {
+        // 🚨 [PARENT-AWARE FIX]: Only shift if target page belongs to same main question AND this task's active pages.
+        // Never shift neutral `not_attempted` pills.
+        const isNotAttempted = (anno as any).action === 'not_attempted';
+        if (status === "VISUAL" && !isNotAttempted && !activePointer && semanticZones) {
+            const allowedTaskPages: Set<number> | null = task?.pageMap && Object.keys(task.pageMap).length > 0
+                ? new Set(Object.keys(task.pageMap).map(k => parseInt(k, 10)).filter(n => !isNaN(n)))
+                : (Array.isArray(task?.sourcePages) && task.sourcePages.length > 0
+                    ? new Set(task.sourcePages)
+                    : null);
+
             const currentQuestionId = (questionId || "").replace(/\D/g, '');
-            const zones = ZoneUtils.findAllMatchingZones(anno.subQuestion, semanticZones, currentQuestionId);
+            const allMatchingZones = ZoneUtils.findAllMatchingZones(anno.subQuestion, semanticZones, currentQuestionId);
+            const zones = allowedTaskPages
+                ? allMatchingZones.filter(z => allowedTaskPages.has(z.pageIndex))
+                : allMatchingZones;
             if (zones.length > 1) {
                 const highestPage = Math.max(...zones.map(z => z.pageIndex));
 

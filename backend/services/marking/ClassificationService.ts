@@ -7,6 +7,7 @@ import { getModelConfig, validateModel } from '../../config/aiModels.js';
 import { ErrorHandler } from '../../utils/errorHandler.js';
 import { getBaseQuestionNumber, combineQuestionAndPart } from '../../utils/TextNormalizationUtils.js';
 import UsageTracker from '../../utils/UsageTracker.js';
+import { type MarkingScope, isPageInScope, isQuestionInScope } from './MarkingScopeUtils.js';
 
 export interface ClassificationResult {
   category: "questionOnly" | "questionAnswer" | "metadata" | "frontPage";
@@ -50,10 +51,11 @@ export class ClassificationService {
     images: Array<{ imageData: string; pageIndex?: number }>,
     modelKey: string,
     isVerbatimProse: boolean,
-    hasPageMaps: boolean
+    hasPageMaps: boolean,
+    scopeLabel: string = ''
   ): string {
     const hash = crypto.createHash('sha256');
-    hash.update(`cls_v1:${modelKey}:${images.length}:verbatim=${isVerbatimProse}:maps=${hasPageMaps}:`);
+    hash.update(`cls_v1:${modelKey}:${images.length}:verbatim=${isVerbatimProse}:maps=${hasPageMaps}:scope=${scopeLabel}:`);
     for (let i = 0; i < images.length; i++) {
       const img = images[i]?.imageData || '';
       hash.update(`${i}:${img.length}:`);
@@ -94,7 +96,8 @@ export class ClassificationService {
     debug: boolean = false,
     tracker?: UsageTracker,  // UsageTracker (optional)
     pageMapsOrVerbatim?: Array<{ pageIndex: number; questions: string[]; category?: "frontPage" | "questionAnswer" | "questionOnly" }> | boolean,
-    isVerbatimProseArg?: boolean
+    isVerbatimProseArg?: boolean,
+    markingScope?: MarkingScope | null
   ): Promise<Array<{ pageIndex: number; mapperCategory?: string; result: ClassificationResult }>> {
     if (images.length === 0) return [];
 
@@ -103,7 +106,7 @@ export class ClassificationService {
 
     // Short-lived in-memory retry cache (no Firestore persistence)
     const validatedModelForCache = validateModel(model);
-    const cacheKey = this.computeImagesCacheKey(images, String(validatedModelForCache), isVerbatimProse, Boolean(pageMaps));
+    const cacheKey = this.computeImagesCacheKey(images, String(validatedModelForCache), isVerbatimProse, Boolean(pageMaps), markingScope?.label || '');
     const memEntry = this.classificationMemoryCache.get(cacheKey);
     if (memEntry) {
       if (Date.now() - memEntry.timestamp <= this.MEMORY_CACHE_TTL_MS && memEntry.data.length === images.length) {
@@ -404,6 +407,34 @@ ${images.map((_img, index) => `--- Page ${index + 1} ---`).join('\n')}`;
             isFullPage: true
           } as any);
         });
+      }
+
+      // ✂️ [CLASSIFICATION-SCOPE]: Skip Stage-2 per-page classification LLM calls for tasks outside explicit user scope.
+      // Out-of-scope pages fall through to the unmapped loop below as lightweight stubs ($0 LLM cost) and are then
+      // excluded as metadata by applyScopeAndBlankPageHandling().
+      if (markingScope && markingTasks.length > 0) {
+        const beforeCount = markingTasks.length;
+        const scopedTasks: typeof markingTasks = [];
+        for (const task of markingTasks) {
+          if (markingScope.type === 'pages') {
+            const inScopePages = task.pageIndices.filter(idx => isPageInScope(idx + 1, markingScope));
+            if (inScopePages.length > 0) {
+              scopedTasks.push({ ...task, pageIndices: inScopePages });
+            }
+          } else if (markingScope.type === 'questions') {
+            const isFullPage = Boolean((task as any).isFullPage);
+            const hasInScopeQuestion = Array.isArray(task.baseQNumbers) &&
+              task.baseQNumbers.some(q => isQuestionInScope(q, markingScope));
+            if (isFullPage || hasInScopeQuestion) {
+              scopedTasks.push(task);
+            }
+          }
+        }
+        markingTasks.length = 0;
+        markingTasks.push(...scopedTasks);
+        if (markingTasks.length < beforeCount) {
+          console.log(`✂️ [CLASSIFICATION-SCOPE] Pruned ${beforeCount - markingTasks.length}/${beforeCount} Stage-2 classification task(s) outside scope (${markingScope.label}).`);
+        }
       }
 
 
