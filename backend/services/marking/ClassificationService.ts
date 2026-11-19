@@ -151,7 +151,7 @@ export class ClassificationService {
 
     const multiImageUserPrompt = `Please classify all ${images.length} pages/images together and extract ALL question text from each page. Use context from previous pages to identify question numbers on continuation pages.
 
-${images.map((img, index) => `--- Page ${index + 1} ${img.fileName ? `(${img.fileName})` : ''} ---`).join('\n')}`;
+${images.map((_img, index) => `--- Page ${index + 1} ---`).join('\n')}`;
 
     try {
       const validatedModel = validateModel(model);
@@ -951,8 +951,11 @@ ${pageHints}
     const userPrompt = getPrompt('classification.heavy.user');
 
     try {
-      // Hardcoded test data: Only trigger for specific filenames
-      if (fileName === "IMG_1596.jpg" || fileName === "q21-edexcel-ball-pen-stroke.pdf" || fileName === "q21-edexcel-ball-pen-stroke.png") {
+      // Hardcoded test data: Only trigger when explicitly opted in via ENABLE_MOCK_CLASSIFICATION=true
+      if (
+        process.env.ENABLE_MOCK_CLASSIFICATION === 'true' &&
+        (fileName === "IMG_1596.jpg" || fileName === "q21-edexcel-ball-pen-stroke.pdf" || fileName === "q21-edexcel-ball-pen-stroke.png")
+      ) {
         const q21Text = "The diagram shows a plan of Jason's garden. [A composite shape is shown, described as: ABCO and DEFO are rectangles. CDO is a right-angled triangle. AFO is a sector of a circle with centre O and angle AOF = 90°. Dimensions are given: AB = 11m, BC = 7m, ED = 7m, FE = 9m.] Jason is going to cover his garden with grass seed. Each bag of grass seed covers 14 m² of garden. Each bag of grass seed costs £10.95. Work out how much it will cost Jason to buy all the bags of grass seed he needs.";
 
         return {

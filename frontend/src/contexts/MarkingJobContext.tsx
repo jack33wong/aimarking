@@ -49,6 +49,22 @@ function isViewingSessionPath(pathname: string, sessionId: string): boolean {
   return routeSessionId === sessionId;
 }
 
+function isFallbackJobTitle(title?: string | null): boolean {
+  if (!title) return true;
+  const trimmed = String(title).trim();
+  if (
+    !trimmed ||
+    trimmed === 'Processing...' ||
+    trimmed === 'Chat Session' ||
+    trimmed === 'Marking Session' ||
+    trimmed === 'Marking...' ||
+    trimmed === 'Re-marking...'
+  ) {
+    return true;
+  }
+  return /^(Marking|Question|Single Message|Batch Session)\s*-\s*\d/i.test(trimmed);
+}
+
 function loadPersistedJobs(): Record<string, MarkingJob> {
   try {
     const raw = sessionStorage.getItem(ACTIVE_JOBS_STORAGE_KEY);
@@ -137,7 +153,7 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       ...prev,
       [input.sessionId]: {
         sessionId: input.sessionId,
-        title: input.title || 'Marking...',
+        title: isFallbackJobTitle(input.title) ? 'Processing...' : String(input.title).trim(),
         status: 'processing',
         isRemark: Boolean(input.isRemark),
         progressData: input.progressData || null,
@@ -299,6 +315,12 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             res.fallbackResult?.aiMessage?.id || null,
             sessionId
           );
+        } else if (res.fallbackResult && !isViewing && res.fallbackResult.sessionTitle) {
+          simpleSessionService.updateSidebarSession({
+            id: sessionId,
+            title: res.fallbackResult.sessionTitle,
+            updatedAt: new Date().toISOString()
+          } as any);
         }
         simpleSessionService.stopAIThinking(sessionId);
         simpleSessionService.stopProcessing(sessionId);
@@ -515,7 +537,7 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                   )}
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {job.title || 'Marking Session'}
+                      {isProcessing ? 'Processing...' : (job.title || 'Processing...')}
                     </div>
                     <div style={{ fontSize: '11px', opacity: 0.8, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       {stepText}

@@ -21,6 +21,10 @@ export interface GeometryAnalysisResult {
     booklet_page_number?: number;
     /** Lowest main printed question number visible on this page (e.g. 1, 2, 20). */
     first_question_number?: number;
+    /** True if the page carries third-party/unofficial branding, practice/mock/rewritten paper labels, or non-endorsement disclaimers. */
+    is_unofficial_or_practice_paper?: boolean;
+    /** Short verbatim phrase/brand proving why is_unofficial_or_practice_paper is true (e.g. "Practice Paper - MarkMe", "Not produced or endorsed by AQA"). */
+    unofficial_reason?: string;
 }
 
 export const KNOWN_ACADEMIC_SUBJECTS = new Set([
@@ -58,6 +62,8 @@ interface RawGeometryAnalysisResult {
     is_cover_page?: boolean;
     booklet_page_number?: number | string | null;
     first_question_number?: number | string | null;
+    is_unofficial_or_practice_paper?: boolean;
+    unofficial_reason?: string;
 }
 
 export class ImageGeometryService {
@@ -109,6 +115,10 @@ Your job is to analyze the provided image of student homework or exam booklet an
 
 8e. first_question_number (integer | null): If a main printed exam question number is visible on this page (e.g. Question 1, 2, ... 25), return the lowest main question number integer on this page. Otherwise null.
 
+8f. is_unofficial_or_practice_paper (boolean): Set to true ONLY if the DOCUMENT ITSELF (cover page, header, footer, watermark, or bottom disclaimer) is an unofficial/third-party practice, mock, predicted, or rewritten paper (e.g., "Practice Paper", "June 2024 Format", "modelled on", "rewritten questions", "Not produced or endorsed by AQA/Edexcel", or third-party logos/footers like "* markme", "SaveMyExams", "Physics & Maths Tutor"). CRITICAL: Do NOT set true for genuine official exam board past papers (AQA, Pearson Edexcel, OCR, WJEC, Eduqas, CIE/Cambridge) and NEVER set true merely because an exam question's text contains words like "independent variable" or "practice". Otherwise false.
+
+8g. unofficial_reason (string): If \`is_unofficial_or_practice_paper\` is true, quote the short verbatim phrase/brand seen on the page (e.g. "Practice Paper / MarkMe / Not produced or endorsed by AQA"). Otherwise "".
+
 9. rejection_reason (string):
    - If \`detected_subject === "NON_ACADEMIC"\` or non-academic content:
      Return: \`"Not educational exam content: Please upload an academic exam question or student homework."\`
@@ -138,6 +148,8 @@ Return ONLY valid JSON matching this schema:
     "is_cover_page": boolean,
     "booklet_page_number": number | null,
     "first_question_number": number | null,
+    "is_unofficial_or_practice_paper": boolean,
+    "unofficial_reason": string,
     "evidence_text_snippet": string
 }`;
     }
@@ -275,7 +287,9 @@ Return ONLY valid JSON matching this schema:
                 first_question_number: (() => {
                     const n = Number(parsed.first_question_number);
                     return Number.isInteger(n) && n >= 1 && n <= 100 ? n : undefined;
-                })()
+                })(),
+                is_unofficial_or_practice_paper: Boolean(parsed.is_unofficial_or_practice_paper),
+                unofficial_reason: parsed.unofficial_reason ? String(parsed.unofficial_reason).trim() : undefined
             };
 
         } catch (error) {

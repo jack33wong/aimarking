@@ -428,6 +428,13 @@ class SimpleSessionService {
       // Handle new multi-image/PDF response structure
       if (data.annotatedOutput && data.processingStats) {
         if (!isViewingTarget) {
+          if (resolvedTargetId && data.sessionTitle) {
+            this.updateSidebarSession({
+              id: resolvedTargetId,
+              title: data.sessionTitle,
+              updatedAt: new Date().toISOString()
+            });
+          }
           return this.state.currentSession;
         }
 
@@ -916,6 +923,7 @@ class SimpleSessionService {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      let completedResult = null;
 
       const processChunk = (chunk) => {
         const lines = chunk.split('\n');
@@ -943,6 +951,7 @@ class SimpleSessionService {
 
             // Handle completion events
             if (data.type === 'complete') {
+              completedResult = data.result;
               this.handleProcessComplete(data.result, model, aiMessageId, targetSessionId);
               return true;
             }
@@ -974,7 +983,7 @@ class SimpleSessionService {
           if (done) {
             if (buffer && processChunk(buffer)) {
               reader.releaseLock();
-              return;
+              return completedResult;
             }
             throw new Error("Stream disconnected unexpectedly before completion. The request may have timed out.");
           }
@@ -985,7 +994,7 @@ class SimpleSessionService {
             if (processChunk(line)) {
               // Explicitly close the reader when processing is complete
               reader.releaseLock();
-              return;
+              return completedResult;
             }
           }
         }
@@ -1090,6 +1099,7 @@ class SimpleSessionService {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      let completedResult = null;
 
       const processChunk = (chunk) => {
         const lines = chunk.split('\n');
@@ -1114,6 +1124,7 @@ class SimpleSessionService {
             }
 
             if (data.type === 'complete') {
+              completedResult = data.result;
               this.handleProcessComplete(data.result, model, aiMessageId, targetSessionId);
               return true;
             }
@@ -1142,7 +1153,7 @@ class SimpleSessionService {
           if (done) {
             if (buffer && processChunk(buffer)) {
               reader.releaseLock();
-              return;
+              return completedResult;
             }
             throw new Error("Stream disconnected unexpectedly before completion. The request may have timed out.");
           }
@@ -1153,7 +1164,7 @@ class SimpleSessionService {
             if (processChunk(line)) {
               // Explicitly close the reader when processing is complete
               reader.releaseLock();
-              return;
+              return completedResult;
             }
           }
         }

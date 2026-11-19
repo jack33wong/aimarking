@@ -271,14 +271,10 @@ const SessionHeader: React.FC = () => {
 
   // Helper to render the formatted title with colored parts
   const renderFormattedTitle = () => {
-    // Only show "Thinking" dots if we are strictly processing AND don't have a valid question match yet.
-    // If we have a detected question, show the title even if background processing (like credit deduction) is happening.
-    const hasDetectedQuestion = currentSession?.detectedQuestion?.found;
-
-    if (isProcessing && !hasDetectedQuestion) {
+    if (isProcessing) {
       return (
         <span className="processing-dots">
-          {displaySession?.id?.startsWith('temp-') ? 'Analyzing' : 'Thinking'}
+          Processing
         </span>
       );
     }

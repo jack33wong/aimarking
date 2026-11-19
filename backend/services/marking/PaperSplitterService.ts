@@ -8,6 +8,9 @@ export interface InterceptedSchemeImageMeta {
     sourceIndex?: number;
     rawPageIndex?: number;
     originalFileName?: string;
+    paperCodeHint?: string;
+    evidenceText?: string;
+    detectedSubject?: string;
 }
 
 export interface PaperBucket {
@@ -339,17 +342,99 @@ function getValidPastPaperMatch(sub: SinglePaperCoreSubResult): any | null {
     return valid?.detectionResult?.match || null;
 }
 
+function stripLeadingBaseQ(raw: string, baseQ: string): string {
+    const trimmed = String(raw || '').trim().replace(/^q/i, '').replace(/^0+(?=\d)/, '');
+    if (baseQ && trimmed.startsWith(baseQ) && trimmed.length > baseQ.length) {
+        const nextChar = trimmed[baseQ.length];
+        // Only strip baseQ when followed by a separator or letter (not when clean === baseQ or another digit)
+        if (/[^0-9]/.test(nextChar)) {
+            return trimmed.slice(baseQ.length).toLowerCase().replace(/[().\s]/g, '');
+        }
+    }
+    return trimmed.toLowerCase().replace(/[().\s]/g, '');
+}
+
+function extractPageSubPartsForBase(qObj: any, baseQ: string): string[] {
+    const subParts = new Set<string>();
+    const rawQ = String(qObj?.questionNumber ?? '').trim().replace(/^q/i, '').replace(/^0+(?=\d)/, '');
+    if (baseQ && rawQ.startsWith(baseQ) && rawQ.length > baseQ.length) {
+        const nextChar = rawQ[baseQ.length];
+        if (/[^0-9]/.test(nextChar)) {
+            const trailing = rawQ.slice(baseQ.length).toLowerCase().replace(/[().\s]/g, '');
+            if (trailing) subParts.add(trailing);
+        }
+    }
+
+    if (Array.isArray(qObj?.subQuestions)) {
+        for (const sq of qObj.subQuestions) {
+            const rawPart = typeof sq === 'string'
+                ? sq
+                : String(sq?.part || sq?.subQuestion || sq?.q || sq?.id || '');
+            const cleanRaw = rawPart.trim().replace(/^q/i, '').replace(/^0+(?=\d)/, '').toLowerCase().replace(/[().\s]/g, '');
+            if (!cleanRaw || (baseQ && cleanRaw === baseQ)) continue;
+            const topPart = stripLeadingBaseQ(rawPart, baseQ);
+            if (!topPart) continue;
+
+            // Guard A: Inspect only top-level sq.subQuestions and combine topPart with its direct nested parts
+            // (e.g. "a" + "ii" -> "aii") rather than flattening to "a" or recursing deeply (so (b)(i) -> "bi", not "i").
+            if (typeof sq === 'object' && sq !== null && Array.isArray(sq.subQuestions) && sq.subQuestions.length > 0) {
+                let addedNested = false;
+                for (const nestedSq of sq.subQuestions) {
+                    const nestedRaw = typeof nestedSq === 'string'
+                        ? nestedSq
+                        : String(nestedSq?.part || nestedSq?.subQuestion || nestedSq?.q || nestedSq?.id || '');
+                    const nestedPart = stripLeadingBaseQ(nestedRaw, baseQ);
+                    if (nestedPart) {
+                        subParts.add(`${topPart}${nestedPart}`);
+                        addedNested = true;
+                    }
+                }
+                if (!addedNested) {
+                    subParts.add(topPart);
+                }
+            } else {
+                subParts.add(topPart);
+            }
+        }
+    }
+
+    return Array.from(subParts);
+}
+
+function isOpeningSubPart(part: string): boolean {
+    return part === 'a' || part === 'ai' || part === '1' || part === 'i';
+}
+
+function getPrimarySubLetterRank(part: string): number | null {
+    if (!part) return null;
+    const romanMap: Record<string, number> = {
+        i: 1, ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7, viii: 8, ix: 9, x: 10
+    };
+    if (romanMap[part] !== undefined) {
+        return romanMap[part];
+    }
+    if (/^[a-z]/.test(part)) {
+        return part.charCodeAt(0) - 96;
+    }
+    if (/^\d+$/.test(part)) {
+        return parseInt(part, 10);
+    }
+    return null;
+}
+
 export class PaperSplitterService {
     /**
      * Post-classification single-paper guard:
      * Rejects loose-image or combined-PDF uploads where >= 2 main question numbers
-     * appear on different pages with completely different printed opening question stems.
+     * appear on different pages with completely different printed opening question stems,
+     * or where opening sub-parts (e.g. 2(a) / 2(a)(i)) reset across multiple pages.
      */
     static assertSinglePaperClassification(
         allClassificationResults: Array<{ pageIndex: number; result?: any }>,
         options: { isPdf?: boolean; pageCount?: number; fileName?: string; isUserSelectedPageChunk?: boolean } = {}
     ): void {
-        const stemsByBaseQ = new Map<string, Array<{ pageIndex: number; tokens: Set<string> }>>();
+        const stemsByBaseQ = new Map<string, Array<{ pageIndex: number; normalizedQNum: string; tokens: Set<string> }>>();
+        const subPartsByBaseQAndPage = new Map<string, Map<number, { subParts: Set<string>; hasOpeningStem: boolean }>>();
 
         for (const entry of allClassificationResults || []) {
             const pageIndex = entry?.pageIndex;
@@ -357,27 +442,63 @@ export class PaperSplitterService {
             if (pageIndex === undefined || !Array.isArray(questions)) continue;
 
             for (const q of questions) {
-                const baseMatch = String(q?.questionNumber ?? '').trim().match(/^(\d+)/);
+                const rawQNum = String(q?.questionNumber ?? '').trim().replace(/^q/i, '');
+                const baseMatch = rawQNum.match(/^(\d+)/);
                 if (!baseMatch) continue;
-                const baseQ = baseMatch[1];
+                const baseQ = baseMatch[1].replace(/^0+(?=\d)/, '');
+                const normalizedQNum = rawQNum.toLowerCase().replace(/[().\s]/g, '').replace(/^0+(?=\d)/, '');
 
+                // Collect sub-parts per (baseQ, pageIndex) for sub-question reset detection
+                const extractedSubParts = extractPageSubPartsForBase(q, baseQ);
                 const stem = isOpeningQuestionStemOnPage(q);
+                if (extractedSubParts.length > 0) {
+                    if (!subPartsByBaseQAndPage.has(baseQ)) {
+                        subPartsByBaseQAndPage.set(baseQ, new Map());
+                    }
+                    const pageMap = subPartsByBaseQAndPage.get(baseQ)!;
+                    const existingPageInfo = pageMap.get(pageIndex) || { subParts: new Set<string>(), hasOpeningStem: false };
+                    for (const sp of extractedSubParts) {
+                        existingPageInfo.subParts.add(sp);
+                    }
+                    if (stem.length >= 20) {
+                        existingPageInfo.hasOpeningStem = true;
+                    }
+                    pageMap.set(pageIndex, existingPageInfo);
+                }
+
                 if (!stem) continue;
 
                 const tokens = tokenizeQuestionStem(stem);
                 if (tokens.size < 4) continue;
 
                 const list = stemsByBaseQ.get(baseQ) || [];
-                list.push({ pageIndex, tokens });
+                list.push({ pageIndex, normalizedQNum, tokens });
                 stemsByBaseQ.set(baseQ, list);
             }
         }
 
         const conflictingQuestionNumbers = new Set<string>();
+        const samePageConflictingQuestionNumbers = new Set<string>();
+        let hasRepeatedSingleQuestionConflict = false;
+
         stemsByBaseQ.forEach((entries, baseQ) => {
+            let pairConflictCount = 0;
             for (let i = 0; i < entries.length; i++) {
                 for (let j = i + 1; j < entries.length; j++) {
-                    if (entries[i].pageIndex === entries[j].pageIndex) continue;
+                    const samePage = entries[i].pageIndex === entries[j].pageIndex;
+                    if (samePage && entries[i].normalizedQNum !== entries[j].normalizedQNum) {
+                        // On the same page, Q1 (scenario stem) + Q1a (first sub-part) belong to the same question;
+                        // only flag same-page duplicates when the exact same question number appears twice.
+                        continue;
+                    }
+                    // Cross-page bare parent stem (e.g. "2") vs. sub-part (e.g. "2a") belong to the same question
+                    const isOneBareAndOneSub =
+                        (entries[i].normalizedQNum === baseQ && entries[j].normalizedQNum !== baseQ) ||
+                        (entries[j].normalizedQNum === baseQ && entries[i].normalizedQNum !== baseQ);
+                    if (isOneBareAndOneSub) {
+                        continue;
+                    }
+
                     const tokensA = entries[i].tokens;
                     const tokensB = entries[j].tokens;
                     let intersectionSize = 0;
@@ -387,31 +508,71 @@ export class PaperSplitterService {
                     const overlap = intersectionSize / Math.min(tokensA.size, tokensB.size);
                     if (overlap < 0.30) {
                         conflictingQuestionNumbers.add(baseQ);
+                        pairConflictCount++;
+                        if (samePage) {
+                            samePageConflictingQuestionNumbers.add(baseQ);
+                        }
                     }
                 }
             }
+            if (entries.length >= 3 && pairConflictCount >= 2) {
+                hasRepeatedSingleQuestionConflict = true;
+            }
         });
 
-        if (conflictingQuestionNumbers.size >= 2) {
-            const sortedConflicts = Array.from(conflictingQuestionNumbers).sort((a, b) => Number(a) - Number(b));
+        const subQuestionResetBaseNumbers = new Set<string>();
+        subPartsByBaseQAndPage.forEach((pageMap, baseQ) => {
+            const sortedPages = Array.from(pageMap.entries())
+                .sort((a, b) => a[0] - b[0])
+                .map(([pageIndex, info]) => ({
+                    pageIndex,
+                    subParts: Array.from(info.subParts),
+                    hasOpeningStem: info.hasOpeningStem
+                }));
+
+            const pagesWithOpeningSubPart = sortedPages.filter(p => p.subParts.some(isOpeningSubPart));
+            if (pagesWithOpeningSubPart.length < 2) {
+                return;
+            }
+
+            // Out-of-order / continuation guard: if a subsequent opening page also has 'b' (rank 2),
+            // require an opening stem (>= 20 chars, non-continuation) on that page before flagging.
+            const validSubsequentOpeningPages = pagesWithOpeningSubPart.slice(1).filter(p => {
+                const secondPageHasB = p.subParts.some(sp => /^b/.test(sp) && getPrimarySubLetterRank(sp) === 2);
+                if (secondPageHasB) {
+                    return p.hasOpeningStem;
+                }
+                return true;
+            });
+
+            if (validSubsequentOpeningPages.length >= 1) {
+                subQuestionResetBaseNumbers.add(baseQ);
+            }
+        });
+
+        if (
+            conflictingQuestionNumbers.size >= 2 ||
+            samePageConflictingQuestionNumbers.size >= 2 ||
+            hasRepeatedSingleQuestionConflict ||
+            subQuestionResetBaseNumbers.size >= 1
+        ) {
+            const sortedConflicts = Array.from(
+                new Set([...conflictingQuestionNumbers, ...subQuestionResetBaseNumbers])
+            ).sort((a, b) => Number(a) - Number(b));
             const sampleQs = sortedConflicts.slice(0, 5).map(q => `Q${q}`).join(', ');
             console.warn(
-                `⚠️ [PAPER-SPLITTER] Conflicting question stems detected on ${sortedConflicts.map(q => `Q${q}`).join(', ')} (isPdf=${Boolean(options.isPdf)}, pages=${options.pageCount ?? 'unknown'}).`
+                `⚠️ [PAPER-SPLITTER] Conflicting question stems or sub-question resets detected on ${sortedConflicts.map(q => `Q${q}`).join(', ')} (isPdf=${Boolean(options.isPdf)}, pages=${options.pageCount ?? 'unknown'}, isUserSelectedPageChunk=${Boolean(options.isUserSelectedPageChunk)}).`
             );
 
             if (options.isPdf) {
-                if (options.isUserSelectedPageChunk) {
-                    console.log(`ℹ️ [PAPER-SPLITTER] Skipping COMBINED_MULTI_PAPER_PDF_NOT_SUPPORTED for user-selected page chunk.`);
-                    return;
-                }
                 throw new UserFacingError({
                     code: 'COMBINED_MULTI_PAPER_PDF_NOT_SUPPORTED',
                     category: 'user_fixable',
                     shouldAlertAdmin: false,
                     userMessage:
-                        `This PDF${options.fileName ? ` ("${options.fileName}")` : ''} appears to contain **multiple exam papers combined into a single file** (duplicate question numbers with different questions detected: ${sampleQs}).\n\n` +
-                        `**How to fix:** Please upload **each exam paper as a separate PDF file** (e.g. Paper 1 PDF, Paper 2 PDF, Paper 3 PDF) so they can be graded accurately in parallel.`,
-                    technicalMessage: `Combined multi-paper PDF rejected after classification: conflicting question stems on Q${sortedConflicts.join(', Q')}.`
+                        `This PDF${options.fileName ? ` ("${options.fileName}")` : ''} contains **duplicate question numbers** (${sampleQs}) — such as a topic pack, compiled worksheet, or combined multi-paper PDF.\n\n` +
+                        `**Duplicate question numbers are not currently supported.** Please upload a **single unique exam paper** (or upload each exam paper as a separate PDF file with unique question numbers).`,
+                    technicalMessage: `Combined multi-paper / duplicate-question PDF rejected after classification: conflicting questions on Q${sortedConflicts.join(', Q')}.`
                 });
             }
 
@@ -420,11 +581,141 @@ export class PaperSplitterService {
                 category: 'user_fixable',
                 shouldAlertAdmin: true,
                 userMessage:
-                    `Loose image uploads support **1 exam paper at a time**. We detected multiple exam papers in your upload (duplicate question numbers with different questions: ${sampleQs}).\n\n` +
-                    `**How to mark multiple papers:**\n` +
-                    `1. **Upload each paper as a separate PDF file** (e.g. 3 PDFs for Paper 1, Paper 2, and Paper 3, optionally with mark scheme PDFs).\n` +
-                    `2. **Or upload 1 paper at a time** if using loose photos/images.`,
-                technicalMessage: `Multi-paper loose image upload rejected after classification: conflicting question stems on Q${sortedConflicts.join(', Q')}.`
+                    `Your upload contains **duplicate question numbers** (${sampleQs}) — such as a topic pack, compiled worksheet, or multiple exam papers.\n\n` +
+                    `**Duplicate question numbers are not currently supported.** Please upload a **single unique exam paper** (1 paper at a time for loose images, or each exam paper as a separate PDF file).`,
+                technicalMessage: `Multi-paper / duplicate-question loose image upload rejected after classification: conflicting questions on Q${sortedConflicts.join(', Q')}.`
+            });
+        }
+    }
+
+    /**
+     * Lightweight pre-gate duplicate-question guard for >50-page uploads:
+     * Inspects sampled ClassificationMapper PageMap[] results (deduplicated by pageIndex)
+     * before FREE_PAGE_LIMIT_EXCEEDED offers 25-page chunking buttons.
+     */
+    static assertNoDuplicateQuestionsInMapperResults(
+        mapperPageResults: Array<{ pageIndex: number; flatQuestions?: string[]; category?: string }>,
+        options: { isPdf?: boolean; pageCount?: number; fileName?: string } = {}
+    ): void {
+        if (!Array.isArray(mapperPageResults) || mapperPageResults.length === 0) return;
+
+        // Deduplicate by pageIndex so ClassificationMapper's internal 2-page overlap is never counted twice
+        const dedupedByPage = new Map<number, Set<string>>();
+        for (const p of mapperPageResults) {
+            if (p?.pageIndex === undefined || p?.pageIndex === null) continue;
+            if (p.category === 'frontPage' || p.category === 'metadata') continue;
+            const flat = Array.isArray(p.flatQuestions) ? p.flatQuestions : [];
+            if (flat.length === 0) continue;
+
+            if (!dedupedByPage.has(p.pageIndex)) {
+                dedupedByPage.set(p.pageIndex, new Set());
+            }
+            const set = dedupedByPage.get(p.pageIndex)!;
+            for (const qLabel of flat) {
+                const cleaned = String(qLabel || '').trim();
+                if (cleaned) set.add(cleaned);
+            }
+        }
+
+        const sortedPages = Array.from(dedupedByPage.entries()).sort((a, b) => a[0] - b[0]);
+        if (sortedPages.length < 2) return;
+
+        // Track opening sub-parts per (baseQ, subPart) -> Set<pageIndex>
+        const openingPagesByKey = new Map<string, { baseQ: string; pages: Set<number> }>();
+        // Track base question resets (must have already appeared on an earlier page, with a higher baseQ seen in between)
+        const firstSeenPageByBaseQ = new Map<string, number>();
+        const maxNumSeenSinceFirst = new Map<string, number>();
+        const resetBaseQs = new Set<string>();
+
+        for (const [pageIndex, labelSet] of sortedPages) {
+            const baseQsOnPage = new Set<string>();
+
+            for (const label of labelSet) {
+                const raw = label.replace(/^q/i, '').replace(/^0+(?=\d)/, '');
+                const m = raw.match(/^(\d+)(.*)$/);
+                if (!m) continue;
+                const baseQ = m[1].replace(/^0+(?=\d)/, '');
+                const subPart = m[2].toLowerCase().replace(/[().\s]/g, '');
+
+                baseQsOnPage.add(baseQ);
+
+                // Guard B: Only treat "a", "ai", "1", or "i" (top-level Roman) as opening sub-parts
+                if (subPart && isOpeningSubPart(subPart)) {
+                    const key = `${baseQ}:${subPart}`;
+                    if (!openingPagesByKey.has(key)) {
+                        openingPagesByKey.set(key, { baseQ, pages: new Set() });
+                    }
+                    openingPagesByKey.get(key)!.pages.add(pageIndex);
+                }
+            }
+
+            const baseNumsOnPage = Array.from(baseQsOnPage)
+                .map(q => ({ baseQ: q, num: Number(q) }))
+                .filter(item => Number.isFinite(item.num) && item.num >= 1);
+
+            const maxOnThisPage = baseNumsOnPage.reduce((mx, item) => Math.max(mx, item.num), 0);
+
+            // Check if any baseQ on this page already appeared on an earlier page AND had a higher question on an earlier intermediate page
+            for (const { baseQ, num } of baseNumsOnPage) {
+                const firstPage = firstSeenPageByBaseQ.get(baseQ);
+                if (firstPage !== undefined && firstPage < pageIndex) {
+                    const maxAfterFirst = maxNumSeenSinceFirst.get(baseQ) ?? num;
+                    if (maxAfterFirst > num) {
+                        resetBaseQs.add(baseQ);
+                    }
+                } else if (firstPage === undefined) {
+                    firstSeenPageByBaseQ.set(baseQ, pageIndex);
+                    maxNumSeenSinceFirst.set(baseQ, Math.max(num, maxOnThisPage));
+                }
+            }
+
+            // Update maxNumSeenSinceFirst for all previously seen baseQs AFTER checking resets on this page
+            firstSeenPageByBaseQ.forEach((firstPageIdx, prevBaseQ) => {
+                if (firstPageIdx < pageIndex) {
+                    const prevMax = maxNumSeenSinceFirst.get(prevBaseQ) ?? Number(prevBaseQ);
+                    if (maxOnThisPage > prevMax) {
+                        maxNumSeenSinceFirst.set(prevBaseQ, maxOnThisPage);
+                    }
+                }
+            });
+        }
+
+        const openingResetBaseQs = new Set<string>();
+        openingPagesByKey.forEach(({ baseQ, pages }) => {
+            if (pages.size >= 2) {
+                openingResetBaseQs.add(baseQ);
+            }
+        });
+
+        const hasDownwardReset = resetBaseQs.size >= 2 && (resetBaseQs.has('1') || resetBaseQs.has('2'));
+        if (openingResetBaseQs.size >= 1 || hasDownwardReset) {
+            const conflictList = Array.from(new Set([...openingResetBaseQs, ...resetBaseQs]))
+                .sort((a, b) => Number(a) - Number(b));
+            const sampleQs = conflictList.slice(0, 5).map(q => `Q${q}`).join(', ');
+            console.warn(
+                `⚠️ [MAPPER-PRECHECK] Duplicate question numbers / sub-question resets detected on ${conflictList.map(q => `Q${q}`).join(', ')} (isPdf=${Boolean(options.isPdf)}, pages=${options.pageCount ?? 'unknown'}).`
+            );
+
+            if (options.isPdf) {
+                throw new UserFacingError({
+                    code: 'COMBINED_MULTI_PAPER_PDF_NOT_SUPPORTED',
+                    category: 'user_fixable',
+                    shouldAlertAdmin: false,
+                    userMessage:
+                        `This PDF${options.fileName ? ` ("${options.fileName}")` : ''} contains **duplicate question numbers** (${sampleQs}) — such as a topic pack, compiled worksheet, or combined multi-paper PDF.\n\n` +
+                        `**Duplicate question numbers are not currently supported.** Please upload a **single unique exam paper** (or upload each exam paper as a separate PDF file with unique question numbers).`,
+                    technicalMessage: `Combined multi-paper / duplicate-question PDF rejected in >50-page mapper pre-check: conflicting questions on Q${conflictList.join(', Q')}.`
+                });
+            }
+
+            throw new UserFacingError({
+                code: 'MULTI_PAPER_LOOSE_IMAGES_NOT_SUPPORTED',
+                category: 'user_fixable',
+                shouldAlertAdmin: true,
+                userMessage:
+                    `Your upload contains **duplicate question numbers** (${sampleQs}) — such as a topic pack, compiled worksheet, or multiple exam papers.\n\n` +
+                    `**Duplicate question numbers are not currently supported.** Please upload a **single unique exam paper** (1 paper at a time for loose images, or each exam paper as a separate PDF file).`,
+                technicalMessage: `Multi-paper / duplicate-question loose image upload rejected in >50-page mapper pre-check: conflicting questions on Q${conflictList.join(', Q')}.`
             });
         }
     }
@@ -631,9 +922,23 @@ export class PaperSplitterService {
                     continue;
                 }
             }
-            const itemCode = extractPaperCodeFromFilename(item.originalFileName) || normalizePaperCode(item.originalFileName);
-            const itemToken = extractPaperToken(item.originalFileName);
-            const itemSubject = extractSubjectHintFromFilename(item.originalFileName);
+            const contentSignal = [item.paperCodeHint, item.evidenceText].filter(Boolean).join(' ');
+            const itemCode =
+                extractPaperCodeFromFilename(contentSignal) ||
+                normalizePaperCode(item.paperCodeHint) ||
+                normalizePaperCode(item.evidenceText) ||
+                extractPaperCodeFromFilename(item.originalFileName) ||
+                normalizePaperCode(item.originalFileName);
+            const itemToken =
+                extractPaperToken(itemCode) ||
+                extractPaperToken(contentSignal) ||
+                extractPaperToken(item.originalFileName);
+            const itemSubject =
+                (item.detectedSubject && !/^(MATHS|UNKNOWN|UNSUPPORTED_SUBJECT)$/i.test(item.detectedSubject.trim())
+                    ? item.detectedSubject.trim().toUpperCase()
+                    : '') ||
+                extractSubjectHintFromFilename(contentSignal) ||
+                extractSubjectHintFromFilename(item.originalFileName);
             const matched = matchSchemeToUniqueBucket(itemCode, itemToken, itemSubject);
             if (matched) {
                 matched.bucket.interceptedSchemeImages.push(item.imageData);
@@ -661,11 +966,20 @@ export class PaperSplitterService {
 
         deferredSchemePdfFiles.forEach((msFile, idx) => {
             const name = msFile?.originalname || '';
-            let msCode = extractPaperCodeFromFilename(name) || normalizePaperCode(name);
-            let msToken = extractPaperToken(name);
-            const msSubject = extractSubjectHintFromFilename(name);
+            const pdfHeaderText = typeof (msFile as any)?._pdfHeaderText === 'string' ? (msFile as any)._pdfHeaderText : '';
+            let msCode =
+                (pdfHeaderText ? (extractPaperCodeFromFilename(pdfHeaderText) || normalizePaperCode(pdfHeaderText)) : '') ||
+                extractPaperCodeFromFilename(name) ||
+                normalizePaperCode(name);
+            let msToken =
+                extractPaperToken(msCode) ||
+                (pdfHeaderText ? extractPaperToken(pdfHeaderText) : '') ||
+                extractPaperToken(name);
+            const msSubject =
+                (pdfHeaderText ? extractSubjectHintFromFilename(pdfHeaderText) : '') ||
+                extractSubjectHintFromFilename(name);
 
-            if (!msCode && msFile?.buffer) {
+            if (!msCode && !pdfHeaderText && msFile?.buffer) {
                 const headerSample = msFile.buffer.toString('latin1', 0, Math.min(msFile.buffer.length, 65536));
                 const headerCode = extractPaperCodeFromFilename(headerSample) || normalizePaperCode(headerSample);
                 if (headerCode) {

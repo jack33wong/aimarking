@@ -392,7 +392,7 @@ export const MarkingPageProvider = ({
         if (res?.status === 'processing') {
           registerJob({
             sessionId: routeSessionId,
-            title: res.session?.title || 'Marking...',
+            title: res.session?.title || 'Processing...',
             isRemark: Boolean(res.isRemark),
             progressData: res.progressData || {
               currentStepDescription: 'Processing...',
@@ -403,8 +403,14 @@ export const MarkingPageProvider = ({
           });
           if (res.session) {
             loadSession(res.session);
+            if (!routeSessionId.startsWith('temp-')) {
+              simpleSessionService.updateSidebarSession(res.session);
+            }
           } else {
-            simpleSessionService.initClientSession(routeSessionId, 'Processing...');
+            const initializedSession = simpleSessionService.initClientSession(routeSessionId, 'Processing...');
+            if (initializedSession && !routeSessionId.startsWith('temp-')) {
+              simpleSessionService.updateSidebarSession(initializedSession);
+            }
             const currentAfterInit = simpleSessionService.getCurrentSession();
             const hasProcessingMsg = (currentAfterInit?.messages || []).some(m => m.isProcessing);
             if (!hasProcessingMsg) {
@@ -1211,10 +1217,13 @@ export const MarkingPageProvider = ({
 
     try {
       userClosedSplitSessionIdRef.current = null;
-      simpleSessionService.initClientSession(
+      const initializedSession = simpleSessionService.initClientSession(
         clientSubmissionId,
         existingStableSessionId ? liveSession.title : 'Processing...'
       );
+      if (!existingStableSessionId && initializedSession && !clientSubmissionId.startsWith('temp-')) {
+        simpleSessionService.updateSidebarSession(initializedSession);
+      }
       if (!existingStableSessionId || routeSessionId !== clientSubmissionId) {
         navigate(`/app/${clientSubmissionId}`, { replace: true });
       }
@@ -1243,7 +1252,7 @@ export const MarkingPageProvider = ({
 
       registerJob({
         sessionId: clientSubmissionId,
-        title: existingStableSessionId ? liveSession.title : 'Marking...',
+        title: existingStableSessionId ? liveSession.title : 'Processing...',
         progressData: imageProgressData
       });
       startAIThinking(imageProgressData, imageAiMessageId, [imageData], clientSubmissionId);
@@ -1392,10 +1401,13 @@ export const MarkingPageProvider = ({
 
     try {
       userClosedSplitSessionIdRef.current = null;
-      simpleSessionService.initClientSession(
+      const initializedSession = simpleSessionService.initClientSession(
         clientSubmissionId,
         existingStableSessionId ? liveSession.title : 'Processing...'
       );
+      if (!existingStableSessionId && initializedSession && !clientSubmissionId.startsWith('temp-')) {
+        simpleSessionService.updateSidebarSession(initializedSession);
+      }
       if (!existingStableSessionId || routeSessionId !== clientSubmissionId) {
         navigate(`/app/${clientSubmissionId}`, { replace: true });
       }
@@ -1470,7 +1482,7 @@ export const MarkingPageProvider = ({
       ];
       registerJob({
         sessionId: clientSubmissionId,
-        title: existingStableSessionId ? liveSession.title : 'Marking...',
+        title: existingStableSessionId ? liveSession.title : 'Processing...',
         progressData: multiImageProgressData
       });
       startAIThinking(multiImageProgressData, multiImageAiMessageId, thinkingImages, clientSubmissionId);
@@ -1676,7 +1688,7 @@ export const MarkingPageProvider = ({
 
       registerJob({
         sessionId: targetSessionId,
-        title: liveSession?.title || 'Re-marking...',
+        title: liveSession?.title || 'Processing...',
         isRemark: true,
         progressData
       });
@@ -1779,7 +1791,7 @@ export const MarkingPageProvider = ({
 
         registerJob({
           sessionId: targetSessionId,
-          title: liveSession?.title || 'Re-marking...',
+          title: liveSession?.title || 'Processing...',
           isRemark: true,
           progressData
         });

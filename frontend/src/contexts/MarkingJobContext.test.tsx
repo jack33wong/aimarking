@@ -59,7 +59,7 @@ describe('MarkingJobContext', () => {
       ctx.registerJob({ sessionId: 'sess-123' });
     });
 
-    expect(screen.getByText('Marking...')).toBeInTheDocument();
+    expect(screen.getByText('Processing...')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'View' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument();
 
@@ -145,5 +145,63 @@ describe('MarkingJobContext', () => {
       jest.advanceTimersByTime(7100);
     });
     expect(screen.queryByText('AQA Biology Paper 1')).not.toBeInTheDocument();
+  });
+
+  it('shows "Processing..." in floating toast even when registerJob receives a stale title like "Upload Issue", then updates to real title on completion', () => {
+    let ctx!: ReturnType<typeof useMarkingJob>;
+    render(
+      <MarkingJobProvider>
+        <TestHarness onReady={(c) => { ctx = c; }} />
+      </MarkingJobProvider>
+    );
+
+    act(() => {
+      ctx.registerJob({ sessionId: 'sess-upload-issue', title: 'Upload Issue' });
+    });
+
+    expect(screen.getByText('Processing...')).toBeInTheDocument();
+    expect(screen.queryByText('Upload Issue')).not.toBeInTheDocument();
+
+    act(() => {
+      ctx.completeJob('sess-upload-issue', 'OCR Chemistry H432');
+    });
+
+    expect(screen.getByText('OCR Chemistry H432')).toBeInTheDocument();
+    expect(screen.queryByText('Processing...')).not.toBeInTheDocument();
+  });
+
+  it('updates sidebar session and toast title when pollOnce completes with fallbackResult while viewing another chat', async () => {
+    mockPathname = '/app/other-session';
+    window.history.pushState({}, '', '/app/other-session');
+    (simpleSessionService.getSession as jest.Mock).mockResolvedValueOnce({
+      status: 'completed',
+      fallbackResult: { sessionTitle: 'Edexcel Physics 9PH0' },
+    });
+
+    let ctx!: ReturnType<typeof useMarkingJob>;
+    render(
+      <MarkingJobProvider>
+        <TestHarness onReady={(c) => { ctx = c; }} />
+      </MarkingJobProvider>
+    );
+
+    act(() => {
+      ctx.registerJob({ sessionId: 'sess-fallback-poll' });
+    });
+
+    expect(screen.getByText('Processing...')).toBeInTheDocument();
+
+    await act(async () => {
+      ctx.startPollingJob('sess-fallback-poll');
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Edexcel Physics 9PH0')).toBeInTheDocument();
+    expect(simpleSessionService.updateSidebarSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'sess-fallback-poll',
+        title: 'Edexcel Physics 9PH0',
+      })
+    );
   });
 });

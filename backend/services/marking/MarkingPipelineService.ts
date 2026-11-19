@@ -19,7 +19,9 @@ import {
     logAnnotationSummary,
     getQuestionSortValue,
     getSuggestedFollowUps,
-    calculateOverallScore
+    calculateOverallScore,
+    collapseCompatibleSubjectAliases,
+    hasUnofficialPaperIndicators
 } from './MarkingHelpers.js';
 import { withPerformanceLogging } from '../../utils/markingRouterHelpers.js';
 import UsageTracker from '../../utils/UsageTracker.js';
@@ -113,6 +115,7 @@ export function extractCoverPaperMetadata(params: {
     detectedPaperCode?: string;
     detectedExamSeries?: string;
     hasFourDigitYear: boolean;
+    hasCoverVerifiedMetadata: boolean;
 } {
     const {
         geometryResults = [],
@@ -137,30 +140,42 @@ export function extractCoverPaperMetadata(params: {
     const coverTextOnly = coverSnippets.join(' ');
     const allCoverText = [coverTextOnly, sanitizedFileNames].filter(Boolean).join(' ');
 
-    const detectedBoard = allCoverText.match(/(?<![a-z0-9])(Edexcel|Pearson|AQA|OCR|WJEC|Eduqas|CIE|Cambridge|CCEA)(?![a-z0-9])/i)?.[1];
+    const boardRegex = /(?<![a-z0-9])(Edexcel|Pearson|AQA|OCR|WJEC|Eduqas|CIE|Cambridge|CCEA)(?![a-z0-9])/i;
+    const coverBoard = coverTextOnly.match(boardRegex)?.[1];
+    const detectedBoard = coverBoard || sanitizedFileNames.match(boardRegex)?.[1];
 
     const hintPaperCode = effectiveExamPaperHint
         ? effectiveExamPaperHint.match(PAPER_CODE_PATTERN)?.[1]
         : undefined;
-    const coverPaperCode = allCoverText.match(PAPER_CODE_PATTERN)?.[1];
+    const coverOnlyPaperCode = coverTextOnly.match(PAPER_CODE_PATTERN)?.[1];
+    const coverPaperCode = coverOnlyPaperCode || sanitizedFileNames.match(PAPER_CODE_PATTERN)?.[1];
     const detectedPaperCode = extractedGeoPaperCode || cleanGeoPaperHint || hintPaperCode || coverPaperCode;
 
     // Only accept explicit "<Month/Season/Series> <Year>" for the zero-probe fast-fail;
     // bare years (e.g. copyright notices or filenames) fall through to the 3-question probe.
     const explicitSeriesRegex = /(?<![a-z0-9])((?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|summer|autumn|winter|spring|series[\s_-]+\d+)[\s_-]*(?:20\d{2}))(?![a-z0-9])/i;
 
+    const coverSeriesMatch = coverTextOnly.match(explicitSeriesRegex)?.[1];
     const rawExamSeries =
-        coverTextOnly.match(explicitSeriesRegex)?.[1] ||
+        coverSeriesMatch ||
         sanitizedFileNames.match(explicitSeriesRegex)?.[1];
     const detectedExamSeries = rawExamSeries ? rawExamSeries.replace(/[-_]+/g, ' ').trim() : undefined;
 
     const hasFourDigitYear = Boolean(detectedExamSeries && /(?<![0-9])20\d{2}(?![0-9])/.test(detectedExamSeries));
+    const hasCoverVerifiedPaperCode = Boolean(extractedGeoPaperCode || coverOnlyPaperCode);
+    const hasCoverVerifiedMetadata = Boolean(
+        coverBoard &&
+        hasCoverVerifiedPaperCode &&
+        coverSeriesMatch &&
+        hasFourDigitYear
+    );
 
     return {
         detectedBoard,
         detectedPaperCode,
         detectedExamSeries,
-        hasFourDigitYear
+        hasFourDigitYear,
+        hasCoverVerifiedMetadata
     };
 }
 
@@ -382,7 +397,7 @@ export async function runFastDbPreCheck(params: {
 
     if (!individualQuestions || individualQuestions.length === 0) return null;
 
-    const { detectedBoard, detectedPaperCode, detectedExamSeries, hasFourDigitYear } = extractCoverPaperMetadata({
+    const { detectedBoard, detectedPaperCode, detectedExamSeries, hasFourDigitYear, hasCoverVerifiedMetadata } = extractCoverPaperMetadata({
         geometryResults,
         classificationReasoning: classificationResult?.reasoning,
         uploadedFileNames,
@@ -391,8 +406,8 @@ export async function runFastDbPreCheck(params: {
         effectiveExamPaperHint
     });
 
-    // 1. Fast-fail by paper metadata (board + paperCode + examSeries with 4-digit year)
-    if (detectedBoard && detectedPaperCode && detectedExamSeries && hasFourDigitYear) {
+    // 1. Fast-fail by paper metadata ONLY when verified from cover/geometry text (not filename alone)
+    if (hasCoverVerifiedMetadata && detectedBoard && detectedPaperCode && detectedExamSeries && hasFourDigitYear) {
         const existsInDb = await paperExistsInDatabaseFn(
             detectedBoard,
             detectedPaperCode,
@@ -406,11 +421,11 @@ export async function runFastDbPreCheck(params: {
         }
     }
 
-    // 2. If examSeries is not known from the cover page, sample at most the first 3 questions first.
+    // 2. If examSeries is not verified from the cover page, sample at most the first 3 questions first.
     // If 0/3 match in DB, abort immediately without running the remaining questions.
     // If >= 1 matches, query only the remaining questions and merge so the first 3 are not queried twice.
     let dbPreCheck: FastDbPreCheckLookupResult;
-    if (!hasFourDigitYear && individualQuestions.length > 3) {
+    if (!hasCoverVerifiedMetadata && individualQuestions.length > 3) {
         const probeQuestions = individualQuestions.slice(0, 3).map(q => ({ ...q }));
         const probeResult = await orchestrateLookupFn(
             probeQuestions,
@@ -990,6 +1005,111 @@ export function filterPagesBySelectedRawIndices(params: {
     return { standardizedPages, isUserSelectedPageChunk: false };
 }
 
+export interface FilePreRasterizationPlan {
+    fileIndex: number;
+    isDeferredMarkScheme: boolean;
+    isExplicitMarkScheme: boolean;
+    rawPageCount: number | null;
+    globalRawOffset: number | null;
+    selectedLocalPageIndices?: number[];
+}
+
+export async function buildPreRasterizationPlan(params: {
+    files: Express.Multer.File[];
+    isExplicitMarkSchemePdfFile: (f: Express.Multer.File) => boolean;
+    hasNonSchemeStudentFiles: boolean;
+    selectedRawPageIndices?: number[];
+    getPdfPageCountFn?: (buf: Buffer) => Promise<number | null>;
+}): Promise<{
+    plans: FilePreRasterizationPlan[];
+    totalKnownRawPages: number;
+    hasUnknownPageCount: boolean;
+    hasValidSelectedRawPages: boolean;
+}> {
+    const {
+        files,
+        isExplicitMarkSchemePdfFile,
+        hasNonSchemeStudentFiles,
+        selectedRawPageIndices,
+        getPdfPageCountFn = PdfProcessingService.getPdfPageCount.bind(PdfProcessingService)
+    } = params;
+
+    const plans: FilePreRasterizationPlan[] = await Promise.all(
+        files.map(async (file, fileIndex): Promise<FilePreRasterizationPlan> => {
+            const isExplicitMarkScheme = isExplicitMarkSchemePdfFile(file);
+            const isDeferredMarkScheme = hasNonSchemeStudentFiles && isExplicitMarkScheme;
+            let rawPageCount: number | null = 0;
+
+            if (isDeferredMarkScheme) {
+                rawPageCount = 0;
+            } else if (file?.mimetype === 'application/pdf') {
+                rawPageCount = await getPdfPageCountFn(file.buffer);
+            } else if (file?.mimetype?.startsWith('image/')) {
+                rawPageCount = 1;
+            }
+
+            return {
+                fileIndex,
+                isDeferredMarkScheme,
+                isExplicitMarkScheme,
+                rawPageCount,
+                globalRawOffset: null
+            };
+        })
+    );
+
+    let runningOffset = 0;
+    let offsetUnknown = false;
+    for (const plan of plans) {
+        if (plan.isDeferredMarkScheme || plan.rawPageCount === 0) {
+            plan.globalRawOffset = offsetUnknown ? null : runningOffset;
+        } else if (plan.rawPageCount === null) {
+            plan.globalRawOffset = null;
+            offsetUnknown = true;
+        } else {
+            plan.globalRawOffset = offsetUnknown ? null : runningOffset;
+            if (!offsetUnknown) {
+                runningOffset += plan.rawPageCount;
+            }
+        }
+    }
+
+    const totalKnownRawPages = plans.reduce((sum, p) => sum + (p.rawPageCount ?? 0), 0);
+    const hasUnknownPageCount = plans.some(p => p.rawPageCount === null);
+
+    let hasValidSelectedRawPages = false;
+    if (!hasUnknownPageCount && Array.isArray(selectedRawPageIndices) && selectedRawPageIndices.length > 0) {
+        const selectedSet = new Set(
+            selectedRawPageIndices.map(Number).filter(n => Number.isInteger(n) && n >= 0)
+        );
+        hasValidSelectedRawPages = Array.from(selectedSet).some(idx => idx < totalKnownRawPages);
+
+        if (hasValidSelectedRawPages) {
+            for (const plan of plans) {
+                if (plan.isDeferredMarkScheme || plan.rawPageCount === 0 || plan.isExplicitMarkScheme) {
+                    continue;
+                }
+                if (plan.globalRawOffset !== null && plan.rawPageCount !== null) {
+                    const localIndices: number[] = [];
+                    for (let localIdx = 0; localIdx < plan.rawPageCount; localIdx++) {
+                        if (selectedSet.has(plan.globalRawOffset + localIdx)) {
+                            localIndices.push(localIdx);
+                        }
+                    }
+                    plan.selectedLocalPageIndices = localIndices;
+                }
+            }
+        }
+    }
+
+    return {
+        plans,
+        totalKnownRawPages,
+        hasUnknownPageCount,
+        hasValidSelectedRawPages
+    };
+}
+
 export function assertNoEarlyMultiCoverPdf(params: {
     standardizedPages: StandardizedPage[];
     geometryResults: any[];
@@ -1103,7 +1223,7 @@ export function buildDetectedPaperGroupsHelper(params: {
             ).sort((a, c) => a - c);
             chunks.push({
                 paperIndex: chunks.length,
-                label: `Pages ${slice[0] + 1}–${slice[slice.length - 1] + 1}`,
+                label: `Pages ${start + 1}–${start + slice.length}`,
                 subject: prettySubj,
                 pageCount: slice.length,
                 fileIndices: allFileIndices,
@@ -1209,6 +1329,24 @@ export function buildOverdraftLimitExceededMessage(params: {
         `This upload (${studentRawPageCount} student pages, estimated **${creditsNeeded} credits**) exceeds your remaining balance (**${remainingCredits.toFixed(0)} credits**) and the 100-credit overdraft safety limit.${paperBreakdownMd}\n\n` +
         continueActionMd
     );
+}
+
+export function buildRawCombinedPageLimitError(
+    totalRawPages: number,
+    maxRawCombinedPages = 100
+): UserFacingError {
+    return new UserFacingError({
+        code: 'PDF_PAGE_LIMIT_EXCEEDED',
+        category: 'user_fixable',
+        shouldAlertAdmin: false,
+        requiresUpgrade: false,
+        userMessage:
+            `You uploaded **${totalRawPages} pages**, which exceeds the maximum limit of **${maxRawCombinedPages} pages/images** per submission.\n\n` +
+            `**How to fix:**\n` +
+            `1. Please upload **1 paper at a time** (a single unique exam paper with unique question numbers, up to ${maxRawCombinedPages} total pages including any mark scheme).\n` +
+            `2. If your PDF is a combined booklet or workbook, split it into individual papers or smaller page ranges before uploading.`,
+        technicalMessage: `Upload exceeds the maximum limit of ${maxRawCombinedPages} pages/images (uploaded ${totalRawPages} pages).`
+    });
 }
 
 export class MarkingPipelineService {
@@ -1350,10 +1488,12 @@ export class MarkingPipelineService {
             const MAX_RAW_COMBINED_PAGES = isProOrUltra
                 ? Number.MAX_SAFE_INTEGER
                 : parseInt(process.env.MAX_RAW_UPLOAD_PAGES || '100'); // Allows up to 50 student pages + up to 50 Mark Scheme pages before Stage 2 ejection
+            const buildRawCombinedLimitError = (totalRawPages: number) =>
+                buildRawCombinedPageLimitError(totalRawPages, MAX_RAW_COMBINED_PAGES);
             const pdfMaxPagesOption = isProOrUltra ? undefined : MAX_RAW_COMBINED_PAGES;
             const effectiveMaxPages = isProOrUltra ? Number.MAX_SAFE_INTEGER : (isFreeUser ? Math.min(MAX_FREE_PAGES, MAX_PAGES_LIMIT) : MAX_PAGES_LIMIT);
             const getPageLimitErrorMessage = (count?: number) =>
-                `PDF_PAGE_LIMIT_EXCEEDED: Upload exceeds the maximum limit of ${effectiveMaxPages} pages/images${count ? ` (uploaded ${count} pages)` : ''}.`;
+                buildRawCombinedLimitError(count || MAX_RAW_COMBINED_PAGES + 1).userMessage;
 
             const preFlightBucket = (options as any)?._preFlightPaperBucket;
 
@@ -1379,8 +1519,31 @@ export class MarkingPipelineService {
             let pdfContext: any = null;
             let pageDimensionsMap = new Map<number, { width: number; height: number }>();
             const MARK_SCHEME_FILENAME_REGEX = /(^|[-_\s.])(rms|ms|mark[-_\s]?scheme|marking[-_\s]?scheme)([-_\s.]|$)/i;
-            const isExplicitMarkSchemePdfFile = (f: Express.Multer.File) =>
-                f?.mimetype === 'application/pdf' && MARK_SCHEME_FILENAME_REGEX.test((f.originalname || '').replace(/\.pdf$/i, ''));
+            // Zero-API-cost PDF page 1-2 text peek via Ghostscript (~15-40ms in parallel)
+            // Classifies digital mark schemes by actual PDF content rather than filename alone.
+            const pdfHeaderPeekMap = new Map<Express.Multer.File, Awaited<ReturnType<typeof PdfProcessingService.peekPdfMarkSchemeMetadata>>>();
+            if (!preFlightBucket && Array.isArray(files) && files.length > 0) {
+                await Promise.all(
+                    files
+                        .filter(f => f?.mimetype === 'application/pdf' && f?.buffer)
+                        .map(async (f) => {
+                            const peek = await PdfProcessingService.peekPdfMarkSchemeMetadata(f.buffer);
+                            pdfHeaderPeekMap.set(f, peek);
+                            if (peek.headerText) {
+                                (f as any)._pdfHeaderText = peek.headerText;
+                            }
+                        })
+                );
+            }
+            const isExplicitMarkSchemePdfFile = (f: Express.Multer.File) => {
+                if (f?.mimetype !== 'application/pdf') return false;
+                const peek = pdfHeaderPeekMap.get(f);
+                if (peek?.hasTextLayer) {
+                    return peek.isDigitalMarkScheme;
+                }
+                // Scanned PDF with no text layer: fall back to filename pattern
+                return MARK_SCHEME_FILENAME_REGEX.test((f.originalname || '').replace(/\.pdf$/i, ''));
+            };
             const hasNonSchemeStudentFiles = files.some(f => !isExplicitMarkSchemePdfFile(f));
             const deferredSchemePdfFiles: Express.Multer.File[] = [];
 
@@ -1400,26 +1563,42 @@ export class MarkingPipelineService {
                 progressCallback(createProgressData(1, `Preparing ${inputType} processing...`, MULTI_IMAGE_STEPS));
 
                 // Stage 1: Standardization
+                const preRasterPlan = await buildPreRasterizationPlan({
+                    files,
+                    isExplicitMarkSchemePdfFile,
+                    hasNonSchemeStudentFiles,
+                    selectedRawPageIndices: options.selectedRawPageIndices
+                });
+
                 if (isPdf) {
+                    const effectivePreRasterRawPages = preRasterPlan.hasValidSelectedRawPages
+                        ? preRasterPlan.plans.reduce((sum, p) => sum + (p.selectedLocalPageIndices?.length ?? 0), 0)
+                        : preRasterPlan.totalKnownRawPages;
+                    if (!isProOrUltra && effectivePreRasterRawPages > MAX_RAW_COMBINED_PAGES) {
+                        throw buildRawCombinedLimitError(effectivePreRasterRawPages);
+                    }
                     progressCallback(createProgressData(1, 'Converting PDF...', MULTI_IMAGE_STEPS));
                     const pdfBuffer = files[0].buffer;
                     const originalFileName = files[0].originalname || 'document.pdf';
+                    const filePlan = preRasterPlan.plans[0];
+                    const hasSelectedPages = Boolean(filePlan?.selectedLocalPageIndices?.length);
                     stepTimings['pdf_conversion'] = { start: Date.now() };
 
                     // Use pdfMaxPagesOption so Pro/Ultra have no limit and Free combined Question + Mark Scheme PDFs can exempt MS pages in Stage 2
                     standardizedPages = await PdfProcessingService.convertPdfToImages(pdfBuffer, {
-                        maxPages: pdfMaxPagesOption,
-                        maxPagesErrorMessage: getPageLimitErrorMessage
+                        ...(hasSelectedPages ? {} : { maxPages: pdfMaxPagesOption, maxPagesErrorMessage: getPageLimitErrorMessage }),
+                        ...(hasSelectedPages ? { selectedPageIndices: filePlan!.selectedLocalPageIndices } : {})
                     });
 
                     // Enforce Raw Combined Page Limit before Stage 2 mark-scheme exemption
                     if (standardizedPages.length > MAX_RAW_COMBINED_PAGES) {
-                        throw new Error(`Upload exceeds the maximum limit of ${MAX_RAW_COMBINED_PAGES} pages/images. Processed ${standardizedPages.length} pages.`);
+                        throw buildRawCombinedLimitError(standardizedPages.length);
                     }
-                    // Set originalFileName and _sourceIndex
+                    // Set originalFileName, _sourceIndex, and preserve global _rawPageIndex
                     standardizedPages.forEach((page) => {
                         page.originalFileName = originalFileName;
                         (page as any)._sourceIndex = 0;
+                        (page as any)._rawPageIndex = (filePlan?.globalRawOffset ?? 0) + page.pageIndex;
                     });
 
                     if (stepTimings['pdf_conversion']) {
@@ -1428,6 +1607,14 @@ export class MarkingPipelineService {
                     if (standardizedPages.length === 0) throw new Error('PDF conversion yielded no pages.');
                     progressCallback(createProgressData(1, `Converted PDF to ${standardizedPages.length} pages.`, MULTI_IMAGE_STEPS));
                 } else if (isMultiplePdfs) {
+                    // Fast pre-rasterization combined page-count gate for multi-PDF uploads
+                    const effectivePreRasterRawPages = preRasterPlan.hasValidSelectedRawPages
+                        ? preRasterPlan.plans.reduce((sum, p) => sum + (p.selectedLocalPageIndices?.length ?? 0), 0)
+                        : preRasterPlan.totalKnownRawPages;
+                    if (!isProOrUltra && effectivePreRasterRawPages > MAX_RAW_COMBINED_PAGES) {
+                        throw buildRawCombinedLimitError(effectivePreRasterRawPages);
+                    }
+
                     // Multiple PDFs processing
                     progressCallback(createProgressData(1, `Converting ${files.length} PDFs in parallel...`, MULTI_IMAGE_STEPS));
                     stepTimings['pdf_conversion'] = { start: Date.now() };
@@ -1438,10 +1625,16 @@ export class MarkingPipelineService {
                             console.log(`⏭️  [DEFERRED-MS-PDF] Holding Mark Scheme PDF "${file.originalname}" off Stage 1 rasterization until DB pre-check.`);
                             return { index, pdfPages: [] };
                         }
+                        const filePlan = preRasterPlan.plans[index];
+                        if (Array.isArray(filePlan?.selectedLocalPageIndices) && filePlan.selectedLocalPageIndices.length === 0) {
+                            console.log(`⏭️  [PAGE-CHUNK] Skipping PDF ${index + 1} (${file.originalname}) before rasterization — 0 pages in selectedRawPageIndices.`);
+                            return { index, pdfPages: [] };
+                        }
                         try {
+                            const hasSelectedPages = Boolean(filePlan?.selectedLocalPageIndices?.length);
                             const pdfPages = await PdfProcessingService.convertPdfToImages(file.buffer, {
-                                maxPages: pdfMaxPagesOption,
-                                maxPagesErrorMessage: getPageLimitErrorMessage
+                                ...(hasSelectedPages ? {} : { maxPages: pdfMaxPagesOption, maxPagesErrorMessage: getPageLimitErrorMessage }),
+                                ...(hasSelectedPages ? { selectedPageIndices: filePlan!.selectedLocalPageIndices } : {})
                             });
                             if (pdfPages.length === 0) {
                                 console.warn(`PDF ${index + 1} (${file.originalname}) yielded no pages.`);
@@ -1450,13 +1643,16 @@ export class MarkingPipelineService {
 
                             // Enforce Raw Combined Page Limit per PDF
                             if (pdfPages.length > MAX_RAW_COMBINED_PAGES) {
-                                throw new Error(`Single PDF exceeds the maximum limit of ${MAX_RAW_COMBINED_PAGES} pages.`);
+                                throw buildRawCombinedLimitError(pdfPages.length);
                             }
 
-                            // Store original index
-                            pdfPages.forEach((page, pageIndex) => {
+                            // Store original index and preserve global _rawPageIndex before sequential re-indexing
+                            pdfPages.forEach((page) => {
                                 page.originalFileName = file.originalname || `pdf-${index + 1}.pdf`;
                                 (page as any)._sourceIndex = index;
+                                if (filePlan?.globalRawOffset !== null && filePlan?.globalRawOffset !== undefined) {
+                                    (page as any)._rawPageIndex = filePlan.globalRawOffset + page.pageIndex;
+                                }
                             });
 
                             return { index, pdfPages };
@@ -1494,7 +1690,7 @@ export class MarkingPipelineService {
 
                     // Enforce Raw Combined Ceiling for Multiple PDFs (Mark Scheme pages are exempted after Stage 2 Geometry)
                     if (standardizedPages.length > MAX_RAW_COMBINED_PAGES) {
-                        throw new Error(`Total upload exceeds the maximum limit of ${MAX_PAGES_LIMIT} pages/images. Processed ${standardizedPages.length} pages.`);
+                        throw buildRawCombinedLimitError(standardizedPages.length);
                     }
 
                     if (standardizedPages.length === 0) throw new Error('All PDF conversions yielded no pages.');
@@ -1637,12 +1833,22 @@ export class MarkingPipelineService {
 
             } else if (isMultipleImages) {
                 // --- Multi-File / PDF Path (This code only runs if NOT isSingleImage) ---
+                const selectedImageSet = Array.isArray(options.selectedRawPageIndices) && options.selectedRawPageIndices.length > 0
+                    ? new Set(options.selectedRawPageIndices.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < files.length))
+                    : null;
+                const hasValidSelectedImagePages = Boolean(selectedImageSet && selectedImageSet.size > 0);
+                const effectiveImageCount = hasValidSelectedImagePages ? selectedImageSet!.size : files.length;
+                if (!isProOrUltra && effectiveImageCount > MAX_RAW_COMBINED_PAGES) {
+                    throw buildRawCombinedLimitError(effectiveImageCount);
+                }
+
                 progressCallback(createProgressData(1, `Preparing ${inputType} processing...`, MULTI_IMAGE_STEPS));
 
                 // 1. Collect Images & Extract Dimensions in Parallel
                 progressCallback(createProgressData(1, `Extracting dimensions for ${files.length} images...`, MULTI_IMAGE_STEPS));
                 standardizedPages = await Promise.all(files.map(async (file, index): Promise<StandardizedPage | null> => {
                     if (!file.mimetype.startsWith('image/')) return null;
+                    if (hasValidSelectedImagePages && !selectedImageSet!.has(index)) return null;
                     try {
                         const rawData = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
                         const normalizedImageData = await ImageUtils.normalizeOrientation(rawData);
@@ -1660,6 +1866,7 @@ export class MarkingPipelineService {
                             height: metadata.height
                         };
                         (pageObj as any)._fileIndex = index;
+                        (pageObj as any)._rawPageIndex = index;
                         return pageObj;
                     } catch (imgDimError) {
                         console.warn(`[DIMENSIONS - MultiImg Path] Failed to extract dimensions for image ${index}:`, imgDimError);
@@ -1675,7 +1882,7 @@ export class MarkingPipelineService {
 
                 // Enforce Raw Combined Ceiling for Multiple Images (Mark Scheme pages are exempted after Stage 2 Geometry)
                 if (!isProOrUltra && standardizedPages.length > MAX_RAW_COMBINED_PAGES) {
-                    throw new Error(`Upload exceeds the maximum limit of ${MAX_PAGES_LIMIT} images. Selected ${standardizedPages.length} images.`);
+                    throw buildRawCombinedLimitError(standardizedPages.length);
                 }
 
                 progressCallback(createProgressData(1, `Collected ${standardizedPages.length} image(s).`, MULTI_IMAGE_STEPS));
@@ -1683,24 +1890,47 @@ export class MarkingPipelineService {
             } else if (isMixedUpload) {
                 // --- Mixed Upload Path (Images + PDFs in the same batch) ---
                 // NOTE: isPdf / isMultiplePdfs stay false so downstream image sorting still applies.
+                const preRasterPlan = await buildPreRasterizationPlan({
+                    files,
+                    isExplicitMarkSchemePdfFile,
+                    hasNonSchemeStudentFiles,
+                    selectedRawPageIndices: options.selectedRawPageIndices
+                });
+
+                const effectivePreRasterRawPages = preRasterPlan.hasValidSelectedRawPages
+                    ? preRasterPlan.plans.reduce((sum, p) => sum + (p.selectedLocalPageIndices?.length ?? 0), 0)
+                    : preRasterPlan.totalKnownRawPages;
+                if (!isProOrUltra && effectivePreRasterRawPages > MAX_RAW_COMBINED_PAGES) {
+                    throw buildRawCombinedLimitError(effectivePreRasterRawPages);
+                }
+
                 progressCallback(createProgressData(1, `Preparing mixed files (${files.length} files)...`, MULTI_IMAGE_STEPS));
                 stepTimings['pdf_conversion'] = { start: Date.now() };
 
                 const mixedConversionPromises = files.map(async (file, index): Promise<StandardizedPage[]> => {
+                    const filePlan = preRasterPlan.plans[index];
                     if (file.mimetype === 'application/pdf') {
                         if (hasNonSchemeStudentFiles && isExplicitMarkSchemePdfFile(file)) {
                             deferredSchemePdfFiles.push(file);
                             console.log(`⏭️  [DEFERRED-MS-PDF] Holding Mark Scheme PDF "${file.originalname}" off Stage 1 rasterization until DB pre-check.`);
                             return [];
                         }
+                        if (Array.isArray(filePlan?.selectedLocalPageIndices) && filePlan.selectedLocalPageIndices.length === 0) {
+                            console.log(`⏭️  [PAGE-CHUNK] Skipping PDF ${index + 1} (${file.originalname}) before rasterization — 0 pages in selectedRawPageIndices.`);
+                            return [];
+                        }
                         try {
+                            const hasSelectedPages = Boolean(filePlan?.selectedLocalPageIndices?.length);
                             const pdfPages = await PdfProcessingService.convertPdfToImages(file.buffer, {
-                                maxPages: pdfMaxPagesOption,
-                                maxPagesErrorMessage: getPageLimitErrorMessage
+                                ...(hasSelectedPages ? {} : { maxPages: pdfMaxPagesOption, maxPagesErrorMessage: getPageLimitErrorMessage }),
+                                ...(hasSelectedPages ? { selectedPageIndices: filePlan!.selectedLocalPageIndices } : {})
                             });
                             await Promise.all(pdfPages.map(async (page) => {
                                 page.originalFileName = file.originalname || `pdf-${index + 1}.pdf`;
                                 (page as any)._sourceIndex = index;
+                                if (filePlan?.globalRawOffset !== null && filePlan?.globalRawOffset !== undefined) {
+                                    (page as any)._rawPageIndex = filePlan.globalRawOffset + page.pageIndex;
+                                }
                                 if (page.width && page.height) return; // Already populated by PdfProcessingService
                                 const base64Data = page.imageData.split(',')[1];
                                 if (base64Data) {
@@ -1716,6 +1946,9 @@ export class MarkingPipelineService {
                             throw new Error(`Failed to process PDF "${file.originalname}".`);
                         }
                     } else if (file.mimetype?.startsWith('image/')) {
+                        if (Array.isArray(filePlan?.selectedLocalPageIndices) && filePlan.selectedLocalPageIndices.length === 0) {
+                            return [];
+                        }
                         try {
                             const rawData = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
                             const normalizedImageData = await ImageUtils.normalizeOrientation(rawData);
@@ -1730,6 +1963,9 @@ export class MarkingPipelineService {
                                 height: metadata.height
                             };
                             (imgPage as any)._sourceIndex = index;
+                            if (filePlan?.globalRawOffset !== null && filePlan?.globalRawOffset !== undefined) {
+                                (imgPage as any)._rawPageIndex = filePlan.globalRawOffset;
+                            }
                             return [imgPage];
                         } catch (imgErr) {
                             console.warn(`[MIXED UPLOAD] Failed to process image ${file.originalname}:`, imgErr);
@@ -1751,7 +1987,7 @@ export class MarkingPipelineService {
                 }));
 
                 if (standardizedPages.length > MAX_RAW_COMBINED_PAGES) {
-                    throw new Error(`Total upload exceeds the maximum limit of ${MAX_PAGES_LIMIT} pages/images. Processed ${standardizedPages.length} pages.`);
+                    throw buildRawCombinedLimitError(standardizedPages.length);
                 }
 
                 // Store PDF context for any PDFs included in the mixed batch (upload deferred to background preUploadedOriginalFilesPromise)
@@ -1794,9 +2030,11 @@ export class MarkingPipelineService {
                 throw new Error('Standardization failed: No processable pages/images found.');
             }
 
-            // Stamp pre-split raw page index & detect 100% solid-black corrupted client canvas exports (<1ms via sharp.stats)
+            // Stamp pre-split raw page index (if not already stamped by pre-rasterization chunking) & detect 100% solid-black corrupted client canvas exports (<1ms via sharp.stats)
             await Promise.all(standardizedPages.map(async (page, idx) => {
-                (page as any)._rawPageIndex = idx;
+                if ((page as any)._rawPageIndex === undefined) {
+                    (page as any)._rawPageIndex = idx;
+                }
                 if ((page as any)._sourceIndex === undefined) {
                     try {
                         const base64Data = page.imageData.split(',')[1];
@@ -1840,7 +2078,7 @@ export class MarkingPipelineService {
 
                 const { GoogleVisionService } = await import('../ocr/GoogleVisionService.js');
 
-                // ⚡ Skip orientation for pages from digital official Mark Scheme PDFs (identified by filename, >= 5 pages)
+                // ⚡ Skip orientation for pages from verified digital official Mark Scheme PDFs (>= 5 pages)
                 // and for solid-black corrupted canvas exports.
                 const pdfPageCountByName = new Map<string, number>();
                 targetPages.forEach(p => {
@@ -1851,7 +2089,16 @@ export class MarkingPipelineService {
                 });
                 const isUprightMarkSchemePdfPage = (p: StandardizedPage) => {
                     const name = p.originalFileName || '';
-                    return (pdfPageCountByName.get(name) || 0) >= 5 && MARK_SCHEME_FILENAME_REGEX.test(name.replace(/\.pdf$/i, ''));
+                    if ((pdfPageCountByName.get(name) || 0) < 5) return false;
+                    const srcIdx = (p as any)._sourceIndex;
+                    const srcFile = typeof srcIdx === 'number' ? files[srcIdx] : undefined;
+                    if (srcFile) {
+                        const peek = pdfHeaderPeekMap.get(srcFile);
+                        if (peek?.hasTextLayer) {
+                            return peek.isDigitalMarkScheme;
+                        }
+                    }
+                    return MARK_SCHEME_FILENAME_REGEX.test(name.replace(/\.pdf$/i, ''));
                 };
 
                 const orientationTargets = targetPages.filter(
@@ -1980,42 +2227,50 @@ export class MarkingPipelineService {
             const nonSchemePageCount = Math.max(1, geometryResults.filter(g => !g?.is_marking_scheme).length);
             const unsupportedRatio = unsupportedPageResults.length / nonSchemePageCount;
 
-            const distinctUnsupportedSubjects = Array.from(
-                new Set(
-                    unsupportedPageResults
-                        .map(g => g?.detected_subject === 'ENGLISH_LITERATURE'
-                            ? 'English Literature'
-                            : (g?.unsupported_subject_name || '').trim())
-                        .filter(Boolean)
-                )
+            const distinctUnsupportedSubjects = collapseCompatibleSubjectAliases(
+                unsupportedPageResults
+                    .map(g => g?.detected_subject === 'ENGLISH_LITERATURE'
+                        ? 'English Literature'
+                        : (g?.unsupported_subject_name || '').trim())
+                    .filter(Boolean)
             );
 
             // 📚 [AUTO-CATALOGED OFFICIAL SCHEME LOOKUP]:
-            // If a single unsupported subject (e.g. Biology 8461/1H) is uploaded WITHOUT a marking scheme,
+            // If a single unsupported subject (e.g. Biology 8461/1H, Combined Science: Trilogy 8464/B/1F) is uploaded WITHOUT a marking scheme,
             // check if an official marking scheme for this paperCode already exists in Firestore `markingSchemes`!
             const studentPdfCount = files.filter(f => f?.mimetype === 'application/pdf' && !isExplicitMarkSchemePdfFile(f)).length;
             if (!hasUploadedMarkingScheme && unsupportedPageResults.length > 0 && distinctUnsupportedSubjects.length <= 1 && studentPdfCount <= 1) {
                 try {
+                    const hasGeometryUnofficialFlag = geometryResults.some(g => g?.is_unofficial_or_practice_paper === true);
                     const combinedGeoHints = [
                         ...geometryResults.map(g => g?.paper_code_hint || ''),
                         ...geometryResults.map(g => g?.evidence_text_snippet || ''),
-                        ...(Array.isArray(files) ? files.map(f => f?.originalname || '') : []),
+                        ...geometryResults.map(g => g?.unofficial_reason || ''),
                         options.customText || ''
                     ].filter(Boolean).join(' ');
-                    const primarySubjName = unsupportedPageResults[0]?.unsupported_subject_name || undefined;
-                    const seriesMatch = combinedGeoHints.match(/\b((?:June|May|Summer|November|Autumn|January|Winter)\s+20\d{2}|20\d{2})\b/i);
-                    const { MarkingSchemeParserService } = await import('./MarkingSchemeParserService.js');
-                    const catalogedScheme = await MarkingSchemeParserService.findCatalogedSchemeByPaperHint(
-                        combinedGeoHints,
-                        primarySubjName,
-                        seriesMatch?.[1]
-                    );
-                    if (catalogedScheme) {
-                        inputMarkingScheme = catalogedScheme;
-                        hasUploadedMarkingScheme = true;
+
+                    if (hasGeometryUnofficialFlag || hasUnofficialPaperIndicators(combinedGeoHints)) {
                         console.log(
-                            `📚 [AUTO-CATALOG SCHEME] Found official ${catalogedScheme.examDetails?.subject || primarySubjName} marking scheme in DB for "${catalogedScheme.examDetails?.paperCode}" (${catalogedScheme.examDetails?.exam_series || 'N/A'})! Grading automatically without requiring user mark scheme upload.`
+                            `🛡️ [AUTO-CATALOG SCHEME] Skipped official DB scheme lookup — uploaded document contains unofficial/practice paper indicators.`
                         );
+                    } else {
+                        const primarySubjName = distinctUnsupportedSubjects[0] || unsupportedPageResults[0]?.unsupported_subject_name || undefined;
+                        const fullSeriesMatch = combinedGeoHints.match(/\b((?:June|May|Summer|November|Autumn|January|Winter)\s+20\d{2})\b/i);
+                        const yearOnlyMatch = combinedGeoHints.match(/\b(20\d{2})\b/);
+                        const examSeriesHint = fullSeriesMatch?.[1] || yearOnlyMatch?.[1];
+                        const { MarkingSchemeParserService } = await import('./MarkingSchemeParserService.js');
+                        const catalogedScheme = await MarkingSchemeParserService.findCatalogedSchemeByPaperHint(
+                            combinedGeoHints,
+                            primarySubjName,
+                            examSeriesHint
+                        );
+                        if (catalogedScheme) {
+                            inputMarkingScheme = catalogedScheme;
+                            hasUploadedMarkingScheme = true;
+                            console.log(
+                                `📚 [AUTO-CATALOG SCHEME] Found official ${catalogedScheme.examDetails?.subject || primarySubjName} marking scheme in DB for "${catalogedScheme.examDetails?.paperCode}" (${catalogedScheme.examDetails?.exam_series || 'N/A'})! Grading automatically without requiring user mark scheme upload.`
+                            );
+                        }
                     }
                 } catch (catalogLookupErr) {
                     // Non-fatal: proceed with standard unsupported subject handling
@@ -2092,7 +2347,12 @@ export class MarkingPipelineService {
                         imageData: stdPage.imageData,
                         sourceIndex: (stdPage as any)._sourceIndex ?? (stdPage as any)._fileIndex,
                         rawPageIndex: (stdPage as any)._rawPageIndex ?? stdPage.pageIndex,
-                        originalFileName: stdPage.originalFileName
+                        originalFileName: stdPage.originalFileName,
+                        paperCodeHint: geo.paper_code_hint || undefined,
+                        evidenceText: geo.evidence_text_snippet || undefined,
+                        detectedSubject: geo.detected_subject === 'UNSUPPORTED_SUBJECT'
+                            ? (geo.unsupported_subject_name || undefined)
+                            : geo.detected_subject
                     });
                     continue; // Skip pushing to student pages (exempt from student page quota)
                 }
@@ -2180,11 +2440,17 @@ export class MarkingPipelineService {
                             console.log(`📄 [INTERCEPTOR SWEEP] Ejecting leaked scheme page ${page.pageIndex} from "${page.originalFileName}"`);
                             pagesEjected = true;
                             interceptedSchemeImages.push(page.imageData);
+                            const sweptGeo = newGeometryResults[i];
                             interceptedSchemeMeta.push({
                                 imageData: page.imageData,
                                 sourceIndex: (page as any)._sourceIndex ?? (page as any)._fileIndex,
                                 rawPageIndex: (page as any)._rawPageIndex ?? page.pageIndex,
-                                originalFileName: page.originalFileName
+                                originalFileName: page.originalFileName,
+                                paperCodeHint: sweptGeo?.paper_code_hint || undefined,
+                                evidenceText: sweptGeo?.evidence_text_snippet || undefined,
+                                detectedSubject: sweptGeo?.detected_subject === 'UNSUPPORTED_SUBJECT'
+                                    ? (sweptGeo?.unsupported_subject_name || undefined)
+                                    : sweptGeo?.detected_subject
                             });
                         } else {
                             filteredStd.push(page);
@@ -2392,6 +2658,42 @@ export class MarkingPipelineService {
                 standardizedPages.map(p => (p as any)._rawPageIndex ?? p.pageIndex)
             ).size;
             console.log(`📊 [PAGE GATING] User ${userId || 'anonymous'} (${userPlan}): ${studentRawPageCount} student page(s) to grade (${standardizedPages.length} post-split page(s), ${interceptedSchemeImages.length} mark scheme page(s) exempted).`);
+
+            // Pre-gate duplicate-question check for >50-page single-bucket uploads (before FREE_PAGE_LIMIT_EXCEEDED offers 25-page split buttons)
+            const willTriggerOver50Gate =
+                (isFreeUser && studentRawPageCount > MAX_FREE_PAGES) ||
+                (!isProOrUltra && studentRawPageCount > MAX_PAGES_LIMIT);
+            if (paperBuckets.length === 1 && willTriggerOver50Gate && lightweightPages.length > 0) {
+                const firstWindow = lightweightPages.slice(0, 10);
+                const midIdx = Math.max(10, Math.floor(lightweightPages.length / 2));
+                const middleWindow = lightweightPages.slice(midIdx, midIdx + 10);
+                const sampleMap = new Map<number, { imageData: string; fileName?: string; pageIndex: number }>();
+                for (const p of [...firstWindow, ...middleWindow]) {
+                    const idx = p.pageIndex ?? 0;
+                    if (!sampleMap.has(idx) && p.imageData) {
+                        sampleMap.set(idx, {
+                            imageData: p.imageData,
+                            fileName: p.originalFileName,
+                            pageIndex: idx
+                        });
+                    }
+                }
+                const sampleLightPages = Array.from(sampleMap.values()).sort((a, b) => a.pageIndex - b.pageIndex);
+                if (sampleLightPages.length >= 2) {
+                    const { ClassificationMapper } = await import('./ClassificationMapper.js');
+                    const sampleMapperResults = await ClassificationMapper.mapQuestionsToPages(
+                        sampleLightPages,
+                        usageTracker,
+                        'fast',
+                        debugClassification
+                    );
+                    PaperSplitterService.assertNoDuplicateQuestionsInMapperResults(sampleMapperResults, {
+                        isPdf: standardizedPages.length > 0 && standardizedPages.every(p => /\.pdf$/i.test(p.originalFileName || '')),
+                        pageCount: studentRawPageCount,
+                        fileName: standardizedPages[0]?.originalFileName
+                    });
+                }
+            }
 
             const buildDetectedPaperGroups = () =>
                 buildDetectedPaperGroupsHelper({
@@ -3107,7 +3409,6 @@ export class MarkingPipelineService {
                 return qObj;
             };
 
-            // Helper to check if a question instance on a page actually has student work
             const hasInstanceStudentWork = (q: any): boolean => {
                 if (!q) return false;
                 if (q.hasStudentDrawing === true) return true;
@@ -3604,8 +3905,20 @@ export class MarkingPipelineService {
             // ⚡ [FAST DB PRE-CHECK FOR UPLOADED MARKING SCHEMES]:
             // If the user uploaded a Marking Scheme alongside an exam paper that ALREADY exists in our Firestore DB,
             // verify against our in-memory DB cache (~15ms) first. If found, skip the 30s LLM scheme extraction (and deferred PDF rasterization) completely!
+            const hasGeometryUnofficialFlag = geometryResults.some(g => g?.is_unofficial_or_practice_paper === true);
+            const preCheckGeoEvidence = [
+                ...geometryResults.map(g => g?.paper_code_hint || ''),
+                ...geometryResults.map(g => g?.evidence_text_snippet || ''),
+                ...geometryResults.map(g => g?.unofficial_reason || ''),
+                options.customText || ''
+            ].filter(Boolean).join(' ');
+            const skipFastDbPreCheckForUnofficial =
+                hasGeometryUnofficialFlag || hasUnofficialPaperIndicators(preCheckGeoEvidence);
+
             let preResolvedOrchestrationResult: Awaited<ReturnType<typeof MarkingSchemeOrchestrationService.orchestrateMarkingSchemeLookup>> | null = null;
-            if (pagesEjected && (interceptedSchemeImages.length > 0 || deferredSchemePdfFiles.length > 0) && !inputMarkingScheme && individualQuestions.length > 0) {
+            if (skipFastDbPreCheckForUnofficial && pagesEjected && (interceptedSchemeImages.length > 0 || deferredSchemePdfFiles.length > 0)) {
+                console.log(`🛡️ [FAST-DB-PRECHECK] Skipped official DB pre-check — uploaded document contains unofficial/practice paper indicators. Parsing uploaded mark scheme instead.`);
+            } else if (pagesEjected && (interceptedSchemeImages.length > 0 || deferredSchemePdfFiles.length > 0) && !inputMarkingScheme && individualQuestions.length > 0) {
                 try {
                     const { MarkingSchemeParserService } = await import('./MarkingSchemeParserService.js');
                     preResolvedOrchestrationResult = await runFastDbPreCheck({
@@ -3637,7 +3950,8 @@ export class MarkingPipelineService {
                         console.log(`📄 [DEFERRED-MS-PDF] Paper not found in DB — rasterizing ${deferredSchemePdfFiles.length} deferred Mark Scheme PDF(s) on demand...`);
                         for (const msFile of deferredSchemePdfFiles) {
                             const msPages = await PdfProcessingService.convertPdfToImages(msFile.buffer, {
-                                maxPages: MAX_RAW_COMBINED_PAGES
+                                maxPages: MAX_RAW_COMBINED_PAGES,
+                                maxPagesErrorMessage: getPageLimitErrorMessage
                             });
                             msPages.forEach(p => interceptedSchemeImages.push(p.imageData));
                         }
@@ -3653,7 +3967,7 @@ export class MarkingPipelineService {
                         {
                             userId: userId || 'anonymous',
                             sessionId: options.sessionId || submissionId,
-                            sourceFileName: deferredSchemePdfFiles[0]?.originalname || files?.[0]?.originalname
+                            sourceFileName: deferredSchemePdfFiles[0]?.originalname || files?.find(isExplicitMarkSchemePdfFile)?.originalname
                         }
                     );
                     logSchemeParserComplete();
@@ -3671,10 +3985,16 @@ export class MarkingPipelineService {
                     return null;
                 } catch (err) {
                     logSchemeParserComplete();
+                    if (err instanceof UserFacingError) {
+                        throw err;
+                    }
                     console.error(`⚠️ [SCHEME PARSER] Exception during custom marking scheme parsing. Proceeding with generic fallback. Error:`, err instanceof Error ? err.message : String(err));
                     return null;
                 }
             })();
+            // Prevent Node.js unhandledRejection crash if schemeParserPromise rejects while OCR is still running;
+            // the rejection is still rethrown when awaited below.
+            schemeParserPromise.catch(() => {});
 
             progressCallback(createProgressData(3, `Running Precision OCR on ${pagesToOcr.size} pages...`, MULTI_IMAGE_STEPS));
             const logOcrComplete = logStep('OCR Processing', 'mathpix');
@@ -3800,21 +4120,35 @@ export class MarkingPipelineService {
                 const paperStatedTotal = Array.from(totalVotes.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 
                 // 🛡️ COMPLETENESS GATE: Only a COMPLETE question paper + COMPLETE mark scheme is auto-persisted.
-                // Individual questions / partial uploads are ignored (see persistOfficialPastPaperIfComplete).
-                import('./MarkingSchemeParserService.js')
-                    .then(({ MarkingSchemeParserService }) => {
-                        void MarkingSchemeParserService.persistOfficialPastPaperIfComplete({
-                            parsedScheme: schemeForPersistence,
-                            extractedQuestions: questionsSnapshot,
-                            paperStatedTotal,
-                            auditContext: {
-                                userId: userId || 'anonymous',
-                                sessionId: options.sessionId || submissionId,
-                                sourceFileName: deferredSchemePdfFiles[0]?.originalname || files?.[0]?.originalname
-                            }
-                        });
-                    })
-                    .catch(() => {});
+                // Individual questions / partial uploads / unofficial practice papers are ignored (see persistOfficialPastPaperIfComplete).
+                const uploadEvidenceText = [
+                    ...geometryResults.map(g => g?.paper_code_hint || ''),
+                    ...geometryResults.map(g => g?.evidence_text_snippet || ''),
+                    ...geometryResults.map(g => g?.unofficial_reason || ''),
+                    extractedOcrText || '',
+                    options.customText || ''
+                ].filter(Boolean).join(' ');
+
+                if (hasGeometryUnofficialFlag || hasUnofficialPaperIndicators(uploadEvidenceText)) {
+                    console.log(`🛡️ [AUTO-CATALOG] Skipped persisting unofficial/practice upload (detected in document geometry or OCR content).`);
+                } else {
+                    import('./MarkingSchemeParserService.js')
+                        .then(({ MarkingSchemeParserService }) => {
+                            void MarkingSchemeParserService.persistOfficialPastPaperIfComplete({
+                                parsedScheme: schemeForPersistence,
+                                extractedQuestions: questionsSnapshot,
+                                paperStatedTotal,
+                                isUnofficialOrPracticePaper: hasGeometryUnofficialFlag,
+                                documentEvidenceText: uploadEvidenceText,
+                                auditContext: {
+                                    userId: userId || 'anonymous',
+                                    sessionId: options.sessionId || submissionId,
+                                    sourceFileName: deferredSchemePdfFiles[0]?.originalname || files?.[0]?.originalname
+                                }
+                            });
+                        })
+                        .catch(() => {});
+                }
             }
 
             // Orchestrate marking scheme lookup (reuse pre-resolved DB match if available, otherwise run lookup)

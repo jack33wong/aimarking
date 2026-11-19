@@ -11,7 +11,18 @@ import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs/promises';
 import os from 'os';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { UserFacingError } from '../../utils/UserFacingError.js';
+
+const execFileAsync = promisify(execFile);
+
+export interface PdfHeaderPeekResult {
+  headerText: string;
+  hasTextLayer: boolean;
+  isDigitalMarkScheme: boolean;
+  isStudentPaper: boolean;
+}
 
 // Disable libvips internal operation cache in Cloud Run so native C++ memory is freed immediately after each page
 sharp.cache(false);
@@ -87,6 +98,106 @@ export class PdfProcessingService {
   }
 
   /**
+   * Fast pre-rasterization page count check using pdf-lib (~5-15ms).
+   * Returns null if pdf-lib cannot parse the buffer (caller should fall back to normal conversion).
+   */
+  static async getPdfPageCount(pdfBuffer: Buffer): Promise<number | null> {
+    try {
+      let cleanPdfBytes: Uint8Array | Buffer = pdfBuffer;
+      const headerOffset = pdfBuffer.indexOf('%PDF-');
+      if (headerOffset > 0 && headerOffset < 4096) {
+        cleanPdfBytes = pdfBuffer.subarray(headerOffset);
+      }
+      const doc = await PDFDocument.load(cleanPdfBytes, { ignoreEncryption: true });
+      return doc.getPageCount();
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Classifies extracted PDF page 1-2 text as a digital mark scheme vs student question paper.
+   * Zero API cost; purely deterministic content-based classification.
+   */
+  static detectMarkSchemeFromHeaderText(headerText: string): PdfHeaderPeekResult {
+    const normalized = (headerText || '').replace(/\0/g, ' ').replace(/\s+/g, ' ').trim();
+    const hasTextLayer = normalized.length >= 30;
+    if (!hasTextLayer) {
+      return {
+        headerText: normalized,
+        hasTextLayer: false,
+        isDigitalMarkScheme: false,
+        isStudentPaper: false
+      };
+    }
+
+    const strongMarkSchemeHeaderRegex =
+      /\b(mark\s+scheme|marking\s+scheme|general\s+marking\s+guidance|general\s+marking\s+principles|guidance\s+on\s+applying\s+the\s+mark\s+scheme)\b/i;
+    const secondaryMarkSchemeRegex =
+      /\b(marking\s+guidance|marking\s+instructions|examiners?\s+should\s+apply|principal\s+examiner|allow\s+follow\s+through|method\s+marks?\s*\(\s*m\s*\)|accuracy\s+marks?\s*\(\s*a\s*\))\b/i;
+    const studentPaperVetoRegex =
+      /\b(candidate\s+surname|other\s+names|centre\s+number|candidate\s+number|write\s+your\s+answers\s+in\s+the\s+spaces\s+provided|do\s+not\s+write\s+outside\s+the\s+box|answer\s+all\s+questions|turn\s+over\s+for\s+the\s+next\s+question|you\s+must\s+have\s*:\s*ruler|time\s+allowed\s*:)\b/i;
+
+    const hasStrongMs = strongMarkSchemeHeaderRegex.test(normalized);
+    const hasSecondaryMs = secondaryMarkSchemeRegex.test(normalized);
+    const hasStudentVeto = studentPaperVetoRegex.test(normalized);
+
+    const isStudentPaper = hasStudentVeto && !hasStrongMs;
+    const isDigitalMarkScheme = (hasStrongMs || hasSecondaryMs) && !isStudentPaper;
+
+    return {
+      headerText: normalized,
+      hasTextLayer: true,
+      isDigitalMarkScheme,
+      isStudentPaper
+    };
+  }
+
+  /**
+   * Fast, zero-API-cost text extraction of the first 1-2 pages of a PDF using Ghostscript (`txtwrite`).
+   * Decompresses FlateDecode/compressed PDF streams in ~15-40ms. Returns '' on scanned PDFs or errors.
+   */
+  static async peekPdfHeaderText(pdfBuffer: Buffer, maxPages: number = 2): Promise<string> {
+    if (!pdfBuffer || pdfBuffer.length < 8) return '';
+    const headerOffset = pdfBuffer.indexOf('%PDF-');
+    if (headerOffset < 0 || headerOffset >= 4096) return '';
+
+    const cleanPdfBytes = headerOffset > 0 ? pdfBuffer.subarray(headerOffset) : pdfBuffer;
+    const tempPdfPath = path.join(os.tmpdir(), `pdf-peek-${uuidv4()}.pdf`);
+    try {
+      await fs.writeFile(tempPdfPath, cleanPdfBytes);
+      const { stdout } = await execFileAsync(
+        'gs',
+        [
+          '-q',
+          '-dNOPAUSE',
+          '-dBATCH',
+          '-dSAFER',
+          '-sDEVICE=txtwrite',
+          '-dFirstPage=1',
+          `-dLastPage=${Math.max(1, maxPages)}`,
+          '-sOutputFile=-',
+          tempPdfPath
+        ],
+        { timeout: 3000, maxBuffer: 512 * 1024 }
+      );
+      return (stdout || '').replace(/\0/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 8000);
+    } catch {
+      return '';
+    } finally {
+      await fs.unlink(tempPdfPath).catch(() => {});
+    }
+  }
+
+  /**
+   * Combined fast PDF page 1-2 text peek + content-based mark scheme classification.
+   */
+  static async peekPdfMarkSchemeMetadata(pdfBuffer: Buffer): Promise<PdfHeaderPeekResult> {
+    const headerText = await this.peekPdfHeaderText(pdfBuffer, 2);
+    return this.detectMarkSchemeFromHeaderText(headerText);
+  }
+
+  /**
    * Converts a PDF buffer into an array of standardized JPEG base64 data URLs.
    * Uses 3-page sub-PDF chunking so Ghostscript never parses a massive PDF 15 times
    * and /tmp (Cloud Run RAM disk) never holds more than 3 uncompressed pages at once.
@@ -96,7 +207,7 @@ export class PdfProcessingService {
     options: any = {}
   ): Promise<StandardizedPage[]> {
     const startTime = Date.now();
-    const { maxPages, maxPagesErrorMessage, ...pdf2picCustomOptions } = options;
+    const { maxPages, maxPagesErrorMessage, selectedPageIndices, ...pdf2picCustomOptions } = options;
 
     let tempDirPath: string | undefined;
     try {
@@ -186,15 +297,39 @@ export class PdfProcessingService {
     const CHUNK_SIZE = 6; // Process 6 pages per sub-PDF chunk (halves Ghostscript + pdf-lib overhead while keeping RAM bounded)
     const standardizedPages: StandardizedPage[] = [];
 
+    const normalizedSelectedIndices: number[] | null =
+      knownPageCount > 0 && Array.isArray(selectedPageIndices) && selectedPageIndices.length > 0
+        ? Array.from(
+            new Set(
+              selectedPageIndices
+                .map(Number)
+                .filter((n) => Number.isInteger(n) && n >= 0 && n < knownPageCount)
+            )
+          ).sort((a, b) => a - b)
+        : null;
+
+    if (
+      knownPageCount > 0 &&
+      Array.isArray(selectedPageIndices) &&
+      selectedPageIndices.length > 0 &&
+      normalizedSelectedIndices &&
+      normalizedSelectedIndices.length === 0
+    ) {
+      try {
+        if (tempDirPath) await fs.rm(tempDirPath, { recursive: true, force: true });
+      } catch (_) {}
+      return [];
+    }
+
     try {
       if (srcPdfDoc && pageCount > 0) {
         // 3A. CHUNKED SUB-PDF RASTERIZATION (Fastest & lowest memory footprint on Cloud Run)
-        for (let chunkStart = 0; chunkStart < pageCount; chunkStart += CHUNK_SIZE) {
-          const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, pageCount);
-          const pageIndices: number[] = [];
-          for (let p = chunkStart; p < chunkEnd; p++) {
-            pageIndices.push(p);
-          }
+        const pagesToRasterize = normalizedSelectedIndices ?? Array.from({ length: pageCount }, (_, i) => i);
+        if (normalizedSelectedIndices) {
+          console.log(`✂️ [PDF Processing] Pre-rasterization filter: rasterizing ${pagesToRasterize.length}/${pageCount} selected page(s).`);
+        }
+        for (let chunkStart = 0; chunkStart < pagesToRasterize.length; chunkStart += CHUNK_SIZE) {
+          const pageIndices = pagesToRasterize.slice(chunkStart, chunkStart + CHUNK_SIZE);
 
           const chunkPdfPath = path.join(tempDirPath, `chunk_${chunkStart}_${uuidv4()}.pdf`);
           try {
@@ -229,7 +364,7 @@ export class PdfProcessingService {
 
               const chunkPages = await Promise.all(
                 chunkResults.map(async (res, j): Promise<{ page: StandardizedPage; isBlankWhite: boolean } | null> => {
-                  const globalPageIndex = chunkStart + j;
+                  const globalPageIndex = pageIndices[j] ?? (chunkStart + j);
                   if (!res || !res.path) return null;
 
                   try {
@@ -314,18 +449,16 @@ export class PdfProcessingService {
           const convertFallback = fromPath(fallbackPdfPath, fallbackOptions);
 
           if (knownPageCount > 0) {
-            for (let chunkStart = 0; chunkStart < knownPageCount; chunkStart += CHUNK_SIZE) {
-              const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, knownPageCount);
-              const pageNumbers: number[] = [];
-              for (let p = chunkStart + 1; p <= chunkEnd; p++) {
-                pageNumbers.push(p);
-              }
+            const fallbackIndices = normalizedSelectedIndices ?? Array.from({ length: knownPageCount }, (_, i) => i);
+            for (let chunkStart = 0; chunkStart < fallbackIndices.length; chunkStart += CHUNK_SIZE) {
+              const chunkZeroBased = fallbackIndices.slice(chunkStart, chunkStart + CHUNK_SIZE);
+              const pageNumbers = chunkZeroBased.map((p) => p + 1);
               const chunkResults = (await convertFallback.bulk(pageNumbers)) as unknown as ConversionResult[];
               if (Array.isArray(chunkResults)) {
                 chunkResults.sort((a, b) => (a.page || 0) - (b.page || 0));
                 const chunkPages = await Promise.all(
                   chunkResults.map(async (res, j): Promise<StandardizedPage | null> => {
-                    const globalPageIndex = chunkStart + j;
+                    const globalPageIndex = chunkZeroBased[j] ?? (chunkStart + j);
                     if (!res?.path) return null;
                     try {
                       const { data: optimizedBuffer, info } = await this.optimizeRasterizedPage(res.path);

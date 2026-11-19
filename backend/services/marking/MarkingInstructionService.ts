@@ -1,7 +1,7 @@
 import type { ModelType, ProcessedImageResult, MarkingInstructions } from '../../types/index.js';
 import type { NormalizedMarkingScheme, MarkingInputs, MarkingExecutionResult } from '../../types/marking.js';
 import { getPrompt } from '../../config/prompts.js';
-import { normalizeLatexDelimiters, sanitizeOcrArtifacts, normalizeTextForComparison, normalizeSubQuestionPart, combineQuestionAndPart } from '../../utils/TextNormalizationUtils.js';
+import { normalizeLatexDelimiters, sanitizeOcrArtifacts, normalizeTextForComparison, normalizeSubQuestionPart, combineQuestionAndPart, getBaseQuestionNumber } from '../../utils/TextNormalizationUtils.js';
 import * as stringSimilarity from 'string-similarity';
 import { MarkingPromptService } from './MarkingPromptService.js';
 import { MarkingResultParser } from './MarkingResultParser.js';
@@ -376,70 +376,78 @@ export class MarkingInstructionService {
   }
 
   /**
-   * DATA INGESTION PROTOCOL (FIXED)
-   * Uses "Fence Post" logic to spatially isolate the current question.
-   * Prevents "Q13" text from leaking into "Q12" prompts.
+   * DATA INGESTION PROTOCOL (V2 PER-PAGE FENCE)
+   * Uses per-page "Fence Post" logic to spatially isolate the current question
+   * without letting a start fence on Page N wipe out blocks on Page N+1.
    */
-  private static sanitizeOcrBlocks(blocks: any[], questionText: string | null, baseQNum?: string): any[] {
+  public static sanitizeOcrBlocks(blocks: any[], questionText: string | null, baseQNum?: string): any[] {
     if (!blocks || !Array.isArray(blocks)) return [];
 
     // 1. Pre-calculate Y and Sort (Crucial for reading order)
-    // We sort physically so we can determine what comes "before" or "after".
     const sortedBlocks = blocks.map(b => ({
       ...b,
       _y: MarkingInstructionService.getBlockY(b) || 0,
+      _pageIdx: (b as any).pageIndex ?? 0,
       _cleanText: (b.text || b.mathpixLatex || b.latex || b.content || '').trim()
     })).sort((a, b) => {
-      const pA = (a as any).pageIndex ?? 0;
-      const pB = (b as any).pageIndex ?? 0;
-      if (pA !== pB) return pA - pB;
+      if (a._pageIdx !== b._pageIdx) return a._pageIdx - b._pageIdx;
       return a._y - b._y;
     });
 
-    const qLandmarkRegex = /^Q\s*(\d+)/i;
+    const qLandmarkRegex = /^Q\s*(\d+)(?!\d|\s*[-·•.]?\s*(?:19|20)\d{2})/i;
+    const normalizedTargetBase = baseQNum
+      ? (getBaseQuestionNumber(String(baseQNum)) || String(baseQNum).replace(/^0+(?=\d)/, ''))
+      : '';
 
-    // 2. Establish Spatial Fences (The "Iron Dome" for Text)
-    let minValidY = 0;
-    let maxValidY = Number.MAX_SAFE_INTEGER;
+    // 2. Establish Per-Page Spatial Fences (The "Iron Dome" for Text)
+    const pageFences = new Map<number, { minValidY: number; maxValidY: number }>();
+    let hasSeenBaseQ = false;
 
-    if (baseQNum) {
-      // Pass 1: Find Fence Posts
+    if (normalizedTargetBase) {
       for (const b of sortedBlocks) {
+        const pageIdx = b._pageIdx;
+        if (!pageFences.has(pageIdx)) {
+          pageFences.set(pageIdx, { minValidY: 0, maxValidY: Number.MAX_SAFE_INTEGER });
+        }
+        const fence = pageFences.get(pageIdx)!;
         const match = b._cleanText.match(qLandmarkRegex);
         if (match) {
-          const foundNum = match[1]; // e.g., "12", "13"
+          const foundNum = match[1].replace(/^0+(?=\d)/, '');
 
-          if (foundNum === baseQNum) {
-            // : Start Fence found at Q12
-            // Allow a tiny fuzz factor (e.g., 5px) for text on the same line
-            minValidY = b._y - 5;
-          }
-          else if (minValidY !== 0 && b._y > minValidY) {
-            // : End Fence found at Q13
-            // We found a header BELOW our current question. This is the cutoff.
-            // We stop at the first header we see after ours.
-            if (b._y < maxValidY) maxValidY = b._y;
+          if (foundNum === normalizedTargetBase) {
+            hasSeenBaseQ = true;
+            const startY = Math.max(0, b._y - 5);
+            fence.minValidY = fence.minValidY === 0 ? startY : Math.min(fence.minValidY, startY);
+          } else if (hasSeenBaseQ && b._y > fence.minValidY) {
+            if (b._y < fence.maxValidY) {
+              fence.maxValidY = b._y;
+            }
           }
         }
       }
     }
 
-    // 3. Filtering & Tagging Pass
-    const normalize = (s: string) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-    const normalizedQText = normalize(questionText || '');
-    const structuralNoiseRegex = /DO NOT WRITE|Turn over|BLANK PAGE|Total for Question|Barcode|Isbn|\\\( \_+ \\\)|_+/i;
+    // 3. Filtering & Tagging Pass (with unfenced fail-safe)
+    const structuralNoiseRegex = /DO NOT WRITE|Turn over|BLANK PAGE|Total for Question|Barcode|Isbn|\\\(\s*_+\s*\\\)|_{3,}|^_+$/i;
 
-    const result = sortedBlocks.map(b => {
-      // ... (existing mapping logic)
-      if (b._y < minValidY || b._y >= maxValidY) return null;
+    const filterPass = (useFences: boolean) => sortedBlocks.map(b => {
+      if (useFences && normalizedTargetBase) {
+        const fence = pageFences.get(b._pageIdx);
+        if (fence && (b._y < fence.minValidY || b._y >= fence.maxValidY)) {
+          return null;
+        }
+      }
       const content = b._cleanText;
       if (!content || structuralNoiseRegex.test(content)) return null;
       const landmarkMatch = content.match(qLandmarkRegex);
-      if (landmarkMatch && landmarkMatch[1] !== baseQNum) return null;
+      if (landmarkMatch && normalizedTargetBase) {
+        const foundNum = landmarkMatch[1].replace(/^0+(?=\d)/, '');
+        if (foundNum !== normalizedTargetBase) return null;
+      }
       if (content.length < 2 && !/\d/.test(content) && !/[a-zA-Z]/.test(content)) return null;
       let isLikelyInstruction = false;
       if ((b as any)._isInstruction) isLikelyInstruction = true;
-      const { _y, _cleanText, ...finalBlock } = b;
+      const { _y, _pageIdx, _cleanText, ...finalBlock } = b;
       if (isLikelyInstruction) {
         const qLabel = (b as any)._associatedQuestion ? ` [Q${(b as any)._associatedQuestion}]` : '';
         const taggedText = `${content} [PRINTED_INSTRUCTION${qLabel}]`;
@@ -447,6 +455,12 @@ export class MarkingInstructionService {
       }
       return { ...finalBlock, text: content };
     }).filter(b => b !== null);
+
+    let result = filterPass(true);
+    if (result.length === 0 && sortedBlocks.length > 0) {
+      console.warn(`⚠️ [SANITIZE-OCR] Fence pass eliminated all ${sortedBlocks.length} blocks for Q${normalizedTargetBase || baseQNum || 'Unknown'} — falling back to unfenced pass.`);
+      result = filterPass(false);
+    }
 
     return result;
   }
@@ -856,7 +870,7 @@ export class MarkingInstructionService {
 
     // ❌ REMOVED INJECTION LOGIC
     const currentQNum = inputQuestionNumber || normalizedScheme?.questionNumber || 'Unknown';
-    const baseQNum = String(currentQNum).replace(/[a-z]/i, '');
+    const baseQNum = getBaseQuestionNumber(String(currentQNum)) || String(currentQNum).replace(/[a-z]/gi, '');
 
     const sanitizedBlocks = this.sanitizeOcrBlocks(rawOcrBlocks || [], questionText || '', baseQNum);
 

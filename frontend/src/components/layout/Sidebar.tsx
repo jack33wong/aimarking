@@ -548,6 +548,10 @@ const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const getSessionTitle = (session: UnifiedSession) => {
+    const isJobProcessing = jobsBySessionId[session.id]?.status === 'processing';
+    if (isJobProcessing) {
+      return 'Processing...';
+    }
     let title = session.title || 'Chat Session';
     title = title.replace(/:::[^\s\n]+/g, '');
     title = title.replace(/\*\*/g, '').replace(/###/g, '').trim();

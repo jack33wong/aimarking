@@ -5,7 +5,12 @@ import { getFirestore } from '../../config/firebase.js';
 import { ImageUtils } from '../../utils/ImageUtils.js';
 import { QuestionDetectionService } from './questionDetectionService.js';
 import { getBaseQuestionNumber } from '../../utils/TextNormalizationUtils.js';
-import { cleanSubjectAndQualification } from './MarkingHelpers.js';
+import {
+    cleanSubjectAndQualification,
+    hasUnofficialPaperIndicators,
+    areSubjectsCompatible
+} from './MarkingHelpers.js';
+import { UserFacingError } from '../../utils/UserFacingError.js';
 
 export interface AutoPersistenceAuditContext {
     userId?: string;
@@ -159,6 +164,18 @@ export function mergeParsedSchemeChunks(chunkObjects: any[]): any {
         }
     }
 
+    const isUnofficialOrPractice = validChunks.some(
+        c => c?.examDetails?.isUnofficialOrPractice === true || c?.examDetails?.isOfficial === false || c?.examDetails?.isPractice === true || c?.examDetails?.isMock === true
+    );
+    const sourceDisclaimers = Array.from(
+        new Set(
+            validChunks
+                .map(c => String(c?.examDetails?.sourceDisclaimer || c?.examDetails?.disclaimer || '').trim())
+                .filter(Boolean)
+        )
+    );
+    const sourceDisclaimer = sourceDisclaimers.join(' | ');
+
     const examDetails: Record<string, any> = {
         board: pickMetaField('board', 'Custom'),
         subject: pickMetaField('subject', ''),
@@ -166,7 +183,9 @@ export function mergeParsedSchemeChunks(chunkObjects: any[]): any {
         paperCode: pickMetaField('paperCode', 'Uploaded'),
         tier: pickMetaField('tier', 'N/A'),
         exam_series: pickMetaField('exam_series', 'N/A'),
-        paperTotalMarks
+        paperTotalMarks,
+        ...(isUnofficialOrPractice ? { isUnofficialOrPractice: true } : {}),
+        ...(sourceDisclaimer ? { sourceDisclaimer } : {})
     };
 
     const mergedQuestions: Record<string, any> = {};
@@ -260,6 +279,8 @@ export function mergeParsedSchemeChunks(chunkObjects: any[]): any {
         reason = isComplete ? '' : `Missing base question(s) in range 1..${maxBase}`;
     }
 
+    const duplicateQuestionNumbers = detectDuplicateQuestionsInParsedSchemeChunks(validChunks);
+
     return {
         examDetails,
         documentCompleteness: {
@@ -270,8 +291,149 @@ export function mergeParsedSchemeChunks(chunkObjects: any[]): any {
         },
         subQuestionMaxScores: mergedSubQuestionMaxScores,
         questions: mergedQuestions,
-        generalMarkingGuidance
+        generalMarkingGuidance,
+        ...(duplicateQuestionNumbers.length > 0 ? { duplicateQuestionNumbers } : {})
     };
+}
+
+function extractSchemeEntrySignature(entry: any): { norm: string; tokens: Set<string> } {
+    const parts: string[] = [];
+    if (typeof entry?.answer === 'string' && entry.answer.trim()) {
+        parts.push(entry.answer.trim());
+    }
+    if (Array.isArray(entry?.marks)) {
+        for (const m of entry.marks) {
+            if (typeof m?.answer === 'string' && m.answer.trim()) {
+                parts.push(m.answer.trim());
+            }
+        }
+    }
+    if (Array.isArray(entry?.indicativeContent)) {
+        for (const ic of entry.indicativeContent) {
+            if (typeof ic === 'string' && ic.trim()) {
+                parts.push(ic.trim());
+            }
+        }
+    }
+    const raw = parts.join(' ').trim();
+    const norm = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const tokens = new Set<string>();
+    const matches = raw.toLowerCase().match(/[a-z0-9]+/g) || [];
+    for (const t of matches) {
+        if (/^\d+$/.test(t) || t.length >= 3) {
+            tokens.add(t);
+        }
+    }
+    return { norm, tokens };
+}
+
+function areSchemeEntriesConflicting(entryA: any, entryB: any, isAdjacentChunk: boolean): boolean {
+    const sigA = extractSchemeEntrySignature(entryA);
+    const sigB = extractSchemeEntrySignature(entryB);
+    if (!sigA.norm || !sigB.norm) return false;
+    if (sigA.norm === sigB.norm) return false;
+    if (sigA.norm.includes(sigB.norm) || sigB.norm.includes(sigA.norm)) return false;
+
+    const minTokens = Math.min(sigA.tokens.size, sigB.tokens.size);
+    if (minTokens === 0) return false;
+
+    let intersection = 0;
+    sigA.tokens.forEach(t => {
+        if (sigB.tokens.has(t)) intersection++;
+    });
+    const overlap = intersection / minTokens;
+
+    if (isAdjacentChunk) {
+        // Adjacent chunks share a 1-page overlap; only flag when both entries are substantial and completely unrelated.
+        return minTokens >= 4 && overlap < 0.25;
+    }
+    // Non-adjacent chunks have zero overlapping pages: any distinct answer/mark criteria is a strong duplicate signal.
+    return minTokens >= 3 ? overlap < 0.30 : sigA.norm !== sigB.norm;
+}
+
+export function detectDuplicateQuestionsInParsedSchemeChunks(chunks: any[]): string[] {
+    const validChunks = (chunks || []).filter(c => c && typeof c === 'object');
+    const explicitDuplicates = new Set<string>();
+
+    for (const chunk of validChunks) {
+        if (Array.isArray(chunk.duplicateQuestionNumbers)) {
+            for (const rawQ of chunk.duplicateQuestionNumbers) {
+                const base = getBaseQuestionNumber(String(rawQ || '').trim()) || String(rawQ || '').trim().match(/^(\d+)/)?.[1];
+                if (base) explicitDuplicates.add(base.replace(/^0+(?=\d)/, ''));
+            }
+        }
+    }
+
+    const crossChunkConflicts = new Set<string>();
+    let conflictingKeyCount = 0;
+    let hasNonAdjacentConflict = false;
+    if (validChunks.length > 1) {
+        const entriesByKey = new Map<string, Array<{ chunkIndex: number; entry: any }>>();
+        validChunks.forEach((chunk, chunkIndex) => {
+            if (!chunk.questions || typeof chunk.questions !== 'object') return;
+            for (const [rawKey, qEntry] of Object.entries(chunk.questions)) {
+                const nk = normQuestionKey(rawKey);
+                if (!nk || !qEntry || typeof qEntry !== 'object') continue;
+                const list = entriesByKey.get(nk) || [];
+                list.push({ chunkIndex, entry: qEntry });
+                entriesByKey.set(nk, list);
+            }
+        });
+
+        entriesByKey.forEach((occurrences, nk) => {
+            if (occurrences.length < 2) return;
+            const baseQ = (getBaseQuestionNumber(nk) || nk.match(/^(\d+)/)?.[1] || nk).replace(/^0+(?=\d)/, '');
+            let keyConflicted = false;
+            for (let i = 0; i < occurrences.length; i++) {
+                for (let j = i + 1; j < occurrences.length; j++) {
+                    const isAdjacent = Math.abs(occurrences[j].chunkIndex - occurrences[i].chunkIndex) === 1;
+                    if (areSchemeEntriesConflicting(occurrences[i].entry, occurrences[j].entry, isAdjacent)) {
+                        crossChunkConflicts.add(baseQ);
+                        keyConflicted = true;
+                        if (!isAdjacent) {
+                            hasNonAdjacentConflict = true;
+                        }
+                    }
+                }
+            }
+            if (keyConflicted) {
+                conflictingKeyCount++;
+            }
+        });
+    }
+
+    const combined = new Set<string>(explicitDuplicates);
+    if (crossChunkConflicts.size >= 2 || conflictingKeyCount >= 2 || hasNonAdjacentConflict) {
+        crossChunkConflicts.forEach(q => combined.add(q));
+    }
+
+    return Array.from(combined).sort((a, b) => Number(a) - Number(b));
+}
+
+export function assertNoDuplicateQuestionsInMarkScheme(parsedObj: any, sourceFileName?: string): void {
+    if (!parsedObj || typeof parsedObj !== 'object') return;
+    const rawList = Array.isArray(parsedObj.duplicateQuestionNumbers) ? parsedObj.duplicateQuestionNumbers : [];
+    const normalized = Array.from(
+        new Set<string>(
+            rawList
+                .map((q: any) => (getBaseQuestionNumber(String(q || '').trim()) || String(q || '').trim().match(/^(\d+)/)?.[1] || '').replace(/^0+(?=\d)/, ''))
+                .filter(Boolean)
+        )
+    ).sort((a, b) => Number(a) - Number(b));
+
+    if (normalized.length === 0) return;
+
+    const sampleQs = normalized.slice(0, 5).map(q => `Q${q}`).join(', ');
+    const sourceLabel = sourceFileName ? ` ("${sourceFileName}")` : '';
+    throw new UserFacingError({
+        code: 'DUPLICATE_MARK_SCHEME_QUESTIONS_NOT_SUPPORTED',
+        category: 'user_fixable',
+        shouldAlertAdmin: false,
+        userMessage:
+            `This marking scheme${sourceLabel} contains **duplicate question numbers** (${sampleQs}) with different questions — such as a topic pack, compiled worksheet, or combined multi-paper mark scheme.\n\n` +
+            `**Duplicate question numbers are not currently supported.** Please upload a **single unique marking scheme** for one exam paper.`,
+        technicalMessage: `Uploaded marking scheme rejected: duplicate question numbers detected (Q${normalized.join(', Q')}).`
+    });
 }
 
 export class MarkingSchemeParserService {
@@ -311,7 +473,9 @@ Output JSON Schema:
     "paperCode": "Paper code if visible, else 'Uploaded'",
     "tier": "Higher | Foundation | N/A",
     "exam_series": "Exam series if visible, else 'N/A'",
-    "paperTotalMarks": "Integer total/maximum mark for the WHOLE paper ONLY if explicitly printed in the document (e.g. 'Total for paper: 100', 'Maximum mark: 80'), else null"
+    "paperTotalMarks": "Integer total/maximum mark for the WHOLE paper ONLY if explicitly printed in the document (e.g. 'Total for paper: 100', 'Maximum mark: 80'), else null",
+    "isUnofficialOrPractice": "boolean — true ONLY if the document itself is a third-party/unofficial practice, mock, predicted, or rewritten mark scheme (e.g. MarkMe, SaveMyExams, PMT, 'Practice Paper', 'Not produced or endorsed by AQA/Edexcel', 'June 2024 Format'); false for genuine official exam board mark schemes",
+    "sourceDisclaimer": "Short verbatim third-party branding or non-endorsement disclaimer printed on the document (e.g. 'MarkMe', 'Not produced or endorsed by AQA'), else ''"
   },
   "documentCompleteness": {
     "isComplete": "true ONLY if the images contain the marking scheme for EVERY question of the paper from Question 1 to the final question with no missing pages; false if any pages/questions appear to be missing, cut off, or only selected questions are included",
@@ -385,7 +549,8 @@ Output JSON Schema:
       ]
     }
   },
-  "generalMarkingGuidance": "Any paper-wide marking rules (e.g. list rule, significant figures, rounding, equations)."
+  "generalMarkingGuidance": "Any paper-wide marking rules (e.g. list rule, significant figures, rounding, equations).",
+  "duplicateQuestionNumbers": ["ONLY if this document is a topic pack, compiled worksheet, or combined multi-paper mark scheme where the SAME base question number appears more than once for DIFFERENT questions (e.g. two separate Q1s from different papers), list those duplicated base question numbers here (e.g. '1', '2'). Otherwise return []. Do NOT include sub-parts like 1(a), 1(b) or '(continued)' pages of the same question."]
 }
 
 Do not include markdown blocks, just the raw JSON object. Ensure all max scores in "subQuestionMaxScores" are integers.`;
@@ -454,7 +619,7 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
 
         // Compute deterministic SHA-256 cache key across all scheme page images
         const hash = crypto.createHash('sha256');
-        hash.update(`v2:${base64Images.length}:`);
+        hash.update(`v3:${base64Images.length}:`);
         for (const img of base64Images) {
             // Sample prefix, middle, and suffix + length of each base64 page for fast (<1ms) collision-free hashing
             const len = img.length;
@@ -467,7 +632,9 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
         const memCached = this.memoryCache.get(cacheKey);
         if (memCached && memCached.questions && Object.keys(memCached.questions).length > 0) {
             console.log(`⚡ [MarkingSchemeParser] In-memory cache HIT (${cacheKey.slice(0, 12)}) for ${base64Images.length} scheme page(s).`);
-            return this.canonicalizeParsedScheme(JSON.parse(JSON.stringify(memCached)));
+            const canonicalMem = this.canonicalizeParsedScheme(JSON.parse(JSON.stringify(memCached)));
+            assertNoDuplicateQuestionsInMarkScheme(canonicalMem, auditContext?.sourceFileName);
+            return canonicalMem;
         }
 
         // 2. Check Firestore persistent cache
@@ -480,12 +647,14 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
                     if (data?.parsedScheme && data.parsedScheme.questions && Object.keys(data.parsedScheme.questions).length > 0) {
                         console.log(`⚡ [MarkingSchemeParser] Firestore cache HIT (${cacheKey.slice(0, 12)}) for ${base64Images.length} scheme page(s).`);
                         const canonicalCached = this.canonicalizeParsedScheme(JSON.parse(JSON.stringify(data.parsedScheme)));
+                        assertNoDuplicateQuestionsInMarkScheme(canonicalCached, auditContext?.sourceFileName);
                         this.memoryCache.set(cacheKey, canonicalCached);
                         return JSON.parse(JSON.stringify(canonicalCached));
                     }
                 }
             }
         } catch (cacheReadErr) {
+            if (cacheReadErr instanceof UserFacingError) throw cacheReadErr;
             // Non-fatal: proceed to LLM extraction
         }
 
@@ -570,6 +739,8 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
             }
 
             const parsedObj = this.canonicalizeParsedScheme(rawParsedObj);
+            assertNoDuplicateQuestionsInMarkScheme(parsedObj, auditContext?.sourceFileName);
+
             if (!allChunksSucceeded && parsedObj) {
                 parsedObj.documentCompleteness = {
                     ...(parsedObj.documentCompleteness || {}),
@@ -605,6 +776,9 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
             return parsedObj;
 
         } catch (error) {
+            if (error instanceof UserFacingError) {
+                throw error;
+            }
             console.error('❌ [MarkingSchemeParser] Failed to parse custom marking scheme:', error);
             // On failure, return null so the pipeline safely falls back to standard behavior
             return null;
@@ -620,6 +794,15 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
         const details = parsedObj.examDetails;
         if (!details || typeof details !== 'object') return false;
 
+        if (
+            details.isOfficial === false ||
+            details.isUnofficialOrPractice === true ||
+            details.isPractice === true ||
+            details.isMock === true
+        ) {
+            return false;
+        }
+
         const board = String(details.board || '').trim();
         const paperCode = String(details.paperCode || '').trim();
         const subject = String(details.subject || '').trim();
@@ -634,6 +817,53 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
         if (!subject) return false;
 
         if (!questions || typeof questions !== 'object' || Object.keys(questions).length < 3) return false;
+
+        // Reject unofficial/practice/mock/rewritten papers (e.g. MarkMe, SaveMyExams, PMT)
+        const metadataTexts: string[] = [
+            board,
+            paperCode,
+            subject,
+            details.title,
+            details.paperTitle,
+            details.name,
+            details.source,
+            details.publisher,
+            details.author,
+            details.exam_series,
+            details.date,
+            details.notes,
+            details.disclaimer,
+            details.sourceDisclaimer,
+            parsedObj.title,
+            parsedObj.source,
+            parsedObj.generalMarkingGuidance,
+            parsedObj.documentCompleteness?.reason
+        ].filter(Boolean).map(v => String(v));
+
+        if (hasUnofficialPaperIndicators(metadataTexts.join(' '))) {
+            return false;
+        }
+
+        const questionTexts: string[] = [];
+        for (const qVal of Object.values(questions)) {
+            if (!qVal || typeof qVal !== 'object') continue;
+            const q = qVal as any;
+            if (q.text) questionTexts.push(String(q.text));
+            if (q.questionText) questionTexts.push(String(q.questionText));
+            if (q.answer) questionTexts.push(String(q.answer));
+            if (q.guidance) questionTexts.push(String(q.guidance));
+            if (q.notes) questionTexts.push(String(q.notes));
+            if (Array.isArray(q.marks)) {
+                for (const m of q.marks) {
+                    if (m?.answer) questionTexts.push(String(m.answer));
+                    if (m?.comments) questionTexts.push(String(m.comments));
+                }
+            }
+        }
+        if (questionTexts.length > 0 && hasUnofficialPaperIndicators(questionTexts.join(' '))) {
+            return false;
+        }
+
         return true;
     }
 
@@ -913,11 +1143,34 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
         extractedQuestions: Array<{ questionNumber?: string | null; text?: string; parentText?: string }>;
         paperStatedTotal?: number | null;
         auditContext?: AutoPersistenceAuditContext;
+        isUnofficialOrPracticePaper?: boolean;
+        documentEvidenceText?: string;
     }): Promise<{ persisted: boolean; report?: CompletenessReport }> {
-        const { parsedScheme, extractedQuestions, paperStatedTotal, auditContext } = params;
+        const {
+            parsedScheme,
+            extractedQuestions,
+            paperStatedTotal,
+            auditContext,
+            isUnofficialOrPracticePaper,
+            documentEvidenceText
+        } = params;
         try {
-            // Not an official past paper -> silently ignore (custom / teacher schemes are never cataloged)
+            if (isUnofficialOrPracticePaper === true) {
+                console.log(`🛡️ [AUTO-CATALOG] Skipped persisting unofficial/practice paper "${parsedScheme?.examDetails?.paperCode || auditContext?.sourceFileName || 'unknown'}" (flagged by document geometry).`);
+                return { persisted: false };
+            }
+
+            // Not an official past paper -> silently ignore (custom / teacher / practice schemes are never cataloged)
             if (!this.isOfficialPastPaperScheme(parsedScheme)) return { persisted: false };
+
+            const evidenceText = [
+                documentEvidenceText || '',
+                ...(extractedQuestions || []).flatMap(q => [q?.text || '', q?.parentText || ''])
+            ].filter(Boolean).join(' ');
+            if (hasUnofficialPaperIndicators(evidenceText)) {
+                console.log(`🛡️ [AUTO-CATALOG] Skipped persisting unofficial/practice paper "${auditContext?.sourceFileName || parsedScheme.examDetails?.paperCode || 'unknown'}".`);
+                return { persisted: false };
+            }
 
             const label = `${parsedScheme.examDetails?.board || ''} ${parsedScheme.examDetails?.paperCode || ''} ${parsedScheme.examDetails?.exam_series || parsedScheme.examDetails?.date || ''}`.trim();
 
@@ -1363,35 +1616,129 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
             const rawHint = String(paperCodeHint || '').trim();
             if (!rawHint) return null;
 
-            // Extract canonical paper code candidate (e.g. "8461/1H", "8462/2F", "1BI0/1H", "J247/01", "7402/1")
-            const codeMatch = rawHint.match(/\b([0-9A-Z]{4,6}\/[0-9A-Z]{1,3})\b/i);
-            const targetCode = (codeMatch ? codeMatch[1] : rawHint).trim().toUpperCase();
-            if (targetCode.length < 4 || !/[0-9]/.test(targetCode)) return null;
+            const normCode = (c: string) => String(c || '').trim().toUpperCase().replace(/[-_\s]+/g, '/');
+
+            // Extract ALL canonical paper code candidates (2-segment e.g. "8461/1H", "1MA1/1H", "J247/01"
+            // AND 3-segment e.g. "8464/B/1F", "8464/C/2H").
+            // Support slash/hyphen/underscore separators (including inside filenames like "AQA_8464_B_1F_June_2023.pdf")
+            // as well as space-separated codes like "8464 B 1F" where segments contain digits or single-letter tiers/components.
+            // Prefer more-specific (3-segment) candidates first.
+            const delimCodeRegex = /(?<![0-9A-Z])([0-9A-Z]{4,6}(?:[\/\-_][0-9A-Z]{1,3}){1,2})(?![0-9A-Z])/gi;
+            const spaceCodeRegex = /(?<![0-9A-Z])([0-9A-Z]{4,6}(?:\s+(?:[0-9]{1,3}[A-Z]?|[A-Z][0-9]{1,2}|[A-Z])){1,2})(?![0-9A-Z])/gi;
+            const rawMatches = [
+                ...Array.from(rawHint.matchAll(delimCodeRegex), m => normCode(m[1])),
+                ...Array.from(rawHint.matchAll(spaceCodeRegex), m => normCode(m[1]))
+            ];
+            const candidates = Array.from(new Set(
+                (rawMatches.length > 0 ? rawMatches : [normCode(rawHint)])
+                    .filter(c => c.length >= 4 && /[0-9]/.test(c))
+            )).sort((a, b) => {
+                const segDiff = b.split('/').length - a.split('/').length;
+                return segDiff !== 0 ? segDiff : b.length - a.length;
+            });
+            if (candidates.length === 0) return null;
 
             const schemes = await QuestionDetectionService.getInstance().getMarkingSchemesList();
             if (!schemes || schemes.length === 0) return null;
 
-            const normCode = (c: string) => String(c || '').trim().toUpperCase().replace(/[-_\s]+/g, '/');
-            const targetNorm = normCode(targetCode);
-
-            const matchingCodeSchemes = schemes.filter((s: any) => {
-                const sCode = normCode(s?.examDetails?.paperCode || s?.examDetails?.paper || '');
-                return sCode && (sCode === targetNorm || sCode.includes(targetNorm) || targetNorm.includes(sCode));
-            });
+            // Match candidates in order of specificity using exact normalized code equality
+            // (never substring `.includes()`, which would dangerously match "8464/B" to "8464/B/1H").
+            let matchingCodeSchemes: any[] = [];
+            for (const candidate of candidates) {
+                const exact = schemes.filter((s: any) => {
+                    const sCode = normCode(s?.examDetails?.paperCode || s?.examDetails?.paper || '');
+                    return sCode === candidate;
+                });
+                if (exact.length > 0) {
+                    matchingCodeSchemes = exact;
+                    break;
+                }
+            }
 
             if (matchingCodeSchemes.length === 0) return null;
 
-            // If examSeriesHint is available (e.g. "June 2025"), prefer exact year/series match
-            let chosen = matchingCodeSchemes[0];
-            if (examSeriesHint && matchingCodeSchemes.length > 1) {
-                const yearMatch = examSeriesHint.match(/\b(20\d{2})\b/)?.[1];
-                const byYear = yearMatch
-                    ? matchingCodeSchemes.find((s: any) => String(s?.examDetails?.exam_series || s?.examDetails?.date || '').includes(yearMatch))
-                    : undefined;
-                if (byYear) chosen = byYear;
+            // Never return an unofficial/practice scheme if any exist in the catalog
+            matchingCodeSchemes = matchingCodeSchemes.filter((s: any) => {
+                const d = s?.examDetails || {};
+                if (
+                    d.isOfficial === false ||
+                    d.isUnofficialOrPractice === true ||
+                    d.isPractice === true ||
+                    d.isMock === true
+                ) {
+                    return false;
+                }
+                const meta = [
+                    d.title,
+                    d.paperTitle,
+                    d.name,
+                    d.source,
+                    d.publisher,
+                    d.author,
+                    d.exam_series,
+                    d.date,
+                    d.notes,
+                    d.disclaimer,
+                    d.sourceDisclaimer,
+                    s?.title,
+                    s?.source,
+                    s?.generalMarkingGuidance,
+                    s?.documentCompleteness?.reason
+                ].filter(Boolean).join(' ');
+                return !hasUnofficialPaperIndicators(meta);
+            });
+            if (matchingCodeSchemes.length === 0) return null;
+
+            // Enforce examSeriesHint (year & season) even when matchingCodeSchemes.length === 1
+            let filtered = matchingCodeSchemes;
+            if (examSeriesHint && String(examSeriesHint).trim()) {
+                const hintStr = String(examSeriesHint).trim();
+                const yearMatch = hintStr.match(/\b(20\d{2})\b/)?.[1];
+                if (yearMatch) {
+                    filtered = filtered.filter((s: any) => {
+                        const sSeries = String(s?.examDetails?.exam_series || s?.examDetails?.date || '').trim();
+                        return sSeries.includes(yearMatch);
+                    });
+                    if (filtered.length === 0) return null;
+                }
+
+                const seasonGroup = (str: string) => {
+                    const lower = str.toLowerCase();
+                    if (/\b(june|may|summer)\b/.test(lower)) return 'summer';
+                    if (/\b(november|nov|autumn)\b/.test(lower)) return 'autumn';
+                    if (/\b(january|jan|winter)\b/.test(lower)) return 'winter';
+                    return '';
+                };
+                const hintSeason = seasonGroup(hintStr);
+                if (hintSeason) {
+                    const seasonCompatible = filtered.filter((s: any) => {
+                        const sSeries = String(s?.examDetails?.exam_series || s?.examDetails?.date || '');
+                        const sSeason = seasonGroup(sSeries);
+                        return !sSeason || sSeason === hintSeason;
+                    });
+                    if (seasonCompatible.length === 0) return null;
+                    const exactSeason = seasonCompatible.filter((s: any) => {
+                        const sSeries = String(s?.examDetails?.exam_series || s?.examDetails?.date || '');
+                        return seasonGroup(sSeries) === hintSeason;
+                    });
+                    filtered = exactSeason.length > 0 ? exactSeason : seasonCompatible;
+                }
             }
 
-            if (!chosen?.questions || Object.keys(chosen.questions).length === 0) return null;
+            // Filter and tie-break by subjectHint when provided
+            if (subjectHint && String(subjectHint).trim()) {
+                const compatible = filtered.filter((s: any) =>
+                    areSubjectsCompatible(subjectHint, s?.examDetails?.subject)
+                );
+                if (compatible.length === 0) return null;
+                const normSubj = (x?: string) => cleanSubjectAndQualification(x).subject.toLowerCase().trim();
+                const targetSubj = normSubj(subjectHint);
+                const exactSubj = compatible.filter((s: any) => normSubj(s?.examDetails?.subject) === targetSubj);
+                filtered = exactSubj.length > 0 ? exactSubj : compatible;
+            }
+
+            const chosen = filtered.find((s: any) => s?.questions && Object.keys(s.questions).length > 0);
+            if (!chosen) return null;
 
             return {
                 examDetails: chosen.examDetails,

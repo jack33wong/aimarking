@@ -137,6 +137,83 @@ export function cleanSubjectAndQualification(
   return { subject, qualification };
 }
 
+const UNOFFICIAL_PAPER_INDICATOR_REGEX = /\b(practice\s+(?:paper|exam|test|questions?|assessment)|mock\s+(?:paper|exam|test|assessment)|predicted\s+(?:paper|exam)|rewritten\s+(?:questions?|paper|exam)|modelled\s+on|modeled\s+on|not\s+(?:produced|endorsed|affiliated|approved|accredited)(?:\s+(?:or|and)\s+(?:produced|endorsed|affiliated|approved|accredited))*\s+(?:by|with)|unofficial\s+(?:paper|mark\s*scheme|scheme|exam)|(?:(?:june|may|summer|november|autumn|january|winter)(?:\s+20\d{2})?|20\d{2})\s+format|markme|savemyexams|save\s+my\s+exams|physics\s*(?:&|and)\s*maths\s*tutor)\b/i;
+
+/**
+ * Detects whether text (cover snippet, filename, scheme title/guidance, or extracted question text)
+ * indicates an unofficial/practice/mock/rewritten paper rather than a genuine exam board past paper.
+ */
+export function hasUnofficialPaperIndicators(text?: string | null): boolean {
+  const s = String(text || '').replace(/[_-]+/g, ' ').trim();
+  if (!s) return false;
+  return UNOFFICIAL_PAPER_INDICATOR_REGEX.test(s);
+}
+
+/**
+ * Collapses compatible science subject aliases (e.g. ["Combined Science: Trilogy", "Biology", "Combined Science"])
+ * into a single canonical subject label so a single booklet is not misclassified as multiple unrelated subjects.
+ * Separate sciences without a Combined Science anchor (e.g. ["Biology", "Chemistry"]) remain distinct.
+ */
+export function collapseCompatibleSubjectAliases(subjects: Array<string | undefined | null>): string[] {
+  const deduped: string[] = [];
+  const seenLower = new Set<string>();
+  for (const raw of subjects) {
+    const cleaned = cleanSubjectAndQualification(raw).subject.trim() || String(raw || '').trim();
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
+    if (!seenLower.has(key)) {
+      seenLower.add(key);
+      deduped.push(cleaned);
+    }
+  }
+  if (deduped.length <= 1) return deduped;
+
+  const isCombinedScience = (s: string) => /\b(?:combined\s+science|double\s+science)\b/i.test(s);
+  const isCoreScienceDiscipline = (s: string) => /^(?:biology|chemistry|physics|science|natural\s+sciences)$/i.test(s.trim());
+
+  const combinedCandidates = deduped.filter(isCombinedScience);
+  if (combinedCandidates.length > 0) {
+    // Prefer specific Combined Science label (e.g. "Combined Science: Trilogy") over bare "Combined Science"
+    const canonicalCombined = combinedCandidates
+      .slice()
+      .sort((a, b) => b.length - a.length)[0];
+    const result: string[] = [];
+    let addedCombined = false;
+    for (const s of deduped) {
+      if (isCombinedScience(s) || isCoreScienceDiscipline(s)) {
+        if (!addedCombined) {
+          result.push(canonicalCombined);
+          addedCombined = true;
+        }
+      } else {
+        result.push(s);
+      }
+    }
+    return result;
+  }
+
+  // If bare "Science" appears alongside a single specific science (e.g. ["Science", "Biology"]), collapse "Science"
+  const hasBareScience = deduped.some(s => /^science$/i.test(s));
+  const specificSciences = deduped.filter(s => /^(?:biology|chemistry|physics)$/i.test(s));
+  if (hasBareScience && specificSciences.length === 1) {
+    return deduped.filter(s => !/^science$/i.test(s));
+  }
+
+  return deduped;
+}
+
+/**
+ * Returns true if two subject names refer to the same or compatible subject
+ * (including Combined Science <-> Biology/Chemistry/Physics aliases).
+ */
+export function areSubjectsCompatible(subjectA?: string | null, subjectB?: string | null): boolean {
+  const a = cleanSubjectAndQualification(subjectA).subject.toLowerCase().trim();
+  const b = cleanSubjectAndQualification(subjectB).subject.toLowerCase().trim();
+  if (!a || !b) return true;
+  if (a === b || a.includes(b) || b.includes(a)) return true;
+  return collapseCompatibleSubjectAliases([a, b]).length === 1;
+}
+
 // Re-exported from TextNormalizationUtils (single source of truth).
 // Previously `if (p === b) return p;` collapsed AQA-style "1.1", "2.2", "3.3"... into "1", "2", "3",
 // which dropped those sub-questions from auto-persisted fullExamPapers.

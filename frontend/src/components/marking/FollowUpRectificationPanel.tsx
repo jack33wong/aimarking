@@ -224,51 +224,23 @@ export const FollowUpRectificationPanel: React.FC<FollowUpRectificationPanelProp
           {/* Button on LEFT: Mark with AI (General Rubric) */}
           <button
             type="button"
+            className="detected-paper-grade-btn"
             disabled={isProcessing}
             onClick={() => onGradeWithGeneralRubric?.()}
-            style={{
-              padding: '9px 16px',
-              background: 'var(--fill-brand)',
-              color: '#ffffff',
-              border: 'none',
-              borderRadius: '8px',
-              cursor: isProcessing ? 'not-allowed' : 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '8px',
-              fontSize: '14px',
-              fontWeight: 600,
-              boxShadow: '0 2px 6px rgba(14, 165, 233, 0.25)',
-              opacity: isProcessing ? 0.6 : 1
-            }}
           >
-            <Sparkles size={16} />
+            <Sparkles size={15} />
             <span>Mark with AI (General Mark Scheme)</span>
           </button>
 
           {/* Button on RIGHT: Attach Marking Scheme */}
           <button
             type="button"
+            className="detected-paper-grade-btn"
             disabled={isProcessing}
             onClick={() => fileInputRef.current?.click()}
-            style={{
-              padding: '9px 16px',
-              background: 'var(--function-success)',
-              color: '#ffffff',
-              border: 'none',
-              borderRadius: '8px',
-              cursor: isProcessing ? 'not-allowed' : 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '8px',
-              fontSize: '14px',
-              fontWeight: 600,
-              boxShadow: '0 2px 6px rgba(79, 70, 229, 0.25)',
-              opacity: isProcessing ? 0.6 : 1,
-              marginLeft: 'auto'
-            }}
+            style={{ marginLeft: 'auto' }}
           >
-            <Paperclip size={16} />
+            <Paperclip size={15} />
             <span>Attach Marking Scheme</span>
           </button>
         </div>
