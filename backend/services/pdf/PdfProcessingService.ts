@@ -64,7 +64,7 @@ export class PdfProcessingService {
    * Rejects ultra-tall continuous-scroll PDF pages (e.g. Apple Notes / GoodNotes infinite-canvas exports)
    * where fixed-height slicing cuts questions across boundaries and embedded handwriting is often too faint.
    */
-  private static validateNoContinuousScrollPages(srcPdfDoc: PDFDocument): void {
+  public static validateNoContinuousScrollPages(srcPdfDoc: PDFDocument): void {
     const pages = srcPdfDoc.getPages();
     if (pages.length === 0 || pages.length > 3) return;
 
@@ -287,7 +287,11 @@ export class PdfProcessingService {
     // 2. HIGH-CLARITY ADAPTIVE DPI (Preserves crisp superscripts/fractions while staying well under 4 GiB RAM):
     // - 1 to 6 pages: 260 DPI (~2158 x 3052 px)
     // - 7+ pages:     220 DPI (~1826 x 2582 px — ideal for Google Vision & Gemini OCR)
-    const TARGET_DENSITY = pageCount <= 6 ? 260 : 220;
+    // - Explicit caller override (e.g. Pre-Inspect at 96 DPI): respect custom density for fast previewing
+    const requestedDensity = Number(pdf2picCustomOptions?.density);
+    const TARGET_DENSITY = (Number.isFinite(requestedDensity) && requestedDensity >= 72 && requestedDensity <= 300)
+      ? Math.round(requestedDensity)
+      : (pageCount <= 6 ? 260 : 220);
     const rawTargetWidth = Math.round((pdfPtW / 72) * TARGET_DENSITY);
     const rawTargetHeight = Math.round((pdfPtH / 72) * TARGET_DENSITY);
     const dimScale = Math.min(1, MAX_PIXEL_DIMENSION / Math.max(rawTargetWidth, rawTargetHeight, 1));

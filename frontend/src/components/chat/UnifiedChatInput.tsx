@@ -4,7 +4,7 @@
  */
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import imageCompression from 'browser-image-compression';
-import { Plus, Brain, X, Check, Sparkles, Smartphone, UploadCloud, BookOpen, Library, Paperclip, FileText } from 'lucide-react';
+import { Plus, Brain, X, Check, Sparkles, Smartphone, UploadCloud, BookOpen, Library, Paperclip, FileText, AlertTriangle, Lightbulb } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import LandingPageUploadWidget from '../common/LandingPageUploadWidget';
 import MobileUploadModal from '../upload/MobileUploadModal';
@@ -21,6 +21,12 @@ import { mobileUploadService } from '../../services/MobileUploadService';
 import { FileHandoff } from './FileHandoff';
 import { useTelemetry } from '../../hooks/useTelemetry';
 import { trackFunnelEvent } from '../../utils/funnelTracker';
+import {
+  preInspectUploadedFiles,
+  setPendingPreInspectContext,
+  type PreInspectResult,
+  type PreInspectSuggestionAction,
+} from '../../services/preInspectService';
 import './UnifiedChatInput.css';
 
 // Define the type for the props this component receives
@@ -127,6 +133,12 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   const [fileSizeWarning, setFileSizeWarning] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const dragCounterRef = useRef<number>(0);
+
+  // On-attach Pre-Inspect State (fast 1-3 page preview for instant UX guidance + backend geometry reuse)
+  const [preInspectResult, setPreInspectResult] = useState<PreInspectResult | null>(null);
+  const [isPreInspecting, setIsPreInspecting] = useState<boolean>(false);
+  const [preInspectDismissed, setPreInspectDismissed] = useState<boolean>(false);
+  const preInspectAbortRef = useRef<AbortController | null>(null);
 
   const [showUpgradeModal, setShowUpgradeModal] = useState<boolean>(false);
   const [isMobileUploadOpen, setIsMobileUploadOpen] = useState<boolean>(false);
@@ -1099,14 +1111,77 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     }
   }, [isMultiImage, imageFiles, previewImages, removePreview]);
 
-  const handleSendClick = useCallback(async () => {
+  // Trigger lightweight on-attach pre-inspect whenever files are attached in first-time mode
+  const attachedFilesList = useMemo<File[]>(() => {
+    if (isMultiImage && imageFiles.length > 0) return imageFiles;
+    if (imageFile) return [imageFile];
+    return [];
+  }, [isMultiImage, imageFiles, imageFile]);
+
+  const attachedFilesSignature = useMemo(
+    () => attachedFilesList.map((f) => `${f.name}:${f.size}:${f.lastModified}`).join('|'),
+    [attachedFilesList]
+  );
+
+  useEffect(() => {
+    if (preInspectAbortRef.current) {
+      preInspectAbortRef.current.abort();
+      preInspectAbortRef.current = null;
+    }
+
+    if (mode !== 'first-time' || attachedFilesList.length === 0 || isProcessing) {
+      setPreInspectResult(null);
+      setIsPreInspecting(false);
+      setPreInspectDismissed(false);
+      setPendingPreInspectContext({ preInspectToken: null, allowGenericSubjectMarking: false });
+      return;
+    }
+
+    setPreInspectDismissed(false);
+    setPreInspectResult(null);
+    setIsPreInspecting(true);
+
+    const controller = new AbortController();
+    preInspectAbortRef.current = controller;
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await preInspectUploadedFiles(attachedFilesList, {
+          sessionId: currentSession?.id || null,
+          signal: controller.signal,
+        });
+        if (!controller.signal.aborted) {
+          setPreInspectResult(res);
+          setIsPreInspecting(false);
+        }
+      } catch (err: any) {
+        if (!controller.signal.aborted && err?.name !== 'AbortError') {
+          setPreInspectResult(null);
+          setIsPreInspecting(false);
+        }
+      }
+    }, 50);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [attachedFilesSignature, mode, isProcessing]);
+
+  const handleSendClick = useCallback(async (overrideText?: string) => {
     if (!canSend || isNegative) {
       if (isNegative) {
         handleNegativeCreditsRedirect('send_button_blocked');
       }
       return;
     }
-    const textToSend = combinedInput;
+    // Abort any in-flight pre-inspect request once the user submits
+    if (preInspectAbortRef.current) {
+      preInspectAbortRef.current.abort();
+      preInspectAbortRef.current = null;
+    }
+    setIsPreInspecting(false);
+    const textToSend = typeof overrideText === 'string' ? overrideText : combinedInput;
     const fileToSend = imageFile;
     const filesToSend = imageFiles;
 
@@ -1165,6 +1240,9 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       setIsMultiImage(false);
       setIsExpanded(false);
       setFileSizeWarning(null);
+      setPreInspectResult(null);
+      setIsPreInspecting(false);
+      setPreInspectDismissed(false);
 
       // Finalize Mobile Session if it exists
       if (mobileSessionId) {
@@ -1183,6 +1261,40 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     onAnalyzeImage, onFollowUpImage, onAnalyzeMultiImage, onFollowUpMultiImage, onSendMessage,
     onGenerateModelAnswer, onExplainMarkingScheme, isModelAnswerMode, isMarkingSchemeMode, handleNegativeCreditsRedirect
   ]);
+
+  const handlePreInspectAction = useCallback((suggestion: PreInspectSuggestionAction) => {
+    if (suggestion.action === 'attach_file') {
+      const fileInput = document.getElementById('unified-file-input') as HTMLInputElement | null;
+      fileInput?.click();
+      return;
+    }
+    if (suggestion.action === 'replace_file') {
+      removePreview();
+      const fileInput = document.getElementById('unified-file-input') as HTMLInputElement | null;
+      if (fileInput) {
+        fileInput.value = '';
+        fileInput.click();
+      }
+      return;
+    }
+    if (suggestion.action === 'prefill') {
+      setChatInput(suggestion.prompt || '');
+      setPreInspectDismissed(true);
+      inputRef.current?.focus();
+      return;
+    }
+    if (suggestion.action === 'submit_generic_rubric') {
+      setPendingPreInspectContext({
+        preInspectToken: preInspectResult?.preInspectToken || null,
+        allowGenericSubjectMarking: true,
+      });
+      void handleSendClick(suggestion.prompt ?? combinedInput);
+      return;
+    }
+    if (suggestion.action === 'submit') {
+      void handleSendClick(typeof suggestion.prompt === 'string' ? suggestion.prompt : combinedInput);
+    }
+  }, [removePreview, preInspectResult, handleSendClick, combinedInput]);
 
   const handleKeyPress = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1416,6 +1528,49 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
               </div>
             </div>
           )}
+          {mode === 'first-time' && !isProcessing && attachedFilesList.length > 0 && !preInspectDismissed && (isPreInspecting || preInspectResult) && (
+            <div className="pre-inspect-panel" role="status" aria-live="polite">
+              {isPreInspecting ? (
+                <div className="pre-inspect-loading-row">
+                  <Sparkles size={13} className="pre-inspect-spin" />
+                  <span>Checking file…</span>
+                </div>
+              ) : preInspectResult ? (
+                <>
+                  <div className="pre-inspect-header">
+                    <span className={`pre-inspect-title ${preInspectResult.isWarning ? 'pre-inspect-title--warning' : ''}`}>
+                      {preInspectResult.bannerTitle}
+                    </span>
+                    <button
+                      type="button"
+                      className="pre-inspect-dismiss"
+                      onClick={() => setPreInspectDismissed(true)}
+                      title="Dismiss"
+                      aria-label="Dismiss"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  {preInspectResult.suggestions && preInspectResult.suggestions.length > 0 && (
+                    <div className="pre-inspect-list">
+                      {preInspectResult.suggestions.map((suggestion) => (
+                        <button
+                          key={suggestion.id}
+                          type="button"
+                          className="pre-inspect-list-row"
+                          onClick={() => handlePreInspectAction(suggestion)}
+                        >
+                          <Lightbulb size={14} className="pre-inspect-row-icon" />
+                          <span>{suggestion.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : null}
+            </div>
+          )}
+
           <div
             className={`followup-single-line-container ${isExpanded ? 'expanded' : ''} ${isNegative ? 'negative-credits' : ''} ${isDragging ? 'drag-over' : ''}`}
             onDragEnter={handleDragEnter}

@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { MarkingPipelineService } from '../services/marking/MarkingPipelineService.js';
+import { PreInspectService } from '../services/marking/PreInspectService.js';
 import { sendSseUpdate } from '../utils/sseUtils.js';
 import { PERMISSIONS, hasPermission } from '../config/permissions.js';
 import UsageTracker from '../utils/UsageTracker.js';
@@ -894,6 +895,112 @@ export class MarkingController {
             } catch (deductionError) {
                 console.error('❌ CRITICAL: Failed to deduct credits during cleanup:', deductionError);
             }
+        }
+    }
+
+    /**
+     * POST /api/marking/pre-inspect
+     * Fast on-attach pre-inspection (1-3 strategic pages). Tracks usage in UsageTracker,
+     * logs usage & decision to terminal, and records a PRE_INSPECT turn in AdminAlertService digest.
+     */
+    static async preInspectFiles(req: Request, res: Response): Promise<void> {
+        const files = (req.files as Express.Multer.File[]) || [];
+        if (!files || files.length === 0) {
+            res.status(400).json({ error: 'No files provided for pre-inspection.' });
+            return;
+        }
+
+        const isAuthenticated = Boolean((req as any).user?.uid);
+        const userIP = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'unknown';
+        const userId = (req as any).user?.uid || `guest:${userIP}`;
+        const userPlan = (req as any).userPlan || 'free';
+        const userEmail = (req as any).user?.email;
+        const userAgent = req.get('user-agent') || undefined;
+
+        let rawSessionId = typeof req.body?.sessionId === 'string' ? req.body.sessionId.trim() : '';
+        if (rawSessionId.startsWith('temp-')) rawSessionId = '';
+        const digestSessionId = rawSessionId || `pre-inspect-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+        let originalHashes: string[] = [];
+        if (req.body?.originalHashes) {
+            try {
+                const parsed = typeof req.body.originalHashes === 'string'
+                    ? JSON.parse(req.body.originalHashes)
+                    : req.body.originalHashes;
+                if (Array.isArray(parsed)) {
+                    originalHashes = parsed.map((h: any) => String(h || ''));
+                }
+            } catch {
+                // Ignore malformed optional hashes
+            }
+        }
+
+        const usageTracker = new UsageTracker();
+        let capturedLogs: { logsText: string; lineCount: number; durationMs: number; truncated: boolean } | null = null;
+
+        try {
+            const result = await runWithLogCapture(
+                digestSessionId,
+                async () => {
+                    const inspectRes = await PreInspectService.inspectFiles({
+                        files,
+                        userId,
+                        userPlan,
+                        digestSessionId,
+                        originalHashes,
+                        usageTracker,
+                    });
+                    if (usageTracker.getTotalRequests() > 0) {
+                        console.log(`\n📊 [PRE-INSPECT USAGE]\n${usageTracker.getSummary('fast')}`);
+                    }
+                    return inspectRes;
+                },
+                (captured) => {
+                    capturedLogs = captured;
+                }
+            );
+
+            const shouldRecordDigest =
+                result.usage.requestCount > 0 ||
+                result.docType === 'pdf_structural_error' ||
+                result.docType === 'page_limit_exceeded';
+
+            if (capturedLogs && shouldRecordDigest) {
+                const logs = capturedLogs as { logsText: string; lineCount: number; durationMs: number; truncated: boolean };
+                AdminAlertService.recordSessionTurn({
+                    sessionId: digestSessionId,
+                    submissionId: result.preInspectToken,
+                    turnType: 'PRE_INSPECT',
+                    userId: isAuthenticated ? userId : `guest:${userIP}`,
+                    userEmail,
+                    userAgent,
+                    sessionTitle: result.bannerTitle || 'Pre-Inspect',
+                    model: 'lite',
+                    userInput: files.map((f) => f.originalname).join(', '),
+                    aiResponse: `[${result.overallStatus.toUpperCase()} | ${result.docType}] ${result.bannerTitle} — ${result.bannerMessage}`,
+                    ...logs,
+                });
+            }
+
+            res.status(200).json(result);
+        } catch (error: any) {
+            console.error('❌ [PRE-INSPECT] Failed:', error?.message || error);
+            if (capturedLogs) {
+                const logs = capturedLogs as { logsText: string; lineCount: number; durationMs: number; truncated: boolean };
+                AdminAlertService.recordSessionTurn({
+                    sessionId: digestSessionId,
+                    turnType: 'PRE_INSPECT',
+                    userId: isAuthenticated ? userId : `guest:${userIP}`,
+                    userEmail,
+                    userAgent,
+                    sessionTitle: 'Pre-Inspect Error',
+                    model: 'lite',
+                    error,
+                    userInput: files.map((f) => f.originalname).join(', '),
+                    ...logs,
+                });
+            }
+            res.status(500).json({ error: 'Pre-inspection failed' });
         }
     }
 }

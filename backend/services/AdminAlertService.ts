@@ -12,7 +12,7 @@ export interface FunnelEventLog {
 
 export type AlertFeature = 'MARKING' | 'FOLLOW_UP_CHAT' | 'MODEL_ANSWER' | 'MARKING_SCHEME';
 
-export type SessionTurnType = 'MARKING' | 'QUESTION_MODE' | 'REMARK' | 'FOLLOW_UP_CHAT';
+export type SessionTurnType = 'PRE_INSPECT' | 'MARKING' | 'QUESTION_MODE' | 'REMARK' | 'FOLLOW_UP_CHAT';
 
 export interface SessionDigestUploadedFile {
   filename: string;
@@ -989,6 +989,43 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
       console.log(`🕒 [ADMIN-ALERT] Recorded ${turnType} turn for session ${resolvedSessionId} (digest idle timeout: ${Math.round(idleMs / 1000)}s)`);
     } catch (err) {
       console.error('❌ [ADMIN-ALERT] Failed to record session turn for digest:', err);
+    }
+  }
+
+  /**
+   * Re-key/merge a pending PRE_INSPECT digest into the real marking sessionId
+   * so the digest email combines Turn 1 (PRE_INSPECT) + Turn 2 (MARKING) in one email.
+   */
+  public static mergePreInspectDigestIntoSession(preInspectDigestId: string, targetSessionId: string): void {
+    if (!preInspectDigestId || !targetSessionId || preInspectDigestId === targetSessionId) return;
+    const preEntry = this.sessionDigests.get(preInspectDigestId);
+    if (!preEntry) return;
+
+    clearTimeout(preEntry.timer);
+    this.sessionDigests.delete(preInspectDigestId);
+
+    const existing = this.sessionDigests.get(targetSessionId);
+    const idleMs = this.getSessionDigestIdleMs();
+    if (existing) {
+      // Prepend pre-inspect turns chronologically before the marking turn
+      existing.turns = [...preEntry.turns, ...existing.turns];
+      if (preEntry.createdAt < existing.createdAt) {
+        existing.createdAt = preEntry.createdAt;
+      }
+      if (!existing.userEmail && preEntry.userEmail) existing.userEmail = preEntry.userEmail;
+      if (!existing.userAgent && preEntry.userAgent) existing.userAgent = preEntry.userAgent;
+    } else {
+      const migrated: SessionDigestEntry = {
+        ...preEntry,
+        sessionId: targetSessionId,
+        expiresAt: Date.now() + idleMs,
+        timer: setTimeout(() => {
+          this.sessionDigests.delete(targetSessionId);
+          void this.flushSessionDigestEntry(migrated);
+        }, idleMs),
+      };
+      migrated.timer.unref?.();
+      this.sessionDigests.set(targetSessionId, migrated);
     }
   }
 

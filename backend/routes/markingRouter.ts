@@ -148,6 +148,19 @@ const firebaseStorageRefsHandler = async (req: any, _res: any, next: any) => {
 const router = express.Router();
 
 /**
+ * POST /api/marking/pre-inspect
+ * Lightweight on-attach pre-inspection (1-3 strategic pages) for instant UX guidance,
+ * non-academic / cover-only / missing-mark-scheme detection, and cached geometry reuse on Send.
+ */
+router.post('/pre-inspect',
+  optionalAuth,
+  attachUserPlan,
+  upload.array('files'),
+  firebaseMultipartHandler,
+  MarkingController.preInspectFiles
+);
+
+/**
  * POST /api/marking/process
  * Unified endpoint for marking images and PDFs
  */

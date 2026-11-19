@@ -1,4 +1,4 @@
-import { ModelProvider } from '../../utils/ModelProvider.js';
+import { ModelProvider, type ModelPhase } from '../../utils/ModelProvider.js';
 import { ModelType } from '../../types/index.js';
 import { cleanSubjectAndQualification } from './MarkingHelpers.js';
 
@@ -12,11 +12,17 @@ export interface GeometryAnalysisResult {
     evidence_text_snippet?: string;
     detected_subject?: 'MATHS' | 'ENGLISH_LANGUAGE' | 'ENGLISH_LITERATURE' | 'UNSUPPORTED_SUBJECT' | 'NON_ACADEMIC';
     unsupported_subject_name?: string;
+    /** Official exam board if printed/identifiable on the page (e.g. "Pearson Edexcel", "AQA", "OCR", "WJEC", "Eduqas", "CIE"). */
+    exam_board?: string;
     paper_code_hint?: string;
     /** Total/maximum mark for the WHOLE paper if printed on this page (usually the cover). */
     paper_total_marks_hint?: number;
     /** True if this page is an exam booklet front cover / title page. */
     is_cover_page?: boolean;
+    /** True if visible handwritten or typed student answers/working are present on this page. */
+    has_handwriting?: boolean;
+    /** True if printed exam question text/prompts are visible on this page (false for lined-paper answers-only sheets with just Q numbers & student essays/answers). */
+    has_printed_questions?: boolean;
     /** Printed booklet page number if visible (e.g. "Page 2 of 24" -> 2). */
     booklet_page_number?: number;
     /** Lowest main printed question number visible on this page (e.g. 1, 2, 20). */
@@ -28,23 +34,66 @@ export interface GeometryAnalysisResult {
 }
 
 export const KNOWN_ACADEMIC_SUBJECTS = new Set([
+    // Mathematics & Numeracy
+    'mathematics', 'maths', 'further mathematics', 'further maths', 'core maths',
+    'statistics', 'numeracy', 'functional skills',
+    // English
+    'english', 'english language', 'english literature', 'literature',
+    // Sciences
     'biology', 'chemistry', 'physics', 'science', 'combined science', 'natural sciences',
-    'history', 'geography', 'religious studies', 'philosophy', 'economics', 'business',
-    'business studies', 'psychology', 'sociology', 'politics', 'government', 'law',
-    'french', 'spanish', 'german', 'latin', 'mandarin', 'chinese', 'italian', 'russian',
-    'english literature', 'music', 'art', 'drama', 'theatre', 'theatre studies',
-    'computer science', 'computing', 'information technology', 'physical education', 'pe',
-    'design and technology', 'dt', 'media studies', 'statistics', 'geology', 'environmental science'
+    'applied science', 'human biology', 'biochemistry', 'geology', 'environmental science',
+    'environmental management', 'astronomy', 'marine science', 'earth science', 'agriculture',
+    'anatomy', 'medicine', 'pharmacology', 'nursing',
+    // Humanities & Social Sciences
+    'history', 'ancient history', 'geography', 'religious studies', 'religious education',
+    'theology', 'philosophy', 'ethics', 'economics', 'business', 'business studies',
+    'accounting', 'finance', 'psychology', 'sociology', 'politics', 'government',
+    'global politics', 'law', 'criminology', 'citizenship', 'classical civilisation',
+    'classics', 'archaeology', 'anthropology', 'global perspectives', 'theory of knowledge',
+    'critical thinking', 'general studies', 'travel and tourism',
+    // Languages
+    'french', 'spanish', 'german', 'latin', 'greek', 'mandarin', 'chinese', 'italian',
+    'russian', 'arabic', 'urdu', 'japanese', 'korean', 'polish', 'portuguese', 'turkish',
+    'bengali', 'gujarati', 'punjabi', 'welsh', 'irish', 'hebrew', 'hindi',
+    'modern foreign languages', 'mfl',
+    // Technology, Computing & Engineering
+    'computer science', 'computing', 'information technology', 'ict',
+    'information and communication technology', 'design and technology', 'dt',
+    'engineering', 'electronics', 'product design', 'textiles', 'graphics',
+    'resistant materials', 'food preparation', 'food technology', 'food and nutrition',
+    'home economics', 'hospitality', 'catering',
+    // Arts, Media & PE
+    'music', 'art', 'art and design', 'fine art', 'drama', 'theatre', 'theatre studies',
+    'performing arts', 'dance', 'film studies', 'photography', 'media studies',
+    'physical education', 'pe', 'sport', 'sports science', 'health and social care',
+    'child development'
 ]);
+
+const NON_ACADEMIC_LABEL_REGEX = /\b(other|unknown|none|this subject|general|n\/a|not educational|non[- ]?academic|parking|car park|notice|rules|instructions|venue|candidate|exam info|exam information|receipt|invoice|banknote|selfie|photo|photograph|menu|ticket|timetable|seating|desk card|checklist|administrative|logistics|blank|screenshot|chat|letter|email)\b/i;
 
 export function isRecognizedAcademicSubject(subjectName?: string): boolean {
     if (!subjectName || typeof subjectName !== 'string') return false;
-    const clean = subjectName.trim().toLowerCase();
-    if (clean.length < 2) return false;
-    if (/^(other|unknown|none|this subject|general|n\/a|not educational|non-academic|parking|notice|rules|instructions|venue|candidate|exam info|exam information)$/i.test(clean)) {
+    const clean = subjectName.trim().toLowerCase().replace(/^gcse\s+|^igcse\s+|^a-?level\s+|^as-?level\s+|^ib\s+|^btec\s+/i, '').trim();
+    if (clean.length < 2 || clean.length > 80) return false;
+    if (NON_ACADEMIC_LABEL_REGEX.test(clean)) {
         return false;
     }
-    return Array.from(KNOWN_ACADEMIC_SUBJECTS).some(s => clean.includes(s) || s.includes(clean));
+    // Exact match against known subjects (handles short codes like 'pe', 'dt', 'ict', 'mfl')
+    if (KNOWN_ACADEMIC_SUBJECTS.has(clean)) {
+        return true;
+    }
+    // Word-boundary match for compound titles (e.g. "Combined Science: Trilogy", "Religious Education (Short Course)")
+    for (const known of KNOWN_ACADEMIC_SUBJECTS) {
+        if (known.length >= 4 && clean.includes(known)) {
+            return true;
+        }
+    }
+    // Accept other genuine academic discipline names (e.g. "Astrophysics", "Macroeconomics", "Microbiology")
+    // as long as they look like a concise subject label (1-5 alphabetic words) and are not non-academic labels.
+    if (/^[a-z][a-z\s&:,/'()-]{1,48}$/i.test(clean) && clean.split(/\s+/).length <= 5) {
+        return true;
+    }
+    return false;
 }
 
 interface RawGeometryAnalysisResult {
@@ -57,9 +106,12 @@ interface RawGeometryAnalysisResult {
     evidence_text_snippet: string;
     detected_subject?: 'MATHS' | 'ENGLISH_LANGUAGE' | 'ENGLISH_LITERATURE' | 'UNSUPPORTED_SUBJECT' | 'NON_ACADEMIC';
     unsupported_subject_name?: string;
+    exam_board?: string;
     paper_code_hint?: string;
     paper_total_marks_hint?: number | string | null;
     is_cover_page?: boolean;
+    has_handwriting?: boolean;
+    has_printed_questions?: boolean;
     booklet_page_number?: number | string | null;
     first_question_number?: number | string | null;
     is_unofficial_or_practice_paper?: boolean;
@@ -78,21 +130,23 @@ Your job is to analyze the provided image of student homework or exam booklet an
 2. is_acceptable_quality (boolean): Must be false if the image is extremely blurry, completely unreadable, photographed at an extreme skewed angle, or contains more than 2 pages squeezed into a single photo. Otherwise true.
 3. is_two_page_spread (boolean): Must be true ONLY if the image is a wide/landscape capture showing two FULL, complete pages side-by-side (roughly 50% left page and 50% right page separated by a central spine/fold) where BOTH pages are meant to be read and graded. CRITICAL: If the photo is a single portrait page where the booklet spine or a partial edge/corner of the adjacent page is merely peeking into the left or right margin, you MUST return false.
 4. is_marking_scheme (boolean): Must be true ONLY if the image is an official marking scheme, mark scheme table, or rubric containing explicit grading codes (e.g., M1, A1, B1, AO1, AO2, AO3, Level 4 Perceptive), mark scheme table columns (e.g., "Question | Answers | Extra information | Mark | AO / Spec. Ref."), examiner guidance phrases (e.g., "allow", "ignore", "do not accept", "any two from"), structural mark distributions, or evaluator notes. CRITICAL EXCEPTION: Standard exam cover pages or title pages containing student name fields, candidate signatures, and "For Examiner's Use" mark tally grids are NOT marking schemes; return false for these. CRITICAL: Do NOT eject pages that contain large maps, graphs, reading insert extracts (Source A / Source B), or diagrams. You must scan the entire page. If there are question numbers (e.g., '1.1.1', '01', '02', 'Q5'), reading extracts, or student answer spaces beneath the image, it is an active exam page and MUST be kept in the array. Do not assume a page is a marking scheme just because it lacks handwritten student work.
-5. is_supported_doc (boolean): Verify that the document belongs to our **fully supported active subjects**:
-   - **SUPPORTED ACTIVE SUBJECTS (MUST SET \`is_supported_doc: true\`)**:
+5. is_supported_doc (boolean): Classify whether the document can be graded **without a mark scheme** (Maths & English Language), **requires a mark scheme** (all other academic subjects), or is **non-academic**:
+   - **BUILT-IN SUBJECTS — NO MARK SCHEME REQUIRED (MUST SET \`is_supported_doc: true\`)**:
      1. **Mathematics / Further Maths / Statistics / Numeracy** (GCSE, IGCSE, A-Level, homework, working, graphs, geometry). Set \`detected_subject: "MATHS"\`.
      2. **GCSE / IGCSE / A-Level English Language** (AQA 8700, Edexcel 1EN0, OCR J351, reading inserts Source A / Source B, comprehension, language/structure analysis, creative/transactional writing Q5). Set \`detected_subject: "ENGLISH_LANGUAGE"\`.
-   - **UNSUPPORTED ACADEMIC SUBJECTS (MUST SET \`is_supported_doc: false\` AND \`detected_subject: "UNSUPPORTED_SUBJECT"\` / \`"ENGLISH_LITERATURE"\` as appropriate)**:
-     - **GCSE English Literature** (AQA 8702, Edexcel 1ET0, Macbeth, A Christmas Carol, An Inspector Calls, poetry essays). Set \`detected_subject: "ENGLISH_LITERATURE"\`.
+   - **ALL OTHER ACADEMIC SUBJECTS — SUPPORTED WITH MARK SCHEME (MUST SET \`is_supported_doc: false\` AND \`detected_subject: "UNSUPPORTED_SUBJECT"\` / \`"ENGLISH_LITERATURE"\` as appropriate)**:
+     - **English Literature** (AQA 8702, Edexcel 1ET0, Macbeth, A Christmas Carol, An Inspector Calls, poetry essays). Set \`detected_subject: "ENGLISH_LITERATURE"\`.
      - **Science Subjects** (Biology, Chemistry, Physics, Combined Science like AQA 8461/8464, Edexcel 1BI0/1SC0). Set \`detected_subject: "UNSUPPORTED_SUBJECT"\` and \`unsupported_subject_name: "Combined Science: Trilogy"\` (or Biology/Chemistry/Physics, WITHOUT any "GCSE" or "A-Level" prefix).
-     - **Other Academic Humanities / Languages** (History, Geography, Computer Science, French, Spanish, etc.). Set \`detected_subject: "UNSUPPORTED_SUBJECT"\` and provide \`unsupported_subject_name\` (e.g. "Geography", "History", WITHOUT any "GCSE" or "A-Level" prefix).
-   - **EXAM COVER PAGES**:
-     - If the page is a standard exam booklet cover page (with exam board logos, candidate name/number boxes, and "Instructions for Candidates"), classify \`detected_subject\` and \`unsupported_subject_name\` according to the exam subject printed on the cover (e.g., \`"MATHS"\`, \`"ENGLISH_LANGUAGE"\`, or \`"UNSUPPORTED_SUBJECT"\` with \`"Biology"\`), NEVER \`"NON_ACADEMIC"\`.
+     - **All Other Academic Subjects** (History, Geography, Computer Science, ICT, Economics, Business Studies, Accounting, Psychology, Sociology, Religious Education, Law, Engineering, Food Technology, Art, Music, PE, French, Spanish, German, Arabic, etc., at any school, GCSE, A-Level, IB, BTEC, or university level). Set \`detected_subject: "UNSUPPORTED_SUBJECT"\` and provide \`unsupported_subject_name\` (e.g. "Geography", "Accounting", "Religious Education", WITHOUT any "GCSE" or "A-Level" prefix).
+   - **EXAM COVER PAGES, FORMULA SHEETS & READING INSERTS**:
+     - If the page is a standard exam booklet cover page (with exam board logos, candidate name/number boxes, and "Instructions for Candidates"), formula sheet, or reading insert, classify \`detected_subject\` and \`unsupported_subject_name\` according to the exam subject printed on the page (e.g., \`"MATHS"\`, \`"ENGLISH_LANGUAGE"\`, or \`"UNSUPPORTED_SUBJECT"\` with \`"Biology"\`), NEVER \`"NON_ACADEMIC"\`.
    - **NON-ACADEMIC CONTENT (CRITICAL: MUST SET \`is_supported_doc: false\` AND \`detected_subject: "NON_ACADEMIC"\`)**:
-     - Parking instructions, venue directions, arrival times/rules, checklists, receipts, invoices, banknotes, selfies, general non-educational documents, or random photos.
+     - ONLY set \`"NON_ACADEMIC"\` when the image is unmistakably NOT academic/educational work: parking instructions, venue directions, arrival times/rules, checklists, personal receipts/invoices, banknotes, selfies, menus, random photos, or general non-educational documents.
      - Set \`detected_subject: "NON_ACADEMIC"\`, \`unsupported_subject_name: ""\`, and \`rejection_reason: "Not educational exam content: Please upload an academic exam question or student homework."\`.
-   - **ZERO-FALSE-ALARM GUARD FOR MATHS & ENGLISH LANGUAGE**:
-     - If a Maths question uses a science context (e.g., bacteria growth rates, magnification, density, or physics word problems) or an English Language reading extract talks about nature or science, you **MUST** set \`is_supported_doc: true\` and \`detected_subject: "MATHS"\` or \`"ENGLISH_LANGUAGE"\`. Only reject when it is unmistakably an unsupported subject.
+   - **ZERO-FALSE-POSITIVE GUARD FOR ALL ACADEMIC SUBJECTS**:
+     - If a Maths question uses a science context (e.g., bacteria growth rates, magnification, density, or physics word problems) or an English Language reading extract talks about nature or science, you **MUST** set \`is_supported_doc: true\` and \`detected_subject: "MATHS"\` or \`"ENGLISH_LANGUAGE"\`.
+     - If an academic exam question or homework problem uses a real-world object as its context (e.g., a mock receipt/invoice in an Accounting, Business, or Maths question; a car-park fee problem in Maths; a newspaper/magazine extract in English or Media Studies; a diagram or map in Geography/Biology), it is **ACADEMIC** (classify by its subject), **NEVER** \`"NON_ACADEMIC"\`.
+     - When in doubt between an academic subject and \`"NON_ACADEMIC"\`, prefer the academic subject rather than falsely rejecting legitimate student work.
 
 6. detected_subject ("MATHS" | "ENGLISH_LANGUAGE" | "ENGLISH_LITERATURE" | "UNSUPPORTED_SUBJECT" | "NON_ACADEMIC"):
    - Set to \`"ENGLISH_LANGUAGE"\` for English Language.
@@ -131,6 +185,9 @@ Your job is to analyze the provided image of student homework or exam booklet an
    - Otherwise \`""\`.
 
 10. evidence_text_snippet (string): If you set \`is_supported_doc\` to false, provide the first 20 words as proof. Otherwise omit or leave empty.
+11. has_handwriting (boolean): True if the page contains visible student handwritten answers, student working, or typed student responses filled into answer spaces (NOT just printed exam questions or a candidate name on a cover page). Otherwise false.
+12. has_printed_questions (boolean): True if printed exam question text/instructions/prompts are visible on this page. False if the page is a blank/cover page OR contains ONLY student answers/essays with question numbers (e.g. lined paper or typed answers with "Q1", "Q5" but no printed exam question text).
+13. exam_board (string): Official exam board printed or clearly identifiable on this page (e.g. "Pearson Edexcel", "AQA", "OCR", "WJEC", "Eduqas", "CIE", "IB"). Otherwise "".
 
 # Output Format
 Return ONLY valid JSON matching this schema:
@@ -143,9 +200,12 @@ Return ONLY valid JSON matching this schema:
     "is_supported_doc": boolean,
     "detected_subject": "MATHS" | "ENGLISH_LANGUAGE" | "ENGLISH_LITERATURE" | "UNSUPPORTED_SUBJECT" | "NON_ACADEMIC",
     "unsupported_subject_name": string,
+    "exam_board": string,
     "paper_code_hint": string,
     "paper_total_marks_hint": number | null,
     "is_cover_page": boolean,
+    "has_handwriting": boolean,
+    "has_printed_questions": boolean,
     "booklet_page_number": number | null,
     "first_question_number": number | null,
     "is_unofficial_or_practice_paper": boolean,
@@ -167,6 +227,7 @@ Return ONLY valid JSON matching this schema:
      * @param height The image height
      * @param model The model to use (defaults to fast tier, but overridden internally)
      * @param tracker Optional usage tracker
+     * @param phase Model phase for usage tracking ('preFlight' or 'preInspect')
      * @returns GeometryAnalysisResult
      */
     static async analyze(
@@ -174,7 +235,8 @@ Return ONLY valid JSON matching this schema:
         width?: number,
         height?: number,
         model: ModelType | 'fast' | 'thinking' | 'pro' | 'auto' = 'fast',
-        tracker?: any
+        tracker?: any,
+        phase: ModelPhase = 'preFlight'
     ): Promise<GeometryAnalysisResult> {
         try {
             const prompt = this.getSystemPrompt();
@@ -197,7 +259,7 @@ Return ONLY valid JSON matching this schema:
                 'gemini-2.5-flash', 
                 true, // forceJsonResponse
                 tracker,
-                'preFlight'
+                phase
             );
 
             let content = response.content.trim();
@@ -274,12 +336,15 @@ Return ONLY valid JSON matching this schema:
                 unsupported_subject_name: parsed.unsupported_subject_name
                     ? cleanSubjectAndQualification(parsed.unsupported_subject_name).subject || parsed.unsupported_subject_name
                     : undefined,
+                exam_board: parsed.exam_board ? String(parsed.exam_board).trim() : undefined,
                 paper_code_hint: parsed.paper_code_hint || undefined,
                 paper_total_marks_hint: (() => {
                     const n = Number(parsed.paper_total_marks_hint);
                     return Number.isInteger(n) && n >= 10 && n <= 400 ? n : undefined;
                 })(),
                 is_cover_page: Boolean(parsed.is_cover_page),
+                has_handwriting: Boolean(parsed.has_handwriting),
+                has_printed_questions: parsed.has_printed_questions === undefined ? undefined : Boolean(parsed.has_printed_questions),
                 booklet_page_number: (() => {
                     const n = Number(parsed.booklet_page_number);
                     return Number.isInteger(n) && n >= 1 && n <= 100 ? n : undefined;

@@ -3,6 +3,7 @@
  * This is the definitive version with the correct asynchronous state handling.
  */
 import API_CONFIG from '../config/api';
+import { consumePendingPreInspectContext } from './preInspectService';
 import apiClient from './apiClient';
 
 let getAuthTokenFromContext = null;
@@ -930,6 +931,13 @@ class SimpleSessionService {
           }
         }
       }
+      const preInspectCtx = consumePendingPreInspectContext();
+      if (preInspectCtx.preInspectToken && !formData.has('preInspectToken')) {
+        formData.append('preInspectToken', preInspectCtx.preInspectToken);
+      }
+      if (preInspectCtx.allowGenericSubjectMarking && !formData.has('allowGenericSubjectMarking')) {
+        formData.append('allowGenericSubjectMarking', 'true');
+      }
 
 
       const response = await fetch(`${API_CONFIG.BASE_URL}/api/marking/process`, {
@@ -1112,6 +1120,13 @@ class SimpleSessionService {
       if (extraParams?.submissionId) formData.append('submissionId', extraParams.submissionId);
       if (aiMessageId) formData.append('aiMessageId', aiMessageId);
       if (customText) formData.append('customText', customText);
+      const preInspectCtx = consumePendingPreInspectContext();
+      if (preInspectCtx.preInspectToken && !formData.has('preInspectToken')) {
+        formData.append('preInspectToken', preInspectCtx.preInspectToken);
+      }
+      if (preInspectCtx.allowGenericSubjectMarking && !formData.has('allowGenericSubjectMarking')) {
+        formData.append('allowGenericSubjectMarking', 'true');
+      }
 
       const response = await fetch(`${API_CONFIG.BASE_URL}/api/marking/process`, {
         method: 'POST',

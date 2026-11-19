@@ -26,6 +26,7 @@ export interface TokenUsage {
 }
 
 export interface UsageBreakdown {
+    preInspect: TokenUsage;
     preFlight: TokenUsage;
     mapper: TokenUsage;
     classification: TokenUsage;
@@ -42,6 +43,7 @@ export interface UsageBreakdown {
 }
 
 export interface CostBreakdown {
+    preInspect: number;
     preFlight: number;
     mapper: number;
     classification: number;
@@ -60,6 +62,7 @@ export interface CostBreakdown {
 
 export class UsageTracker {
     private usage: UsageBreakdown = {
+        preInspect: { inputTokens: 0, outputTokens: 0, thoughtTokens: 0, requestCount: 0, costUsd: 0, modelsUsed: new Set<string>() },
         preFlight: { inputTokens: 0, outputTokens: 0, thoughtTokens: 0, requestCount: 0, costUsd: 0, modelsUsed: new Set<string>() },
         mapper: { inputTokens: 0, outputTokens: 0, thoughtTokens: 0, requestCount: 0, costUsd: 0, modelsUsed: new Set<string>() },
         classification: { inputTokens: 0, outputTokens: 0, thoughtTokens: 0, requestCount: 0, costUsd: 0, modelsUsed: new Set<string>() },
@@ -116,6 +119,10 @@ export class UsageTracker {
             callCost = (inputTokens / 1_000_000) * plan.inputPricePer1M + (outputTokens / 1_000_000) * plan.outputPricePer1M;
         }
         bucket.costUsd = (bucket.costUsd || 0) + callCost;
+    }
+
+    recordPreInspect(inputTokens: number, outputTokens: number, thoughtTokens: number = 0, modelId: string = '', costUsd?: number): void {
+        this.recordPhaseUsage('preInspect', inputTokens, outputTokens, thoughtTokens, modelId, costUsd);
     }
 
     recordPreFlight(inputTokens: number, outputTokens: number, thoughtTokens: number = 0, modelId: string = '', costUsd?: number): void {
@@ -200,6 +207,7 @@ export class UsageTracker {
      */
     getRequestCounts(): { [key: string]: number } {
         return {
+            preInspect: this.usage.preInspect.requestCount,
             preFlight: this.usage.preFlight.requestCount,
             mapper: this.usage.mapper.requestCount,
             classification: this.usage.classification.requestCount,
@@ -234,6 +242,7 @@ export class UsageTracker {
                    (phase.outputTokens / 1_000_000 * plan.outputPricePer1M);
         };
 
+        const preInspect = getPhaseCost('preInspect');
         const preFlight = getPhaseCost('preFlight');
         const mapper = getPhaseCost('mapper');
         const classification = getPhaseCost('classification');
@@ -250,11 +259,12 @@ export class UsageTracker {
         const mathpixPrice = getMathpixPricing();
         const mathpix = this.usage.mathpixPages * mathpixPrice;
 
-        const total = preFlight + mapper + classification + marking + questionMode +
+        const total = preInspect + preFlight + mapper + classification + marking + questionMode +
                       contextChat + modelAnswer + markingScheme + sampleQuestion +
                       analysis + performanceSummary + other + mathpix;
 
         return {
+            preInspect,
             preFlight,
             mapper,
             classification,
@@ -278,6 +288,7 @@ export class UsageTracker {
     getBreakdown(): UsageBreakdown {
         return {
             ...this.usage,
+            preInspect: { ...this.usage.preInspect, modelsUsed: new Set(this.usage.preInspect.modelsUsed) },
             preFlight: { ...this.usage.preFlight, modelsUsed: new Set(this.usage.preFlight.modelsUsed) },
             mapper: { ...this.usage.mapper, modelsUsed: new Set(this.usage.mapper.modelsUsed) },
             classification: { ...this.usage.classification, modelsUsed: new Set(this.usage.classification.modelsUsed) },
@@ -335,6 +346,7 @@ export class UsageTracker {
         const mathpixPages = this.usage.mathpixPages;
 
         const phases: Array<{ name: string; key: keyof Omit<UsageBreakdown, 'mathpixPages'> }> = [
+            { name: 'Pre-Inspect', key: 'preInspect' },
             { name: 'Pre-Flight', key: 'preFlight' },
             { name: 'Mapper', key: 'mapper' },
             { name: 'Classification', key: 'classification' },
@@ -444,6 +456,7 @@ export class UsageTracker {
      */
     reset(): void {
         this.usage = {
+            preInspect: { inputTokens: 0, outputTokens: 0, thoughtTokens: 0, requestCount: 0, costUsd: 0, modelsUsed: new Set<string>() },
             preFlight: { inputTokens: 0, outputTokens: 0, thoughtTokens: 0, requestCount: 0, costUsd: 0, modelsUsed: new Set<string>() },
             mapper: { inputTokens: 0, outputTokens: 0, thoughtTokens: 0, requestCount: 0, costUsd: 0, modelsUsed: new Set<string>() },
             classification: { inputTokens: 0, outputTokens: 0, thoughtTokens: 0, requestCount: 0, costUsd: 0, modelsUsed: new Set<string>() },

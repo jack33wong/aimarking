@@ -8,6 +8,13 @@ import { MarkingInstructionService } from './MarkingInstructionService.js';
 import { MarkingOutputService } from './MarkingOutputService.js';
 import { MarkingPersistenceService } from './MarkingPersistenceService.js';
 import { ImageGeometryService, isRecognizedAcademicSubject } from './ImageGeometryService.js';
+import { PreInspectService } from './PreInspectService.js';
+import {
+    resolvePageLimits,
+    filterAcademicUnsupportedPages,
+    extractDistinctUnsupportedSubjects,
+    lookupCatalogedOfficialSchemeIfEligible
+} from './PreFlightRules.js';
 import { createProgressData } from '../../utils/sseUtils.js';
 import axios from 'axios';
 import { getFirestore } from '../../config/firebase.js';
@@ -1484,19 +1491,20 @@ export class MarkingPipelineService {
                                 : 'Unknown';
             console.log(`[INPUT TYPE] Detected: ${inputType} (${files.length} files)`);
 
-            // --- Hoisted Page Limits (so PDFs can be gated in 10ms BEFORE 45s rasterization) ---
-            const userPlan = (req as any).userPlan || 'free';
-            const isFreeUser = !userId || userPlan === 'free';
-            const isProOrUltra = Boolean(userId && (userPlan === 'pro' || userPlan === 'ultra' || userPlan === 'admin_test'));
-            const MAX_PAGES_LIMIT = isProOrUltra ? Number.MAX_SAFE_INTEGER : parseInt(process.env.MAX_UPLOAD_PAGES || '50');
-            const MAX_FREE_PAGES = parseInt(process.env.MAX_FREE_PAGES || '50'); // Unified to 50 for combined 48-page booklets
-            const MAX_RAW_COMBINED_PAGES = isProOrUltra
-                ? Number.MAX_SAFE_INTEGER
-                : parseInt(process.env.MAX_RAW_UPLOAD_PAGES || '100'); // Allows up to 50 student pages + up to 50 Mark Scheme pages before Stage 2 ejection
+            // --- Hoisted Page Limits (shared DRY rule via PreFlightRules.ts) ---
+            const pageLimits = resolvePageLimits(userId, (req as any).userPlan);
+            const {
+                userPlan,
+                isFreeUser,
+                isProOrUltra,
+                maxPagesLimit: MAX_PAGES_LIMIT,
+                maxFreePages: MAX_FREE_PAGES,
+                maxRawCombinedPages: MAX_RAW_COMBINED_PAGES,
+                effectiveMaxPages,
+            } = pageLimits;
             const buildRawCombinedLimitError = (totalRawPages: number) =>
                 buildRawCombinedPageLimitError(totalRawPages, MAX_RAW_COMBINED_PAGES);
             const pdfMaxPagesOption = isProOrUltra ? undefined : MAX_RAW_COMBINED_PAGES;
-            const effectiveMaxPages = isProOrUltra ? Number.MAX_SAFE_INTEGER : (isFreeUser ? Math.min(MAX_FREE_PAGES, MAX_PAGES_LIMIT) : MAX_PAGES_LIMIT);
             const getPageLimitErrorMessage = (count?: number) =>
                 buildRawCombinedLimitError(count || MAX_RAW_COMBINED_PAGES + 1).userMessage;
 
@@ -2200,9 +2208,21 @@ export class MarkingPipelineService {
                 }
             }
 
+            const preInspectToken =
+                (options as any)?.preInspectToken ||
+                (typeof req.body?.preInspectToken === 'string' ? req.body.preInspectToken.trim() : undefined);
+            const preInspectReuse = PreInspectService.consumeCachedGeometry({
+                preInspectToken,
+                userId: userId || (req as any).user?.uid,
+                files,
+                usageTracker,
+                targetSessionId: options.sessionId || submissionId,
+            });
+
             geometryResults = await Promise.all(
                 lightweightPages.map(async (page, idx) => {
-                    if ((standardizedPages[idx] as any)._isSolidBlackCorrupted) {
+                    const stdPage = standardizedPages[idx] as any;
+                    if (stdPage?._isSolidBlackCorrupted) {
                         return {
                             is_acceptable_quality: false,
                             rejection_reason: 'Image is blank or solid black due to browser memory limits during upload.',
@@ -2211,6 +2231,14 @@ export class MarkingPipelineService {
                             is_marking_scheme: false,
                             is_supported_doc: false
                         };
+                    }
+                    if (preInspectReuse.reusedPageCount > 0) {
+                        const fileIdx = stdPage?._sourceIndex ?? stdPage?._fileIndex ?? 0;
+                        const rawPageIdx = stdPage?._rawPageIndex ?? stdPage?.pageIndex ?? idx;
+                        const cachedGeo = preInspectReuse.reusedByFileAndPage.get(`${fileIdx}:${rawPageIdx}`);
+                        if (cachedGeo) {
+                            return cachedGeo;
+                        }
                     }
                     return ImageGeometryService.analyze(page.imageData, page.width, page.height, 'fast', usageTracker);
                 })
@@ -2250,63 +2278,32 @@ export class MarkingPipelineService {
                 Boolean(options.markingScheme);
 
             const isMultiPageUpload = standardizedPages.length >= 2;
-            const unsupportedPageResults = geometryResults.filter(
-                g => g && g.is_acceptable_quality !== false && g.is_supported_doc === false && !g.is_marking_scheme &&
-                g.detected_subject !== 'NON_ACADEMIC' &&
-                !/not educational|please upload an academic exam|non-academic/i.test(g.rejection_reason || '') &&
-                (g.detected_subject === 'ENGLISH_LITERATURE' ||
-                 (g.detected_subject === 'UNSUPPORTED_SUBJECT' && isRecognizedAcademicSubject(g.unsupported_subject_name)))
-            );
+            const unsupportedPageResults = filterAcademicUnsupportedPages(geometryResults);
             const nonSchemePageCount = Math.max(1, geometryResults.filter(g => !g?.is_marking_scheme).length);
             const unsupportedRatio = unsupportedPageResults.length / nonSchemePageCount;
 
-            const distinctUnsupportedSubjects = collapseCompatibleSubjectAliases(
-                unsupportedPageResults
-                    .map(g => g?.detected_subject === 'ENGLISH_LITERATURE'
-                        ? 'English Literature'
-                        : (g?.unsupported_subject_name || '').trim())
-                    .filter(Boolean)
-            );
+            const distinctUnsupportedSubjects = extractDistinctUnsupportedSubjects(unsupportedPageResults);
 
-            // 📚 [AUTO-CATALOGED OFFICIAL SCHEME LOOKUP]:
-            // If a single unsupported subject (e.g. Biology 8461/1H, Combined Science: Trilogy 8464/B/1F) is uploaded WITHOUT a marking scheme,
-            // check if an official marking scheme for this paperCode already exists in Firestore `markingSchemes`!
+            // 📚 [AUTO-CATALOGED OFFICIAL SCHEME LOOKUP] (shared DRY rule via PreFlightRules.ts):
             const studentPdfCount = files.filter(f => f?.mimetype === 'application/pdf' && !isExplicitMarkSchemePdfFile(f)).length;
             if (!hasUploadedMarkingScheme && unsupportedPageResults.length > 0 && distinctUnsupportedSubjects.length <= 1 && studentPdfCount <= 1) {
-                try {
-                    const hasGeometryUnofficialFlag = geometryResults.some(g => g?.is_unofficial_or_practice_paper === true);
-                    const combinedGeoHints = [
-                        ...geometryResults.map(g => g?.paper_code_hint || ''),
-                        ...geometryResults.map(g => g?.evidence_text_snippet || ''),
-                        ...geometryResults.map(g => g?.unofficial_reason || ''),
-                        options.customText || ''
-                    ].filter(Boolean).join(' ');
-
-                    if (hasGeometryUnofficialFlag || hasUnofficialPaperIndicators(combinedGeoHints)) {
-                        console.log(
-                            `🛡️ [AUTO-CATALOG SCHEME] Skipped official DB scheme lookup — uploaded document contains unofficial/practice paper indicators.`
-                        );
-                    } else {
-                        const primarySubjName = distinctUnsupportedSubjects[0] || unsupportedPageResults[0]?.unsupported_subject_name || undefined;
-                        const fullSeriesMatch = combinedGeoHints.match(/\b((?:June|May|Summer|November|Autumn|January|Winter)\s+20\d{2})\b/i);
-                        const yearOnlyMatch = combinedGeoHints.match(/\b(20\d{2})\b/);
-                        const examSeriesHint = fullSeriesMatch?.[1] || yearOnlyMatch?.[1];
-                        const { MarkingSchemeParserService } = await import('./MarkingSchemeParserService.js');
-                        const catalogedScheme = await MarkingSchemeParserService.findCatalogedSchemeByPaperHint(
-                            combinedGeoHints,
-                            primarySubjName,
-                            examSeriesHint
-                        );
-                        if (catalogedScheme) {
-                            inputMarkingScheme = catalogedScheme;
-                            hasUploadedMarkingScheme = true;
-                            console.log(
-                                `📚 [AUTO-CATALOG SCHEME] Found official ${catalogedScheme.examDetails?.subject || primarySubjName} marking scheme in DB for "${catalogedScheme.examDetails?.paperCode}" (${catalogedScheme.examDetails?.exam_series || 'N/A'})! Grading automatically without requiring user mark scheme upload.`
-                            );
-                        }
-                    }
-                } catch (catalogLookupErr) {
-                    // Non-fatal: proceed with standard unsupported subject handling
+                const { catalogedScheme, skippedUnofficial } = await lookupCatalogedOfficialSchemeIfEligible({
+                    geometryResults,
+                    unsupportedPages: unsupportedPageResults,
+                    distinctUnsupportedSubjects,
+                    customText: options.customText
+                });
+                if (skippedUnofficial) {
+                    console.log(
+                        `🛡️ [AUTO-CATALOG SCHEME] Skipped official DB scheme lookup — uploaded document contains unofficial/practice paper indicators.`
+                    );
+                } else if (catalogedScheme) {
+                    inputMarkingScheme = catalogedScheme;
+                    hasUploadedMarkingScheme = true;
+                    const primarySubjName = distinctUnsupportedSubjects[0] || unsupportedPageResults[0]?.unsupported_subject_name || undefined;
+                    console.log(
+                        `📚 [AUTO-CATALOG SCHEME] Found official ${catalogedScheme.examDetails?.subject || primarySubjName} marking scheme in DB for "${catalogedScheme.examDetails?.paperCode}" (${catalogedScheme.examDetails?.exam_series || 'N/A'})! Grading automatically without requiring user mark scheme upload.`
+                    );
                 }
             }
 
@@ -2390,10 +2387,21 @@ export class MarkingPipelineService {
                     continue; // Skip pushing to student pages (exempt from student page quota)
                 }
 
-                // 3. Reject unsupported subjects ONLY when NO marking scheme was uploaded AND user did not opt into general rubric
+                // 3. Always drop explicitly non-academic pages (selfies, receipts, parking notices, etc.)
+                if (geo.detected_subject === 'NON_ACADEMIC') {
+                    const rawReason = (geo.rejection_reason || '').trim();
+                    lastRejectionReason = rawReason || 'Not educational exam content: Please upload an academic exam question or student homework.';
+                    const evidence = geo.evidence_text_snippet ? `\n   📄 Evidence: "${geo.evidence_text_snippet}"` : "";
+                    if (process.env.DEBUG_SEMANTIC_GEOMETRY === 'true') {
+                        console.warn(`⚠️ [GEOMETRY] Dropping Page ${stdPage.pageIndex + 1} (non-academic): ${lastRejectionReason}${evidence}`);
+                    }
+                    continue;
+                }
+
+                // 4. Reject other academic subjects ONLY when NO marking scheme was uploaded AND user did not opt into general rubric
                 if (geo.is_supported_doc === false && !hasUploadedMarkingScheme && !allowGenericSubject) {
                     const rawReason = (geo.rejection_reason || '').trim();
-                    lastRejectionReason = rawReason || 'The uploaded document belongs to an unsupported subject or does not contain supported exam content. AI Marking currently supports GCSE & A-Level Mathematics and GCSE English Language.';
+                    lastRejectionReason = rawReason || 'A marking scheme is required to grade this subject. Please upload the official marking scheme alongside your question paper or student answers (Maths and English Language can be marked without a marking scheme).';
                     
                     const reason = lastRejectionReason;
                     const evidence = geo.evidence_text_snippet ? `\n   📄 Evidence: "${geo.evidence_text_snippet}"` : "";
@@ -2401,7 +2409,7 @@ export class MarkingPipelineService {
                         console.warn(`⚠️ [GEOMETRY] Dropping Page ${stdPage.pageIndex + 1} from grading pipeline: ${reason}${evidence}`);
                     }
                     
-                    continue; // Gracefully filter out the unsupported page
+                    continue; // Gracefully filter out the page until mark scheme is provided
                 }
 
                 const isLandscapeAspect = isPageLandscape(stdPage);
@@ -3686,7 +3694,8 @@ export class MarkingPipelineService {
                 apiUsed: allClassificationResults[0]?.result?.apiUsed || 'Unknown',
                 usageTokens: allClassificationResults.reduce((sum, { result }) => sum + (result.usageTokens || 0), 0),
                 hasMixedContent: hasMixedContent,
-                hasAnyStudentWork: hasAnyStudentWork
+                hasAnyStudentWork: hasAnyStudentWork,
+                hasFrontPages: hasFrontPages
             };
 
             // Add classification tokens to total usage
@@ -3785,14 +3794,15 @@ export class MarkingPipelineService {
                         (classificationResult as any)?.category === 'frontPage' ||
                         (classificationResult as any)?.pages?.some((p: any) => p.category === 'frontPage');
 
-                    console.log(`📄 [${isCoverPage ? 'COVER PAGE ONLY' : 'NO MATHS QUESTIONS'}] No questions found. Bypassing solver to return warning.`);
+                    console.log(`📄 [${isCoverPage ? 'COVER PAGE ONLY' : 'NO ACADEMIC QUESTIONS'}] No questions found. Bypassing solver to return warning.`);
 
                     // 1. Create the proactive AI chat message
                     const uploadResult = await SessionManagementService.uploadOriginalFiles(
                         files,
                         userId || 'anonymous',
                         submissionId,
-                        !!userId
+                        !!userId,
+                        pdfContext
                     );
                     const { structuredImageDataArray, structuredPdfContexts } = SessionManagementService.createStructuredData(
                         files,
@@ -3817,7 +3827,7 @@ export class MarkingPipelineService {
 
                     const earlyExitText = isCoverPage
                         ? "I see you've uploaded an exam cover page. To generate a grade, please upload the pages containing the student's handwritten answers. If you want to see how to solve a problem, just upload the question page!"
-                        : "Not maths related image. No mathematics questions or student work were detected on the uploaded image. Please upload a mathematics question or student homework image.";
+                        : "No academic questions or student work were detected on the uploaded image. Please upload an exam question paper or student homework image.";
 
                     const aiMessage = createAIMessage({
                         content: earlyExitText,
@@ -4980,7 +4990,7 @@ export class MarkingPipelineService {
             if (markingTasks.length === 0) {
                 console.log('No marking tasks created, exiting early');
                 const hasDetectedQuestions = allQuestions.length > 0;
-                progressCallback(createProgressData(5, hasDetectedQuestions ? 'No student work found to mark.' : 'Not maths related image.', MULTI_IMAGE_STEPS));
+                progressCallback(createProgressData(5, hasDetectedQuestions ? 'No student work found to mark.' : 'No academic content detected.', MULTI_IMAGE_STEPS));
 
                 // 🛡️ [SESSION-STABILITY]: Ensure we have a sessionId even if no tasks were found
                 let finalSessionId = questionOnlyResult?.sessionId || questionOnlyResult?.unifiedSession?.sessionId;
@@ -4997,7 +5007,8 @@ export class MarkingPipelineService {
                             files,
                             userId || 'anonymous',
                             submissionId,
-                            !!userId
+                            !!userId,
+                            pdfContext
                         );
                         const { structuredImageDataArray, structuredPdfContexts } = SessionManagementService.createStructuredData(
                             files,
@@ -5022,7 +5033,7 @@ export class MarkingPipelineService {
                         const aiMessage = createAIMessage({
                             content: hasDetectedQuestions
                                 ? 'No student work was detected on the uploaded pages.'
-                                : 'Not maths related image. No mathematics questions or student work were detected on the uploaded image. Please upload a mathematics question or student homework image.',
+                                : 'No academic questions or student work were detected on the uploaded image. Please upload an exam question paper or student homework image.',
                             messageId: req.body?.aiMessageId
                         });
                         fallbackAiMessage = aiMessage;

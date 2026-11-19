@@ -1,7 +1,7 @@
 import type { ModelType } from '../types/index.js';
 import * as path from 'path';
 
-export type ModelPhase = 'preFlight' | 'mapper' | 'classification' | 'marking' | 'questionMode' | 'contextChat' | 'modelAnswer' | 'markingScheme' | 'sampleQuestion' | 'analysis' | 'performanceSummary' | 'other';
+export type ModelPhase = 'preInspect' | 'preFlight' | 'mapper' | 'classification' | 'marking' | 'questionMode' | 'contextChat' | 'modelAnswer' | 'markingScheme' | 'sampleQuestion' | 'analysis' | 'performanceSummary' | 'other';
 
 export class ModelProvider {
   /**
@@ -152,6 +152,7 @@ export class ModelProvider {
           tracker.recordPhaseUsage(phase, inputTokens, outputTokens, thoughtTokens, plan.modelName, callCost);
         } else {
           switch (phase) {
+            case 'preInspect': tracker.recordPreInspect?.(inputTokens, outputTokens); break;
             case 'preFlight': tracker.recordPreFlight(inputTokens, outputTokens); break;
             case 'mapper': tracker.recordMapper?.(inputTokens, outputTokens); break;
             case 'classification': tracker.recordClassification(inputTokens, outputTokens); break;
@@ -272,6 +273,7 @@ export class ModelProvider {
           tracker.recordPhaseUsage(phase, inputTokens, outputTokens, thoughtTokens, plan.modelName, callCost);
         } else {
           switch (phase) {
+            case 'preInspect': tracker.recordPreInspect?.(inputTokens, outputTokens); break;
             case 'preFlight': tracker.recordPreFlight(inputTokens, outputTokens); break;
             case 'mapper': tracker.recordMapper?.(inputTokens, outputTokens); break;
             case 'classification': tracker.recordClassification(inputTokens, outputTokens); break;

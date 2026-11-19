@@ -221,7 +221,7 @@ export function resolveExecutionPlan(
   let tierId: LogicalTierId = 'fast';
 
   // 1. Utility Phases Locked to Fixed Tiers (Never burn user's Pro credits on preprocessing!)
-  if (phase === 'preFlight' || phase === 'mapper') {
+  if (phase === 'preInspect' || phase === 'preFlight' || phase === 'mapper') {
     tierId = 'lite';
   } else if (phase === 'classification' || phase === 'performanceSummary' || phase === 'markingScheme') {
     tierId = 'fast';
@@ -262,8 +262,8 @@ export function resolveExecutionPlan(
     tierId,
     modelId,
     modelName,
-    thinkingLevel: tierDef.thinkingLevel,
-    maxOutputTokens: tierDef.maxOutputTokens,
+    thinkingLevel: phase === 'preInspect' ? 'NONE' : tierDef.thinkingLevel,
+    maxOutputTokens: phase === 'preInspect' ? 512 : tierDef.maxOutputTokens,
     inputPricePer1M: modelConfig.inputPricePer1M ?? 0.75,
     outputPricePer1M: modelConfig.outputPricePer1M ?? 3.75
   };

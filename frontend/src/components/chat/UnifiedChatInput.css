@@ -1941,3 +1941,112 @@
     display: inline;
   }
 }
+
+
+/* ============================================================================
+   On-Attach Pre-Inspect Suggestion Strip (Manus Monochrome Grey — index.css tokens)
+   ============================================================================ */
+.pre-inspect-panel {
+  width: 100%;
+  padding: 2px 4px 10px 4px;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.pre-inspect-loading-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 2px;
+  color: var(--text-tertiary);
+  font-size: 12.5px;
+}
+
+.pre-inspect-spin {
+  animation: preInspectPulse 1.4s ease-in-out infinite;
+  color: var(--icon-secondary);
+}
+
+@keyframes preInspectPulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+.pre-inspect-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 2px 6px 2px;
+}
+
+.pre-inspect-title {
+  font-weight: 600;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--text-primary);
+}
+
+.pre-inspect-title--warning {
+  color: var(--function-warning);
+}
+
+.pre-inspect-dismiss {
+  background: transparent;
+  border: none;
+  color: var(--icon-secondary);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.pre-inspect-dismiss:hover {
+  color: var(--text-primary);
+  background: var(--fill-tsp-gray-main);
+}
+
+.pre-inspect-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.pre-inspect-list-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 6px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.pre-inspect-list-row:last-child {
+  border-bottom: none;
+}
+
+.pre-inspect-list-row:hover {
+  color: var(--text-primary);
+  background: var(--fill-tsp-gray-main);
+}
+
+.pre-inspect-row-icon {
+  flex-shrink: 0;
+  color: var(--icon-tertiary);
+}
+
+.pre-inspect-list-row:hover .pre-inspect-row-icon {
+  color: var(--icon-secondary);
+}
