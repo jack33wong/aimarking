@@ -286,21 +286,35 @@ export class AnnotationLinker {
                     let h = box.height !== undefined ? box.height : box[3];
 
                     const isNormalized = x <= 1 && y <= 1 && w <= 1 && h <= 1 && (x > 0 || y > 0);
-                    if (isNormalized) { x *= 100; y *= 100; w *= 100; h *= 100; }
+                    const isPixels = (sourceStep as any).unit === 'pixels' || x > 100 || y > 100 || w > 100 || h > 100;
+                    const pageDims = pageDimensionsMap?.get(anno.pageIndex ?? sourceStep.pageIndex ?? 0);
+
+                    if (isNormalized) {
+                        x *= 100; y *= 100; w *= 100; h *= 100;
+                    } else if (isPixels && pageDims && pageDims.width > 0 && pageDims.height > 0) {
+                        x = (x / pageDims.width) * 100;
+                        y = (y / pageDims.height) * 100;
+                        w = (w / pageDims.width) * 100;
+                        h = (h / pageDims.height) * 100;
+                    }
 
                     const usageKey = currentId;
                     const usageCount = unmatchedLineUsage[usageKey] || 0;
                     unmatchedLineUsage[usageKey] = usageCount + 1;
-                    const staggerAmount = isNormalized ? 2 : 15;
+                    // Anchor to right edge of student work box (box.x + box.width + padding), NEVER box center/interior
+                    const rightPadding = 1.5; // 1.5% of page width (~25px on 1650px page)
+                    const staggerAmount = 6; // 6% horizontal offset per additional mark on same line
                     const staggerX = usageCount * staggerAmount;
+                    const recoveredX = Math.min(88, x + w + rightPadding + staggerX);
 
-                    console.log(` 📍 [PATH 3] Q${anno.subQuestion}: Line "${currentId}" is UNMATCHED. Recovering position.`);
+                    console.log(` 📍 [PATH 3] Q${anno.subQuestion}: Line "${currentId}" is UNMATCHED. Recovering position at right edge (x=${recoveredX.toFixed(1)}%).`);
                     anno.visual_position = {
-                        x: x + (w / 2) + staggerX,
+                        x: recoveredX,
                         y: y + (h / 2),
-                        width: isNormalized ? 2 : 10,
-                        height: isNormalized ? 2 : 10
+                        width: 2,
+                        height: Math.max(2, h)
                     };
+                    (anno as any)._path3Recovered = true;
                 }
             }
 

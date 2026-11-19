@@ -1177,7 +1177,8 @@ function resolveQuestionTotalMarks(qr: QuestionResult): number {
  * Avoids double-counting sub-questions that share the same parent question
  */
 export function calculateOverallScore(
-  allQuestionResults: QuestionResult[]
+  allQuestionResults: QuestionResult[],
+  scopeLabel?: string
 ): {
   overallScore: number;
   totalPossibleScore: number;
@@ -1202,7 +1203,10 @@ export function calculateOverallScore(
 
   const totalPossibleScore = Array.from(questionToTotalMarks.values()).reduce((sum, marks) => sum + marks, 0);
   // console.log(`[TOTAL TRAP] Grand Total Possible Score: ${totalPossibleScore}`);
-  const overallScoreText = `${overallScore}/${totalPossibleScore}`;
+  const trimmedScope = scopeLabel?.trim();
+  const overallScoreText = trimmedScope
+    ? `${overallScore}/${totalPossibleScore} (${trimmedScope})`
+    : `${overallScore}/${totalPossibleScore}`;
 
   return {
     overallScore,

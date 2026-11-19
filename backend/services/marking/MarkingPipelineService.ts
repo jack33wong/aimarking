@@ -60,6 +60,11 @@ import { MarkingSchemeOrchestrationService } from './MarkingSchemeOrchestrationS
 import { PaperSplitterService, type PaperBucket, type InterceptedSchemeImageMeta } from './PaperSplitterService.js';
 import { QuestionModeHandlerService } from './QuestionModeHandlerService.js';
 import { ModeSplitService } from './ModeSplitService.js';
+import {
+    parseMarkingScope,
+    applyScopeAndBlankPageHandling,
+    hasValidMappedQuestions
+} from './MarkingScopeUtils.js';
 import { SessionManagementService } from '../sessionManagementService.js';
 import { createUserMessage, createAIMessage } from '../../utils/messageUtils.js';
 import {
@@ -3203,32 +3208,29 @@ export class MarkingPipelineService {
                 isUserSelectedPageChunk
             });
 
-            if (answeredBaseQuestions.size > 0 && !ejectedPureReferenceFiles && standardizedPages.length > 3) {
-                // Hybrid / Partially-Answered Booklet Case:
-                // Reclassify remaining `questionOnly` pages inside a partially-answered exam booklet (> 3 pages)
-                // to `'metadata'` so `QuestionModeHandlerService` does NOT solve unattempted exam questions.
-                // CRITICAL: Preserve question numbers in `mapperHints` before clearing `questions` so the Straightener
-                // knows their logical question order (e.g. Q15, Q16, Q17) and puts them at the END, not Page 0!
-                for (const item of allClassificationResults) {
-                    if (item.result?.category === 'questionOnly') {
-                        const existingQs = Array.isArray(item.result.questions)
-                            ? item.result.questions
-                                .map((q: any) => extractLeadingBaseQNum(q.questionNumber) || String(q.questionNumber || ''))
-                                .filter(Boolean)
-                            : [];
-                        if (existingQs.length > 0) {
-                            (item.result as any).mapperHints = [
-                                ...new Set([...((item.result as any).mapperHints || []), ...existingQs])
-                            ];
-                            (item.result as any)._isIntroStemPage = true;
-                        }
-                        console.log(
-                            `🧹 [HYBRID-BOOKLET] Reclassifying blank/donor exam page ${item.pageIndex} (Qs: ${existingQs.join(', ') || 'none'}) from 'questionOnly' to 'metadata'.`
-                        );
-                        item.result.category = 'metadata';
-                        item.result.questions = [];
-                    }
-                }
+            // Parse explicit user marking scope from Student Input before meta-page filtering
+            // (e.g., "only mark to page 8", "mark Q1-Q12").
+            const markingScope = parseMarkingScope(options.customText);
+            if (markingScope) {
+                console.log(`🎯 [MARKING-SCOPE] Parsed explicit user scope: ${markingScope.label}`);
+            }
+
+            const hasAnyStudentWorkBeforeScope =
+                answeredBaseQuestions.size > 0 ||
+                allClassificationResults.some(r => r.result?.category === 'questionAnswer');
+
+            const { excludedPageIndices, preservedBlankQuestionPageIndices } = applyScopeAndBlankPageHandling({
+                allClassificationResults,
+                markingScope,
+                hasAnyStudentWork: hasAnyStudentWorkBeforeScope,
+                ejectedPureReferenceFiles
+            });
+
+            if (excludedPageIndices.length > 0) {
+                console.log(`✂️ [MARKING-SCOPE] Excluded out-of-scope page indices: ${excludedPageIndices.join(', ')} (${markingScope?.label})`);
+            }
+            if (preservedBlankQuestionPageIndices.length > 0) {
+                console.log(`📋 [BLANK-QUESTION-KEEP] Preserved blank question page(s) [${preservedBlankQuestionPageIndices.join(', ')}] in Marking Mode so the total denominator reflects the full exam.`);
             }
 
             // ========================= CATEGORY OVERRIDE (BEFORE SPLIT) =========================
@@ -4260,7 +4262,11 @@ export class MarkingPipelineService {
                 // 🛡️ [METADATA IDENTITY]: DO NOT force minSortWeight = Infinity for meta-pages.
                 // ⚠️ [WARNING]: Cover pages MUST retain their question labels (identity) so the Zone Detector 
                 // can find top-of-page anchors. Physical sorting is handled by the 'isMeta' flag alone.
-                const isMeta = pageRawResult?.category === 'metadata' || pageRawResult?.category === 'frontPage';
+                // Never add a page to [PIPELINE-META] if the Mapper assigned valid question number(s) to it
+                // (unless explicitly excluded by user scope).
+                const hasMappedQuestions = hasValidMappedQuestions(pageRawResult);
+                const isExcludedByScope = Boolean((pageRawResult as any)?._excludedByScope);
+                const isMeta = isExcludedByScope || ((pageRawResult?.category === 'metadata' || pageRawResult?.category === 'frontPage') && !hasMappedQuestions);
 
                 // Detect whether this page contains a printed question prompt vs continuation text only
                 const isContaminatedStemLocal = (q: any): boolean => {
@@ -5378,7 +5384,7 @@ export class MarkingPipelineService {
                 const summaryStart = Date.now();
                 try {
                     const { overallScore: preOverall, totalPossibleScore: preTotal, overallScoreText: preScoreText } =
-                        calculateOverallScore(allQuestionResults);
+                        calculateOverallScore(allQuestionResults, markingScope?.label);
                     const isModifiedPaper = detectionResults?.some((r: any) => r.detectionResult?.isModifiedQuestion === true) || false;
                     let detectedQuestionForGrade: any = undefined;
                     if (!isModifiedPaper && markingSchemesMap && markingSchemesMap.size > 0) {
@@ -5444,7 +5450,7 @@ export class MarkingPipelineService {
                 allPagesOcrData,
                 files,
                 submissionId,
-                options,
+                { ...options, scopeLabel: markingScope?.label },
                 markingSchemesMap,
                 progressCallback,
                 MULTI_IMAGE_STEPS

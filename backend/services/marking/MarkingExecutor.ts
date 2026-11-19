@@ -181,6 +181,27 @@ export async function executeMarkingForQuestion(
     MarkingZoneService.backfillInjectedZones(semanticZones, stepsDataForMapping, task.pageDimensions as any);
     const allLabels = Object.keys(semanticZones);
 
+    // --- 2.5 SHORT-CIRCUIT COMPLETELY UNATTEMPTED QUESTIONS TO 0/max ---
+    // If a question has zero student work (no handwritten lines, no drawings, no handwritten OCR blocks)
+    // and we know its authoritative totalMarks from the DB mark scheme (or printed mark total),
+    // short-circuit to 0/max with neutral "Not attempted" pill(s) instead of calling the LLM or stamping red crosses.
+    const hasClassificationWork = (task.aiSegmentationResults || []).some(r => {
+      const content = (r.content || '').trim();
+      return content.length > 0 && content !== '--';
+    });
+    const hasHandwrittenOcr = (task.mathBlocks || []).some(b => b.isHandwritten === true && ((b as any).text || (b as any).mathpixLatex || '').trim().length > 0);
+    const hasCleanedWorkText = (task.classificationStudentWork || '')
+      .replace(/^Student's Work:\s*/i, '')
+      .replace(/\[SUB-QUESTION[^\]]*\]/gi, '')
+      .trim().length > 0;
+    const isTaskCompletelyUnattempted = !hasClassificationWork && !hasHandwrittenOcr && !hasCleanedWorkText;
+
+    const schemeTotalMarks = Number(task.markingScheme?.totalMarks || 0);
+    if (isTaskCompletelyUnattempted && schemeTotalMarks > 0) {
+      console.log(`⚪ [UNATTEMPTED-SHORTCIRCUIT] Q${questionId}: Zero student work detected. Short-circuiting to 0/${schemeTotalMarks} with neutral Not attempted pill.`);
+      return buildUnattemptedQuestionResult(task, semanticZones, schemeTotalMarks);
+    }
+
     // --- 3. AI EXECUTION ---
     // [FIXED] OCR Mapping (Same Logic)
     const rawOcrBlocks = task.mathBlocks.map((block, idx) => {
@@ -403,7 +424,7 @@ export async function executeMarkingForQuestion(
     }
     */
 
-    const enrichedAnnotations = enrichAnnotationsWithPositions(
+    const enrichedAnnotationsRaw = enrichAnnotationsWithPositions(
       markingResult.annotations,
       combinedLookupBlocks,
       String(questionId),
@@ -415,7 +436,16 @@ export async function executeMarkingForQuestion(
       (markingResult as any).globalOffsetX || 0,
       (markingResult as any).globalOffsetY || 0,
       semanticZones
-    ).filter((anno: any) => (anno.text || '').trim() !== '');
+    ).filter((anno: any) => (anno.text || '').trim() !== '' || anno.action === 'not_attempted' || anno.isUnattempted);
+
+    const enrichedAnnotations = normalizeUnattemptedSubQuestionAnnotations(
+      enrichedAnnotationsRaw,
+      stepsDataForMapping,
+      semanticZones,
+      task.markingScheme,
+      task.pageDimensions,
+      defaultPageIndex
+    );
 
     // Final UI placement patch
     enrichedAnnotations.forEach(anno => {
@@ -566,4 +596,192 @@ export function createMarkingTasksFromClassification(
     allClassificationResults,
     metaPageIndices
   );
+}
+
+const UNATTEMPTED_REASONING_REGEX = /\b(not\s+attempted|no\s+attempt|unattempted|blank\s+(?:answer|response|sub-?question|page)?|no\s+student\s+work|did\s+not\s+attempt|no\s+answer\s+provided|left\s+blank)\b/i;
+
+function resolveSubQuestionMaxMarks(subQuestion: string | undefined, scheme: any): number | undefined {
+  if (!scheme) return undefined;
+  const subMaxMap = scheme.subQuestionMaxScores || {};
+  if (subQuestion) {
+    const cleanSubQ = String(subQuestion).trim().replace(/^0+(?=\d)/, '');
+    const suffix = cleanSubQ.replace(/^\d+/, '');
+    const dotStripped = suffix.replace(/^\./, '');
+    const found = subMaxMap[subQuestion] ?? subMaxMap[cleanSubQ] ?? subMaxMap[suffix] ?? subMaxMap[dotStripped];
+    if (typeof found === 'number' && found > 0) return found;
+  }
+  const total = Number(scheme.totalMarks || 0);
+  return total > 0 ? total : undefined;
+}
+
+function computeAnswerAreaBboxForZone(
+  zone: any,
+  pageDims?: { width: number; height: number }
+): [number, number, number, number] {
+  const pw = pageDims?.width || 1650;
+  const ph = pageDims?.height || 2339;
+  if (zone && typeof zone.startY === 'number' && typeof zone.endY === 'number') {
+    const zx = typeof zone.x === 'number' ? zone.x : Math.round(pw * 0.12);
+    const zw = typeof zone.width === 'number' && zone.width > 50 ? zone.width : Math.round(pw * 0.72);
+    const zh = Math.max(40, zone.endY - zone.startY);
+    // Anchor near the answer area (lower-middle of the question zone)
+    const answerX = Math.round(zx + zw * 0.15);
+    const answerY = Math.round(zone.startY + Math.min(zh * 0.62, Math.max(40, zh - 70)));
+    return [answerX, answerY, Math.round(pw * 0.18), Math.round(ph * 0.022)];
+  }
+  return [Math.round(pw * 0.20), Math.round(ph * 0.45), Math.round(pw * 0.18), Math.round(ph * 0.022)];
+}
+
+/**
+ * Builds a short-circuited 0/max QuestionResult for completely unattempted questions
+ * (zero student work), using neutral `not_attempted` pills instead of red crosses.
+ */
+export function buildUnattemptedQuestionResult(
+  task: MarkingTask,
+  semanticZones: Record<string, any[]>,
+  totalMarks: number
+): QuestionResult {
+  const questionId = String(task.questionNumber);
+  const defaultPage = task.sourcePages?.[0] ?? 0;
+  const subMaxMap = task.markingScheme?.subQuestionMaxScores || {};
+  const subKeys = Object.keys(subMaxMap).filter(
+    k => k !== questionId && k.startsWith(questionId) && Number(subMaxMap[k]) > 0
+  );
+
+  const annotations: any[] = [];
+  const targets = subKeys.length > 0 ? subKeys : [questionId];
+
+  for (const label of targets) {
+    const suffix = label.replace(/^\d+/, '');
+    const zoneList = semanticZones?.[label] || semanticZones?.[suffix] || semanticZones?.[questionId] || [];
+    const zone = zoneList[0];
+    const pIdx = zone?.pageIndex ?? defaultPage;
+    const dims = task.pageDimensions?.get(pIdx) || (task.pageDimensions ? Array.from(task.pageDimensions.values())[0] : undefined);
+    const bbox = computeAnswerAreaBboxForZone(zone, dims);
+    const subMax = subKeys.length > 0 ? Number(subMaxMap[label]) : totalMarks;
+    const pw = dims?.width || 1650;
+    const ph = dims?.height || 2339;
+
+    annotations.push({
+      action: 'not_attempted',
+      text: 'Not attempted',
+      reasoning: 'Not attempted',
+      isUnattempted: true,
+      scoreBadgeText: subMax > 0 ? `0/${subMax}` : undefined,
+      subQuestion: label,
+      pageIndex: pIdx,
+      ocr_match_status: 'UNMATCHED',
+      bbox,
+      snappedBbox: bbox,
+      visual_position: {
+        x: (bbox[0] / pw) * 100,
+        y: (bbox[1] / ph) * 100,
+        width: (bbox[2] / pw) * 100,
+        height: (bbox[3] / ph) * 100
+      }
+    });
+  }
+
+  return {
+    questionNumber: questionId,
+    score: {
+      awardedMarks: 0,
+      totalMarks,
+      scoreText: `0/${totalMarks}`
+    },
+    annotations,
+    pageIndex: defaultPage,
+    sourceImageIndices: task.sourcePages,
+    usageTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    marks: totalMarks,
+    awardedMarks: 0,
+    totalMarks,
+    mathpixCalls: 0,
+    confidence: 1.0,
+    markingScheme: JSON.stringify(task.markingScheme || {}),
+    studentWork: '',
+    databaseQuestionText: task.markingScheme?.databaseQuestionText || task.questionText,
+    questionText: task.questionText || '',
+    semanticZones
+  } as any;
+}
+
+/**
+ * Converts blank/unattempted sub-question annotations (including AI crosses for blank parts
+ * on shared pages) into neutral `not_attempted` pills with `0/max` badges and no red `✗`.
+ */
+export function normalizeUnattemptedSubQuestionAnnotations(
+  annotations: any[],
+  stepsDataForMapping: any[],
+  semanticZones: Record<string, any[]>,
+  markingScheme: any,
+  pageDimensions?: Map<number, { width: number; height: number }>,
+  defaultPageIndex: number = 0
+): any[] {
+  const normLabel = (s?: string) => String(s || '').replace(/^0+(?=\d)/, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  const subQsWithWork = new Set<string>();
+  (stepsDataForMapping || []).forEach(s => {
+    const txt = (s?.text || s?.cleanedText || '').trim();
+    if (!txt || txt === '--') return;
+    if (s.subQuestionLabel && s.subQuestionLabel !== 'main') {
+      subQsWithWork.add(normLabel(s.subQuestionLabel));
+    }
+  });
+
+  const seenUnattemptedSubQs = new Set<string>();
+  const result: any[] = [];
+
+  for (const anno of annotations) {
+    const subKey = normLabel(anno.subQuestion);
+    const subSuffix = subKey.replace(/^\d+/, '');
+    const hasWorkForSubQ = Boolean(
+      (subKey && subQsWithWork.has(subKey)) ||
+      (subSuffix && subQsWithWork.has(subSuffix))
+    );
+
+    const reasoningStr = String(anno.reasoning || '');
+    const textStr = String(anno.text || '');
+    const isExplicitUnattempted =
+      anno.action === 'not_attempted' ||
+      anno.isUnattempted === true ||
+      /^not\s+attempted$/i.test(textStr.trim());
+    const isBlankCross =
+      anno.action === 'cross' &&
+      !hasWorkForSubQ &&
+      (UNATTEMPTED_REASONING_REGEX.test(reasoningStr) || !anno.line_id && !anno.linked_ocr_id && reasoningStr.trim() === '');
+
+    if (isExplicitUnattempted || isBlankCross) {
+      const dedupKey = subKey || `p${anno.pageIndex ?? defaultPageIndex}_main`;
+      if (seenUnattemptedSubQs.has(dedupKey)) {
+        continue; // Collapse duplicate unattempted marks for the same sub-question into one neutral pill
+      }
+      seenUnattemptedSubQs.add(dedupKey);
+
+      const pIdx = anno.pageIndex ?? defaultPageIndex;
+      const dims = pageDimensions?.get(pIdx) || (pageDimensions ? Array.from(pageDimensions.values())[0] : undefined);
+      const zoneList = semanticZones?.[anno.subQuestion] || semanticZones?.[subSuffix] || [];
+      const zone = zoneList.find((z: any) => z.pageIndex === pIdx) || zoneList[0];
+      const hasValidBbox = Array.isArray(anno.bbox) && anno.bbox[2] > 5 && anno.bbox[3] > 5 && (anno.bbox[0] > 0 || anno.bbox[1] > 0);
+      const bbox = hasValidBbox ? anno.bbox : computeAnswerAreaBboxForZone(zone, dims);
+      const subMax = resolveSubQuestionMaxMarks(anno.subQuestion, markingScheme);
+
+      result.push({
+        ...anno,
+        action: 'not_attempted',
+        text: 'Not attempted',
+        reasoning: 'Not attempted',
+        isUnattempted: true,
+        scoreBadgeText: anno.scoreBadgeText || (subMax && subMax > 0 ? `0/${subMax}` : undefined),
+        bbox,
+        snappedBbox: bbox
+      });
+    } else {
+      result.push(anno);
+    }
+  }
+
+  return result;
 }

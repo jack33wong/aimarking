@@ -133,7 +133,7 @@ export interface AIModelResponse {
 
 // Annotation and Marking Types
 export interface Annotation {
-  action: 'circle' | 'write' | 'tick' | 'cross' | 'underline' | 'comment';
+  action: 'circle' | 'write' | 'tick' | 'cross' | 'underline' | 'comment' | 'not_attempted';
   bbox: [number, number, number, number]; // [x, y, width, height]
   text?: string; // Text content for all annotation types
   reasoning?: string; // Optional explanation/rationale
@@ -151,6 +151,9 @@ export interface Annotation {
   visualObservation?: string; // AI's description of the visual content
   unit?: 'pixels' | 'percentage'; // Explicit unit for coordinate scaling
   snappedBbox?: number[]; // [NEW] Definitive Single Source of Truth
+  isUnattempted?: boolean; // Neutral UX flag for unattempted questions/sub-questions
+  scoreBadgeText?: string; // Optional per-sub-question score badge (e.g. "0/2") for unattempted parts
+  _path3Recovered?: boolean; // Set when PATH 3 recovered right-edge coordinates for UNMATCHED line
 }
 
 export interface MarkingInstructions {

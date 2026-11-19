@@ -200,8 +200,8 @@ describe('SVGOverlayService', () => {
       ) as string;
 
       expect(svg).toContain('M0 A0');
-      expect(svg).toContain('Did not square u to find x; ans:');
-      expect(svg).toContain('x = 16/9');
+      const textContents = [...svg.matchAll(/<text[^>]*>([^<]+)<\/text>/g)].map(m => m[1]).join(' ');
+      expect(textContents).toContain('Did not square u to find x; ans: x = 16/9');
     });
 
     it('guards against crossing non-reasoning symbols (e.g. plain M1 tick) via allSymbolRects in createSVGOverlay', () => {

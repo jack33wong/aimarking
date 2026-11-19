@@ -8,12 +8,14 @@ export default (isGeneric: boolean = false): string => {
   if (isGeneric) {
     section6 = `4. MANDATORY ANNOTATIONS: Output at least one annotation for EVERY sub-question found in the Transcript.
     * GENERIC MODE RULE: Only return marks for discovered total count.
-    * If a sub-question is blank/wrong, explicitly output a 0-mark annotation (Action: "cross") anchored on its final line so we know you checked it.
+    * If a sub-question has wrong student work, explicitly output a 0-mark annotation (Action: "cross") anchored on its final line so we know you checked it.
+    * If a sub-question is completely blank/unattempted (zero student work), output \`action: "not_attempted"\`, \`text: "Not attempted"\`, \`reasoning: "Not attempted"\` (do NOT output a red cross).
     * Match tick count to discovered/awarded marks per sub-question (e.g. N marks = N one-mark ticks).`;
   } else {
     section6 = `4. MANDATORY ANNOTATIONS: Output at least one annotation for EVERY sub-question listed in Scheme.
     * STRICT MODE RULE: You MUST output a result for every sub-question (e.g. 10a, 10bi, 10bii).
-    * If a sub-question is blank/wrong, you MUST explicitly output a 0-mark annotation (Action: "cross") so we know you checked it.`;
+    * If a sub-question has wrong student work, you MUST explicitly output a 0-mark annotation (Action: "cross") so we know you checked it.
+    * If a sub-question is completely blank/unattempted (zero student work), output \`action: "not_attempted"\`, \`text: "Not attempted"\`, \`reasoning: "Not attempted"\` (do NOT output a red cross).`;
   }
 
   return `You are an AI assistant that marks student work. Your task is to generate a single, valid JSON object.
@@ -165,10 +167,11 @@ If NO matching OCR block is found:
 
 * **Constraint E (CONCISE EXAMINER SHORTHAND IN \`annotations[].reasoning\`):** [CRITICAL]
     * Put all full step-by-step working analysis and detailed coaching in \`step_by_step_evaluation\`.
-    * **WHEN 0 MARKS ARE AWARDED ON A MULTI-STEP WORKING ATTEMPT (including B2/B3 schemes):** If the student wrote multiple lines of working and earned 0 marks, emit a \`cross\` (\`M0\`/\`P0\`/\`B0\`) on the **first wrong working step** (with a brief ≤ 35 char correction of that step, e.g., \`"Cannot √(x²+x) as x+x"\` or \`"Set factors = 0, don't expand"\`) in addition to the final answer mark (\`A0\`/\`B0\` with \`"Ans: <correct value>"\`), so the student sees where their working went wrong. For a single \`B0\`/\`A0\` cross on a multi-line short-answer response, anchor the cross on the **final line** of that sub-question's answer.
+    * **WHEN 0 MARKS ARE AWARDED ON A MULTI-STEP WORKING ATTEMPT (including B2/B3 schemes):** If the student wrote multiple lines of working and earned 0 marks, emit a \`cross\` (\`M0\`/\`P0\`/\`B0\`) on the **first wrong working step** (with a brief ≤ 35 char correction of that step, e.g., \`"Cannot √(x²+x) as x+x"\` or \`"Set factors = 0, don't expand"\`) in addition to the final answer mark (\`A0\`/\`B0\` with \`"<3-5 word reason>; Ans: <correct value>"\`), so the student sees where their working went wrong. For a single \`B0\`/\`A0\` cross on a multi-line short-answer response, anchor the cross on the **final line** of that sub-question's answer.
     * Keep \`annotations[].reasoning\` to **5–8 words (≤ 55 chars)** in concise examiner shorthand (NO filler prefixes like \`"Incorrect method:"\` or \`"Final answer of X is incorrect"\` because it is rendered directly in the page margin):
         * **For \`M0\` / \`P0\` (or intermediate working \`B0\`)**: write **only the brief method correction (≤ 35 chars)**, e.g., \`"8000 = 4/5, not 1/5"\` or \`"Cannot √(x²+x) as x+x"\`. Do **NOT** repeat \`; ans: <final answer>\` on intermediate working lines.
-        * **For final answer \`A0\` / \`B0\`**: include the correct answer (\`"Ans: <correct value>"\` or \`"<short error>; ans: <correct value>"\`, e.g., \`"Ans: 10000"\` or \`"Need roots; ans: -2/5 < x < 1/3"\`), but do **not** repeat \`; ans: <value>\` if the correct answer is already stated in the error phrase.
+        * **For omitted steps, comparisons, or explanations**: use \`"Missing: ..."\` instead of \`"Ans: ..."\` (e.g., \`"Missing: comparison of medians"\` or \`"Missing: units (cm²)"\`).
+        * **For standalone \`A0\` (or final answer \`B0\`) errors**: ALWAYS include a brief 3–5 word reason alongside the answer (e.g., \`"Divide by 1000; Ans: 56"\` or \`"Need roots; Ans: -2/5 < x < 1/3"\`) instead of bare \`"Ans: 56"\`. Do **not** repeat \`; Ans: <value>\` if the correct answer is already stated in the error phrase.
         * **For \`action: "tick"\`**: keep \`reasoning\` ≤ 6 words (e.g., \`"Correct substitution into formula"\`).
 
 ## 💾 JSON OUTPUT STRUCTURE (MANDATORY)
@@ -189,13 +192,13 @@ If NO matching OCR block is found:
   "visualObservation": "String",
   "annotations": [
     {
-      "action": "tick|cross", // CRITICAL: Use 'tick' IF text is awarded (e.g. M1). Use 'cross' IF text is unawarded (e.g. M0).
-      "text": "String (CRITICAL: Mark Code. Use M1/A1 for awarded, M0/A0 for unawarded. e.g. M1, A0)",
-      "line_id": "String (The ID of the handwriting line being marked. NULL if marking a drawing/diagram)",
+      "action": "tick|cross|not_attempted", // CRITICAL: Use 'tick' IF awarded (e.g. M1), 'cross' IF wrong attempt (e.g. M0), 'not_attempted' IF completely blank.
+      "text": "String (CRITICAL: Mark Code. Use M1/A1 for awarded, M0/A0 for wrong attempt, 'Not attempted' for blank)",
+      "line_id": "String (The ID of the handwriting line being marked. NULL if marking a drawing/diagram or blank sub-question)",
       "content_desc": "String (OPTIONAL. Only use if marking a DRAWING to describe what was found, e.g. 'Box plot with median at 40'. For text, leave null.)",
       "ocr_match_status": "MATCHED|UNMATCHED|VISUAL",
       "linked_ocr_id": "MANDATORY. The p0_ocr_... ID if matched, or null if unmatched. NEVER omit this field.",
-      "reasoning": "String (5-8 words, <=55 chars examiner shorthand; M0/P0: method correction <=35 chars; A0/B0: include '; ans: <value>' or 'Ans: <value>' unless already stated; tick: <=6 words)",
+      "reasoning": "String (5-8 words, <=55 chars examiner shorthand; M0/P0: method correction <=35 chars; omitted steps/comparisons: 'Missing: ...'; standalone A0/B0: '<3-5 word reason>; Ans: <value>' instead of bare 'Ans: <value>'; tick: <=6 words)",
       "subQuestion": "String",
       "pageIndex": "Integer",
       "visual_position": { 

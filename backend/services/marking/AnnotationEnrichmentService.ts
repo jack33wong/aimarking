@@ -300,13 +300,17 @@ export const enrichAnnotationsWithPositions = (
                 // console.log(`🛡️ [11b-FIX] Q${anno.subQuestion} | IntentY: ${intentY.toFixed(0)} | Floor: ${(zone.endY - annoH).toFixed(0)} | ResultY: ${finalY.toFixed(0)}`);
 
                 const annoW = (rawAiBox[2] / 100) * pageWidth;
-                // Apply the same logic for X (Center to Left)
+                // PATH 3 recovered positions are already anchored at box.x + box.width + padding (right edge of handwriting):
+                // never pull them back left by annoW/2 into student handwriting.
+                const isPath3Recovered = Boolean((anno as any)._path3Recovered);
+                const rawTargetX = isPath3Recovered ? intentX : (intentX - (annoW / 2));
+                const maxPrintableX = Math.round(pageWidth * 0.90) - annoW;
                 finalX = Math.max(
                     (zone.x || 0) + margin,
-                    Math.min(intentX - (annoW / 2), ((zone.x || 0) + (zone.width || pageWidth)) - annoW - margin)
+                    Math.min(rawTargetX, Math.min(((zone.x || 0) + (zone.width || pageWidth)) - annoW - margin, maxPrintableX))
                 );
 
-                authorityBox = [finalX, finalY, annoW, annoH];
+                authorityBox = [finalX, finalY, isPath3Recovered ? 0 : annoW, annoH];
             }
         }
 
@@ -317,33 +321,77 @@ export const enrichAnnotationsWithPositions = (
         const linkedOcrBlock = activePointer ? findInData(activePointer) : null;
         const isDrawingPointer = Boolean(activePointer && String(activePointer).includes('visual_drawing'));
 
+        // Helper to normalize any step/OCR bbox into pixel coordinates
+        const toPixelBox = (block: any): [number, number, number, number] | null => {
+            if (!block?.bbox) return null;
+            const b = block.bbox;
+            const raw: [number, number, number, number] = Array.isArray(b)
+                ? [Number(b[0]) || 0, Number(b[1]) || 0, Number(b[2]) || 0, Number(b[3]) || 0]
+                : [Number(b.x) || 0, Number(b.y) || 0, Number(b.width) || 0, Number(b.height) || 0];
+            if (raw[2] <= 0 && raw[3] <= 0) return null;
+            if (block.unit === 'percentage') {
+                return [
+                    (raw[0] / 100) * pageWidth,
+                    (raw[1] / 100) * pageHeight,
+                    (raw[2] / 100) * pageWidth,
+                    (raw[3] / 100) * pageHeight
+                ];
+            }
+            return raw;
+        };
+
+        // 🎨 [DIAGRAM-ANCHORING]: For ocr_match_status: 'VISUAL', ALWAYS anchor to the diagram bounding box
+        // ([DRAWING] / visual_drawing / [VISUAL WORKSPACE]) rather than nearby arithmetic working.
+        let resolvedDiagramBlock: any = null;
+        if (status === 'VISUAL') {
+            if (isDrawingPointer && linkedOcrBlock?.bbox) {
+                resolvedDiagramBlock = linkedOcrBlock;
+            } else {
+                const normSub = (s?: string) => String(s || '').replace(/\d+|question|part/gi, '').trim().toLowerCase();
+                const targetSub = normSub(anno.subQuestion);
+                const drawingCandidates = (stepsDataForMapping || []).filter(s => {
+                    const isDrawStep = Boolean(
+                        (s.line_id && String(s.line_id).includes('visual_drawing')) ||
+                        (s.text && (String(s.text).includes('[DRAWING]') || String(s.text).includes('[VISUAL WORKSPACE]')))
+                    );
+                    if (!isDrawStep) return false;
+                    const pBox = toPixelBox(s);
+                    return pBox !== null && pBox[2] > 5 && pBox[3] > 5;
+                });
+
+                // Priority 1: Matching sub-question + same page
+                resolvedDiagramBlock =
+                    drawingCandidates.find(s => s.pageIndex === pageIndex && targetSub && normSub(s.subQuestionLabel) === targetSub) ||
+                    // Priority 2: Matching sub-question on any page
+                    drawingCandidates.find(s => targetSub && normSub(s.subQuestionLabel) === targetSub) ||
+                    // Priority 3: Any drawing block on the same page
+                    drawingCandidates.find(s => s.pageIndex === pageIndex) ||
+                    // Priority 4: Any drawing block in the task
+                    drawingCandidates[0] ||
+                    null;
+            }
+        }
+
         // 🛡️ [VISUAL-TO-OCR ANCHOR FALLBACK]:
-        // When the AI marks a graph/table/diagram by linking to a nearby text OCR block (e.g. "Figure 1" or "Plot this data on Figure 1")
-        // with ocr_match_status: "VISUAL" and no explicit visual_position/aiPosition, promote status to "MATCHED"
-        // so it anchors cleanly to that OCR block's coordinates instead of defaulting to [0, 0] at the top-left of the page.
-        if (status === 'VISUAL' && !rawVisualPos && !isDrawingPointer && linkedOcrBlock?.bbox) {
+        // Only promote VISUAL to MATCHED when NO diagram bounding box exists AND no explicit visual_position exists
+        // AND the linked OCR block is a diagram/figure prompt (NOT arithmetic working like "3 × 4 = 12").
+        const isArithmeticWorkingText = (txt: string) =>
+            /[=+\-×÷*/^]|\b\d+\s*[x×÷+\-]\s*\d+/i.test(txt) && !/\b(?:fig(?:ure)?|diagram|graph|grid|table|plot|sketch|draw|shade|region|chart)\b/i.test(txt);
+
+        if (
+            status === 'VISUAL' &&
+            !resolvedDiagramBlock &&
+            !rawVisualPos &&
+            !isDrawingPointer &&
+            linkedOcrBlock?.bbox &&
+            !isArithmeticWorkingText(String(linkedOcrBlock.text || linkedOcrBlock.cleanedText || ''))
+        ) {
             status = 'MATCHED';
         }
 
-        if ((status === 'MATCHED' || (anno as any).ocr_match_status === 'SPLIT' || isDrawingPointer) && linkedOcrBlock?.bbox) {
-            const b = linkedOcrBlock.bbox;
-            const rawOcrBox: [number, number, number, number] = Array.isArray(b) ? [b[0], b[1], b[2], b[3]] : [b.x, b.y, b.width, b.height];
-
-            // Ensure OCR percentages are normalized to the same pixel scale
-            let blockPixelBox: [number, number, number, number];
-            if (linkedOcrBlock.unit === 'percentage') {
-                blockPixelBox = [
-                    (rawOcrBox[0] / 100) * pageWidth,
-                    (rawOcrBox[1] / 100) * pageHeight,
-                    (rawOcrBox[2] / 100) * pageWidth,
-                    (rawOcrBox[3] / 100) * pageHeight
-                ];
-            } else {
-                blockPixelBox = rawOcrBox;
-            }
-
-            if (isDrawingPointer && (rawOcrBox[0] > 0 || rawOcrBox[1] > 0 || (rawOcrBox[2] > 1 && rawOcrBox[3] > 1))) {
-                // Sub-Element Pointer Preservation on Large Diagrams:
+        if (resolvedDiagramBlock) {
+            const diagramPixelBox = toPixelBox(resolvedDiagramBlock);
+            if (diagramPixelBox) {
                 const vp = (anno as any).visual_position || (anno as any).aiPosition;
                 let useSpecificVp = false;
                 if (vp && anno.action === 'cross') {
@@ -351,22 +399,66 @@ export const enrichAnnotationsWithPositions = (
                     const vpY = typeof vp.y === 'number' ? vp.y : Array.isArray(vp) ? vp[1] : 0;
                     const vpPctX = vpX > 1 ? vpX : vpX * 100;
                     const vpPctY = vpY > 1 ? vpY : vpY * 100;
-                    const boxPctX = linkedOcrBlock.unit === 'percentage' ? rawOcrBox[0] : (rawOcrBox[0] / pageWidth) * 100;
-                    const boxPctY = linkedOcrBlock.unit === 'percentage' ? rawOcrBox[1] : (rawOcrBox[1] / pageHeight) * 100;
-                    const boxPctW = linkedOcrBlock.unit === 'percentage' ? rawOcrBox[2] : (rawOcrBox[2] / pageWidth) * 100;
-                    const boxPctH = linkedOcrBlock.unit === 'percentage' ? rawOcrBox[3] : (rawOcrBox[3] / pageHeight) * 100;
+                    const boxPctX = (diagramPixelBox[0] / pageWidth) * 100;
+                    const boxPctY = (diagramPixelBox[1] / pageHeight) * 100;
+                    const boxPctW = (diagramPixelBox[2] / pageWidth) * 100;
+                    const boxPctH = (diagramPixelBox[3] / pageHeight) * 100;
 
                     if (vpPctX >= boxPctX && vpPctX <= boxPctX + boxPctW &&
                         vpPctY >= boxPctY && vpPctY <= boxPctY + boxPctH) {
                         useSpecificVp = true;
                     }
                 }
-
                 if (!useSpecificVp) {
+                    authorityBox = diagramPixelBox;
+                }
+                if (resolvedDiagramBlock.pageIndex !== undefined) {
+                    pageIndex = resolvedDiagramBlock.pageIndex;
+                    (anno as any).pageIndex = pageIndex;
+                }
+            }
+        } else if ((status === 'MATCHED' || (anno as any).ocr_match_status === 'SPLIT' || isDrawingPointer) && linkedOcrBlock?.bbox) {
+            const blockPixelBox = toPixelBox(linkedOcrBlock);
+            if (blockPixelBox) {
+                // 📐 [ROW-END ANCHORING]: When a matched OCR block shares a horizontal y-band
+                // with other student work blocks on the same line, extend its right edge to the
+                // rightmost student work block on that y-band so ticks/crosses never stamp over trailing working.
+                if (
+                    status === 'MATCHED' &&
+                    !isDrawingPointer &&
+                    anno.action !== 'circle' &&
+                    anno.action !== 'underline'
+                ) {
+                    const [bx, by, bw, bh] = blockPixelBox;
+                    const bCenterY = by + bh / 2;
+                    let maxRightEdge = bx + bw;
+
+                    for (const candidate of (stepsDataForMapping || [])) {
+                        if (candidate.pageIndex !== undefined && candidate.pageIndex !== pageIndex) continue;
+                        if (candidate.isHandwritten === false) continue;
+                        const cText = String(candidate.text || candidate.cleanedText || '');
+                        if (!cText.trim() || cText.includes('[DRAWING]') || cText.includes('[PRINTED_INSTRUCTION')) continue;
+                        const cBox = toPixelBox(candidate);
+                        if (!cBox || cBox[2] <= 2 || cBox[3] <= 2) continue;
+
+                        const [cx, cy, cw, ch] = cBox;
+                        // Must be on the same horizontal y-band
+                        const vOverlap = Math.min(by + bh, cy + ch) - Math.max(by, cy);
+                        const minH = Math.max(1, Math.min(bh, ch));
+                        const cCenterY = cy + ch / 2;
+                        const sameYBand =
+                            vOverlap >= minH * 0.4 ||
+                            Math.abs(bCenterY - cCenterY) <= Math.max(bh, ch) * 0.55;
+
+                        if (sameYBand && cx >= bx - 10 && cx + cw > maxRightEdge) {
+                            maxRightEdge = cx + cw;
+                        }
+                    }
+
+                    authorityBox = [bx, by, maxRightEdge - bx, bh];
+                } else {
                     authorityBox = blockPixelBox;
                 }
-            } else if (!isDrawingPointer) {
-                authorityBox = blockPixelBox;
             }
         }
 

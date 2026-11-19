@@ -122,7 +122,9 @@ Compare the **Student Text** vs **OCR Block Text**.
     * Put full step-by-step working analysis in \`step_by_step_evaluation\` (if present) and keep \`annotations[].reasoning\` to **5–8 words (≤ 55 chars)** in concise examiner shorthand (NO filler like \`"Incorrect method:"\` or \`"Final answer of X is incorrect"\`):
         * **For a single \`B0\` / \`A0\` cross on a multi-line short-answer response**: anchor the cross on the **final line** of that sub-question's answer.
         * **For \`M0\` / \`P0\`** (intermediate working steps with \`action: "cross"\`): show **only the brief method correction (≤ 35 chars)**, e.g., \`"8000 = 4/5, not 1/5"\` or \`"Need 15 × 14 = 210"\`, without repeating \`; ans: <final answer>\` on every line.
-        * **For \`A0\` / \`B0\`** (final answer / short-answer marks with \`action: "cross"\`): include the correct answer (\`"Ans: <correct value>"\` or \`"<short error>; ans: <correct value>"\`, e.g., \`"Ans: 10000"\` or \`"Need roots; ans: -2/5 < x < 1/3"\`), but do **not** repeat \`; ans: <value>\` if the correct answer is already stated in the error phrase.
+        * **For omitted steps, comparisons, or explanations**: use \`"Missing: ..."\` instead of \`"Ans: ..."\` (e.g., \`"Missing: comparison of medians"\`).
+        * **For standalone \`A0\` / \`B0\`** (final answer / short-answer marks with \`action: "cross"\`): ALWAYS include a brief 3–5 word reason alongside the answer (e.g., \`"Divide by 1000; Ans: 56"\` or \`"Need roots; Ans: -2/5 < x < 1/3"\`) instead of bare \`"Ans: 56"\`. Do **not** repeat \`; Ans: <value>\` if the correct answer is already stated in the error phrase.
+        * **For completely blank/unattempted sub-questions (zero student work)**: emit \`action: "not_attempted"\`, \`text: "Not attempted"\`, \`reasoning: "Not attempted"\` instead of a red cross.
         * **For \`action: "tick"\`**: keep \`reasoning\` ≤ 6 words.
 
 ## 💾 JSON OUTPUT STRUCTURE (MANDATORY)
@@ -148,7 +150,7 @@ Compare the **Student Text** vs **OCR Block Text**.
       "content_desc": "String (OPTIONAL. Only use if marking a DRAWING to describe what was found, e.g. 'Box plot with median at 40'. For text, leave null.)",
       "ocr_match_status": "MATCHED|UNMATCHED|VISUAL",
       "linked_ocr_id": "String (The p0_ocr_... ID or null)",
-      "reasoning": "String (5-8 words, <=55 chars examiner shorthand; M0/P0: method correction <=35 chars; A0/B0: include '; ans: <value>' or 'Ans: <value>'; tick: <=6 words)",
+      "reasoning": "String (5-8 words, <=55 chars examiner shorthand; M0/P0: method correction <=35 chars; omitted steps/comparisons: 'Missing: ...'; standalone A0/B0: '<3-5 word reason>; Ans: <value>' instead of bare 'Ans: <value>'; tick: <=6 words)",
       "subQuestion": "String",
       "pageIndex": "Integer",
       "visual_position": { 

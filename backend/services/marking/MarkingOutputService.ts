@@ -26,7 +26,7 @@ export class MarkingOutputService {
         allPagesOcrData: PageOcrResult[],
         files: Express.Multer.File[],
         submissionId: string,
-        options: { userId?: string },
+        options: { userId?: string; scopeLabel?: string },
         markingSchemesMap: Map<string, any>,
         progressCallback: (data: any) => void,
         MULTI_IMAGE_STEPS: string[]
@@ -64,7 +64,7 @@ export class MarkingOutputService {
             const imageDimensions = { width: page.width, height: page.height };
 
             // Calculate scores like before
-            const { overallScore, totalPossibleScore, overallScoreText } = calculateOverallScore(markingResults);
+            const { overallScore, totalPossibleScore, overallScoreText } = calculateOverallScore(markingResults, options.scopeLabel);
             const questionFirstPageScores = calculateQuestionFirstPageScores(markingResults, classificationResult);
 
             const scoresToDraw = questionFirstPageScores.get(pageIndex);
@@ -259,7 +259,7 @@ export class MarkingOutputService {
         });
 
         // --- 5. Calculate Totals (Recalculate for return) ---
-        const { overallScore, totalPossibleScore, overallScoreText } = calculateOverallScore(markingResults);
+        const { overallScore, totalPossibleScore, overallScoreText } = calculateOverallScore(markingResults, options.scopeLabel);
 
         // ========================= 🔍 [DEBUG: CONTENT VERIFICATION] =========================
         // Map Page Index -> Sub-Content to prove exactly what lives on each page

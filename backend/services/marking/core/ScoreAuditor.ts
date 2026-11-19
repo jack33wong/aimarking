@@ -109,6 +109,10 @@ export class ScoreAuditor {
             let subInferredMax = 0;
             const survivors: any[] = [];
             for (const ann of anns) {
+                if (ann.action === 'not_attempted' || ann.isUnattempted) {
+                    survivors.push(ann);
+                    continue;
+                }
                 const val = sanitizeValue(ann.text || "0");
                 subInferredMax += countAttemptedWeight(ann.text || "0");
                 if (currentVal + val <= budget) {
