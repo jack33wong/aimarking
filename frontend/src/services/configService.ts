@@ -7,6 +7,9 @@ interface ExamMetadata {
     tiers: string[];
     papers: string[];
     codes: string[];
+    subjects?: string[];
+    boardSubjects?: Record<string, string[]>;
+    paperSubjects?: Record<string, string>;
 }
 
 class ConfigService {

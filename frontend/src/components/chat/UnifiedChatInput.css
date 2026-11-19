@@ -876,6 +876,391 @@
 }
 
 /* ============================================================================
+   GEMINI-STYLE PAST PAPERS GALLERY (ABOVE COMPOSER, INPUT LOWERED TO BOTTOM)
+   ============================================================================ */
+
+.focused-app-entry:has(.past-papers-gallery) {
+  min-height: calc(100vh - 76px);
+  justify-content: flex-end;
+  padding-top: 24px;
+  padding-bottom: 24px;
+}
+
+.focused-app-entry:has(.past-papers-gallery) .landing-chat-input-placeholder {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  flex: 1;
+  width: 100%;
+  margin-top: 0;
+}
+
+.past-papers-gallery {
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto 20px auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+  animation: dropdown-fade-in-inline 0.2s ease;
+}
+
+.past-papers-gallery-top {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.past-papers-gallery-top .autocomplete-close-btn {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.past-papers-tabs {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.past-papers-tab {
+  padding: 7px 16px;
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  background: var(--bg-surface-1);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+}
+
+.past-papers-tab:hover {
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
+}
+
+.past-papers-tab.active {
+  background: rgba(59, 130, 246, 0.22);
+  color: #93c5fd;
+  border-color: rgba(96, 165, 250, 0.35);
+}
+
+.past-papers-subfilters {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.past-papers-subtab {
+  padding: 5px 13px;
+  border-radius: 9999px;
+  border: 1px solid var(--border-main);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.past-papers-subtab:hover {
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.past-papers-subtab.active {
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.past-papers-list {
+  max-height: calc(100vh - 340px);
+  min-height: 180px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+}
+
+.past-papers-list .autocomplete-item {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.past-papers-list .autocomplete-item .suggestion-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.past-papers-list .autocomplete-item.selected {
+  background: #333537;
+  color: #e3e3e3;
+}
+
+.past-papers-empty {
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-tertiary);
+  padding: 20px 12px;
+}
+
+/* ============================================================================
+   UNIFIED SINGLE-ROW SQUARE ATTACHMENT TILES (EXACT GEMINI DIMENSION MATCH)
+   ============================================================================ */
+
+.composer-attachments-strip {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 10px;
+  padding: 10px 12px 12px 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.attachment-tile {
+  position: relative;
+  width: 88px;
+  height: 88px;
+  min-width: 88px;
+  min-height: 88px;
+  border-radius: 14px;
+  overflow: hidden;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  animation: plus-menu-fade-in 0.14s ease-out;
+}
+
+.attachment-tile.paper-tile,
+.attachment-tile.pdf-tile {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 9px 10px;
+  background: #333537;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #e3e3e3;
+}
+
+.attachment-tile.image-tile {
+  background: var(--bg-surface-2);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.attachment-tile-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  cursor: pointer;
+}
+
+.attachment-tile-pdf-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.attachment-tile-pdf-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: rgb(250, 66, 62);
+  color: #ffffff;
+  flex-shrink: 0;
+}
+
+.attachment-tile-badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(227, 227, 227, 0.72);
+  line-height: 1;
+}
+
+.attachment-tile-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.attachment-tile-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #e3e3e3;
+  line-height: 1.2;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.attachment-tile-sub {
+  font-size: 10px;
+  font-weight: 500;
+  color: #93c5fd;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.attachment-tile-filename {
+  font-size: 11px;
+  font-weight: 500;
+  color: #e3e3e3;
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
+}
+
+.attachment-tile-remove {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 9999px;
+  border: none;
+  background: rgba(20, 21, 23, 0.72);
+  color: #e3e3e3;
+  cursor: pointer;
+  transition: background-color 0.14s ease, color 0.14s ease, transform 0.12s ease;
+}
+
+.attachment-tile-remove:hover {
+  background: rgba(20, 21, 23, 0.92);
+  color: #ffffff;
+  transform: scale(1.06);
+}
+
+/* ============================================================================
+   INLINE MODE PILL NEXT TO "+" (GEMINI "Images" PILL COLOR SCHEME)
+   ============================================================================ */
+
+.inline-mode-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 10px 0 14px;
+  border-radius: 9999px;
+  background: #333537;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #e3e3e3;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.inline-mode-pill-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 9999px;
+  border: none;
+  background: transparent;
+  color: rgba(227, 227, 227, 0.72);
+  cursor: pointer;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+.inline-mode-pill-remove:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+
+/* ============================================================================
+   CONTEXTUAL BOTTOM ACTION STRIP INSIDE COMPOSER CARD
+   ============================================================================ */
+
+.composer-bottom-action-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 10px 6px 10px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border-main);
+  animation: dropdown-fade-in-inline 0.16s ease;
+}
+
+.composer-strip-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  flex: 1 1 auto;
+  min-width: 130px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 9999px;
+  border: 1px solid var(--border-main);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.composer-strip-btn:hover:not(:disabled) {
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.composer-strip-btn.primary {
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.composer-strip-btn.primary:hover:not(:disabled) {
+  background: var(--bg-surface-3);
+}
+
+.composer-strip-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (max-width: 640px) {
+  .paper-cards-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ============================================================================
    AUTOCOMPLETE QUICK FILTERS & PAST PAPERS LIST (Manus / Gemini Style)
    ============================================================================ */
 
@@ -986,7 +1371,7 @@
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
-  margin: 0 -8px;
+  margin: 0px;
   border-bottom: 1px solid var(--border-subtle);
   border-radius: 8px;
   cursor: pointer;

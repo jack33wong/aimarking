@@ -60,49 +60,97 @@ router.get('/exam-metadata', async (req, res) => {
             return res.status(500).json({ error: 'Firestore not available' });
         }
 
-        const snapshot = await db.collection('fullExamPapers').get();
+        const [papersSnapshot, schemesSnapshot] = await Promise.all([
+            db.collection('fullExamPapers').get(),
+            db.collection('markingSchemes').get()
+        ]);
         const boards = new Set<string>();
         const qualifications = new Set<string>();
         const tiers = new Set<string>();
         const papers = new Set<string>();
         const codes = new Set<string>();
+        const subjects = new Set<string>();
+        const boardSubjectsMap = new Map<string, Set<string>>();
+        const paperSubjects: Record<string, string> = {};
 
-        snapshot.forEach((doc: any) => {
-            const data = doc.data();
-            const metadata = data.metadata;
-            if (metadata) {
-                const board = metadata.exam_board || '';
-                const code = metadata.exam_code || '';
+        const normalizeSubjectName = (raw: string): string => {
+            const trimmed = raw.trim().replace(/\s+/g, ' ');
+            if (!trimmed) return '';
+            if (/^maths?$/i.test(trimmed)) return 'Mathematics';
+            return trimmed
+                .toLowerCase()
+                .replace(/(^|[\s:\-\/(])([a-z])/g, (_, sep, ch) => `${sep}${ch.toUpperCase()}`);
+        };
 
-                // Normalize Series, Tier, and Qualification using Centralized Service
-                const { series: formattedSeries, tier: formattedTier, qualification, isAlevel, isGcse } = ExamReferenceService.formatMetadataDisplay(metadata);
+        const collectMetadataEntry = (metadata: any) => {
+            if (!metadata) return;
+            const board = String(metadata.exam_board || metadata.board || '').trim();
+            const code = String(metadata.exam_code || metadata.paperCode || metadata.code || '').trim();
+            const rawSubject = typeof metadata.subject === 'string' ? normalizeSubjectName(metadata.subject) : '';
+            const resolvedSubject = rawSubject || (/\b(8700|8702|1EN0|1ET0|J351|J352|C700|C720)\b|english/i.test(code) ? 'English Language' : 'Mathematics');
 
-                if (board) boards.add(board);
-                if (code) codes.add(code);
-                
-                // Track qualification (Normalized: GCSE or A-Level)
-                if (qualification) {
-                    qualifications.add(qualification); // Use the normalized value from service
+            // Normalize metadata shape for ExamReferenceService
+            const normalizedMeta = {
+                ...metadata,
+                exam_board: board,
+                exam_code: code,
+                exam_series: metadata.exam_series || metadata.series || ''
+            };
+
+            // Normalize Series, Tier, and Qualification using Centralized Service
+            const { series: formattedSeries, tier: formattedTier, qualification, isAlevel, isGcse } = ExamReferenceService.formatMetadataDisplay(normalizedMeta);
+
+            const isValidBoard = Boolean(board) && !/^(custom|unknown|n\/a|none)$/i.test(board);
+            if (isValidBoard) boards.add(board);
+            if (code && !/^(uploaded|unknown|n\/a)$/i.test(code)) codes.add(code);
+            if (resolvedSubject) {
+                subjects.add(resolvedSubject);
+                if (isValidBoard) {
+                    if (!boardSubjectsMap.has(board)) {
+                        boardSubjectsMap.set(board, new Set<string>());
+                    }
+                    boardSubjectsMap.get(board)!.add(resolvedSubject);
                 }
+            }
 
-                // [RULE] Collect TIER only for GCSE and only if not "N/A"
-                if (isGcse && formattedTier && formattedTier !== 'N/A') {
-                    tiers.add(formattedTier);
-                }
+            // Track qualification (Normalized: GCSE or A-Level)
+            if (qualification) {
+                qualifications.add(qualification);
+            }
 
-                if (board || code || formattedSeries) {
-                    // [RULE] Paper description format: "[Qual] Board - Code - Exam Series" (Tier only if GCSE)
-                    const qualPrefix = isAlevel ? 'A-Level ' : 'GCSE ';
-                    
-                    const tierSuffix = (isGcse && formattedTier) ? `, ${formattedTier}` : '';
-                    
-                    const fullDescription = `${qualPrefix}${board}${board && code ? ' - ' : ''}${code}${(board || code) && formattedSeries ? ' - ' : ''}${formattedSeries}${tierSuffix}`;
-                    
-                    if (fullDescription.trim()) {
-                        papers.add(fullDescription);
+            // [RULE] Collect TIER only for GCSE and only if not "N/A"
+            if (isGcse && formattedTier && formattedTier !== 'N/A') {
+                tiers.add(formattedTier);
+            }
+
+            if (isValidBoard && (code || formattedSeries)) {
+                // [RULE] Paper description format: "[Qual] Board - Code - Exam Series" (Tier only if GCSE)
+                const qualPrefix = isAlevel ? 'A-Level ' : 'GCSE ';
+                const tierSuffix = (isGcse && formattedTier) ? `, ${formattedTier}` : '';
+                const fullDescription = `${qualPrefix}${board}${board && code ? ' - ' : ''}${code}${(board || code) && formattedSeries ? ' - ' : ''}${formattedSeries}${tierSuffix}`;
+
+                if (fullDescription.trim()) {
+                    papers.add(fullDescription);
+                    if (resolvedSubject && !paperSubjects[fullDescription]) {
+                        paperSubjects[fullDescription] = resolvedSubject;
                     }
                 }
             }
+        };
+
+        papersSnapshot.forEach((doc: any) => {
+            const data = doc.data();
+            collectMetadataEntry(data.metadata);
+        });
+
+        schemesSnapshot.forEach((doc: any) => {
+            const data = doc.data();
+            collectMetadataEntry(data.examDetails || data.metadata);
+        });
+
+        const boardSubjects: Record<string, string[]> = {};
+        boardSubjectsMap.forEach((subjSet, boardKey) => {
+            boardSubjects[boardKey] = Array.from(subjSet).sort();
         });
 
         res.json({
@@ -110,7 +158,10 @@ router.get('/exam-metadata', async (req, res) => {
             qualifications: Array.from(qualifications).sort(),
             tiers: Array.from(tiers).sort(),
             papers: Array.from(papers).sort(),
-            codes: Array.from(codes).sort()
+            codes: Array.from(codes).sort(),
+            subjects: Array.from(subjects).sort(),
+            boardSubjects,
+            paperSubjects
         });
     } catch (error) {
         console.error('Error fetching exam metadata:', error);

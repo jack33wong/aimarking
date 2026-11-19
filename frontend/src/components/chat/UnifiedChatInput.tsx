@@ -4,7 +4,7 @@
  */
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import imageCompression from 'browser-image-compression';
-import { Plus, Brain, X, Check, Sparkles, Smartphone, UploadCloud, BookOpen, Library, Paperclip } from 'lucide-react';
+import { Plus, Brain, X, Check, Sparkles, Smartphone, UploadCloud, BookOpen, Library, Paperclip, FileText } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import LandingPageUploadWidget from '../common/LandingPageUploadWidget';
 import MobileUploadModal from '../upload/MobileUploadModal';
@@ -96,45 +96,15 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   const { defaultModel } = useModels();
   const [canSelectModel, setCanSelectModel] = useState<boolean>(true); // Initialize with true, we'll check permission later
   const [chatInput, setChatInput] = useState<string>('');
+  const [selectedPaper, setSelectedPaper] = useState<string | null>(null);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
-  const [selectedSubject, setSelectedSubject] = useState<'maths' | 'english' | null>(null);
+  const [selectedBoard, setSelectedBoard] = useState<string | null>(null);
+  const [selectedSubject, setSelectedSubject] = useState<string | null>(null);
 
   const isEnglishPaper = useCallback((paperStr: string) => {
     return /\b(8700|8702|1EN0|1ET0|J351|J352|C700|C720)\b|english/i.test(paperStr);
   }, []);
 
-  const formatPaperDisplayLabel = useCallback((paperStr: string) => {
-    // If the paper string already contains "Maths", "Mathematics", or "English", return as-is
-    if (/math|english/i.test(paperStr)) return paperStr;
-
-    const isEng = isEnglishPaper(paperStr);
-    const subjectLabel = isEng ? 'English Language' : 'Maths';
-
-    // Insert subject right after Qualification (e.g. "GCSE AQA - 8700/1..." -> "GCSE English Language • AQA - 8700/1...")
-    if (paperStr.startsWith('GCSE ')) {
-      return `GCSE ${subjectLabel} • ${paperStr.slice(5)}`;
-    }
-    if (paperStr.startsWith('A-Level ')) {
-      return `A-Level ${subjectLabel} • ${paperStr.slice(8)}`;
-    }
-    return `${subjectLabel} • ${paperStr}`;
-  }, [isEnglishPaper]);
-
-  const handleSubjectSelect = (subject: 'maths' | 'english') => {
-    if (selectedSubject === subject) {
-      setSelectedSubject(null);
-    } else {
-      setSelectedSubject(subject);
-      // When switching to English, remove incompatible A-Level or Tier tags so suggestions don't go blank
-      if (subject === 'english') {
-        setSelectedTags(prev =>
-          prev.filter(t => !/a-level|foundation|higher/i.test(t))
-        );
-      }
-      setShowAutocomplete(true);
-      setHighlightedIndex(-1);
-    }
-  };
   const lastModeRef = useRef(mode);
 
   // [FIX] Reset context modes when entering fresh first-time mode (unless confirmation/redirect pending)
@@ -174,6 +144,9 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     tiers: string[];
     papers: string[];
     codes: string[];
+    subjects?: string[];
+    boardSubjects?: Record<string, string[]>;
+    paperSubjects?: Record<string, string>;
   }
   const [metadata, setMetadata] = useState<LocalExamMetadata>({
     boards: [],
@@ -181,7 +154,95 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     tiers: [],
     papers: [],
     codes: [],
+    subjects: [],
+    boardSubjects: {},
+    paperSubjects: {},
   });
+
+  const normalizeSubjectName = useCallback((raw: string) => {
+    const trimmed = raw.trim().replace(/\s+/g, ' ');
+    if (!trimmed) return '';
+    if (/^maths?$/i.test(trimmed)) return 'Mathematics';
+    return trimmed
+      .toLowerCase()
+      .replace(/(^|[\s:\-\/(])([a-z])/g, (_, sep, ch) => `${sep}${ch.toUpperCase()}`);
+  }, []);
+
+  const getPaperSubject = useCallback((paperStr: string) => {
+    const dbSubject = metadata.paperSubjects?.[paperStr];
+    if (dbSubject) return normalizeSubjectName(dbSubject);
+    return isEnglishPaper(paperStr) ? 'English Language' : 'Mathematics';
+  }, [metadata.paperSubjects, isEnglishPaper, normalizeSubjectName]);
+
+  const formatPaperDisplayLabel = useCallback((paperStr: string) => {
+    if (/math|english/i.test(paperStr)) return paperStr;
+    const subjectLabel = getPaperSubject(paperStr);
+    if (paperStr.startsWith('GCSE ')) {
+      return `GCSE ${subjectLabel} • ${paperStr.slice(5)}`;
+    }
+    if (paperStr.startsWith('A-Level ')) {
+      return `A-Level ${subjectLabel} • ${paperStr.slice(8)}`;
+    }
+    return `${subjectLabel} • ${paperStr}`;
+  }, [getPaperSubject]);
+
+  const parsePaperCardMeta = useCallback((paperStr: string) => {
+    const subjectLabel = getPaperSubject(paperStr);
+    const parts = paperStr.split(' - ').map((s) => s.trim());
+
+    if (parts.length >= 2) {
+      let qual = '';
+      let board = parts[0];
+      if (board.startsWith('A-Level ')) {
+        qual = 'A-Level';
+        board = board.slice(8).trim();
+      } else if (board.startsWith('GCSE ')) {
+        qual = 'GCSE';
+        board = board.slice(5).trim();
+      }
+      const code = parts[1];
+      const series = parts.slice(2).join(' - ');
+      const title = `${board} ${code}`.trim();
+      const leftMeta = qual ? `${qual} ${subjectLabel}` : subjectLabel;
+      const subtitle = series ? `${leftMeta} · ${series}` : leftMeta;
+      return { title, subtitle };
+    }
+
+    return {
+      title: paperStr,
+      subtitle: subjectLabel,
+    };
+  }, [getPaperSubject]);
+
+  const availableSubjects = useMemo(() => {
+    const rawList: string[] =
+      selectedBoard && metadata.boardSubjects?.[selectedBoard]?.length
+        ? metadata.boardSubjects[selectedBoard]
+        : metadata.subjects && metadata.subjects.length > 0
+          ? metadata.subjects
+          : (metadata.papers || [])
+              .filter((p) => !selectedBoard || p.toLowerCase().includes(selectedBoard.toLowerCase()))
+              .map((p) => getPaperSubject(p));
+
+    const unique = new Set<string>();
+    rawList.forEach((s) => {
+      const normalized = normalizeSubjectName(s);
+      if (normalized) unique.add(normalized);
+    });
+    return Array.from(unique).sort();
+  }, [selectedBoard, metadata.boardSubjects, metadata.subjects, metadata.papers, getPaperSubject, normalizeSubjectName]);
+
+  const handleBoardSelect = (board: string | null) => {
+    setSelectedBoard(board);
+    setHighlightedIndex(-1);
+    if (board && selectedSubject) {
+      const boardSubs = metadata.boardSubjects?.[board];
+      if (boardSubs && !boardSubs.includes(selectedSubject)) {
+        setSelectedSubject(null);
+      }
+    }
+  };
+
   const [showAutocomplete, setShowAutocomplete] = useState<boolean>(false);
   const [showPlusMenu, setShowPlusMenu] = useState<boolean>(false);
   const plusMenuRef = useRef<HTMLDivElement>(null);
@@ -212,16 +273,20 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     if (mode !== 'first-time') return [];
 
     // If autocomplete is closed and no text/filters are active, skip computing suggestions
-    if (!showAutocomplete && chatInput.trim().length === 0 && selectedTags.length === 0 && !selectedSubject) {
+    if (!showAutocomplete && chatInput.trim().length === 0 && selectedTags.length === 0 && !selectedBoard && !selectedSubject) {
       return [];
     }
 
     let filtered = metadata.papers;
 
-    if (selectedSubject === 'english') {
-      filtered = filtered.filter(p => isEnglishPaper(p));
-    } else if (selectedSubject === 'maths') {
-      filtered = filtered.filter(p => !isEnglishPaper(p));
+    if (selectedBoard) {
+      const boardLower = selectedBoard.toLowerCase();
+      filtered = filtered.filter((p) => p.toLowerCase().includes(boardLower));
+    }
+
+    if (selectedSubject) {
+      const subjLower = selectedSubject.toLowerCase();
+      filtered = filtered.filter((p) => getPaperSubject(p).toLowerCase() === subjLower);
     }
 
     // 1. Filter by ALL selected tags (Facet logic)
@@ -298,7 +363,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       if (dateA.month !== dateB.month) return dateB.month - dateA.month;
       return a.localeCompare(b);
     }).slice(0, 10);
-  }, [metadata.papers, selectedTags, selectedSubject, isEnglishPaper, chatInput, mode, showAutocomplete]);
+  }, [metadata.papers, selectedTags, selectedBoard, selectedSubject, getPaperSubject, chatInput, mode, showAutocomplete]);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -373,10 +438,13 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   };
 
   const combinedInput = React.useMemo(() => {
-    const tagsPart = selectedTags.length > 0 ? selectedTags.join(' ') : '';
     const inputPart = chatInput.trim();
+    if (selectedPaper) {
+      return inputPart ? `${selectedPaper} ${inputPart}` : selectedPaper;
+    }
+    const tagsPart = selectedTags.length > 0 ? selectedTags.join(' ') : '';
     return tagsPart ? (inputPart ? `${tagsPart} ${inputPart}` : tagsPart) : inputPart;
-  }, [selectedTags, chatInput]);
+  }, [selectedPaper, selectedTags, chatInput]);
 
   // V17.0: Normalize paper codes to ignore slashes/dashes/spaces for flexible matching
   const normalizeCode = useCallback((code: string) => {
@@ -413,10 +481,13 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     if (inputTokens.length === 0) return [];
 
     let candidatePapers = metadata.papers;
-    if (selectedSubject === 'english') {
-      candidatePapers = candidatePapers.filter(p => isEnglishPaper(p));
-    } else if (selectedSubject === 'maths') {
-      candidatePapers = candidatePapers.filter(p => !isEnglishPaper(p));
+    if (selectedBoard) {
+      const boardLower = selectedBoard.toLowerCase();
+      candidatePapers = candidatePapers.filter((p) => p.toLowerCase().includes(boardLower));
+    }
+    if (selectedSubject) {
+      const subjLower = selectedSubject.toLowerCase();
+      candidatePapers = candidatePapers.filter((p) => getPaperSubject(p).toLowerCase() === subjLower);
     }
 
     return candidatePapers.filter((p: string) => {
@@ -458,7 +529,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       // Secondary sort by paper code/name if dates are identical
       return a.localeCompare(b);
     });
-  }, [metadata.papers, selectedSubject, isEnglishPaper]);
+  }, [metadata.papers, selectedBoard, selectedSubject, getPaperSubject]);
 
   const canSend = useMemo(() => {
     if (isProcessing || isNegative) return false;
@@ -466,6 +537,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     // 1. Specialized Mode Check (Model Answer / Marking Scheme)
     if (isModelAnswerMode || isMarkingSchemeMode) {
       if (mode === 'follow-up') return !!combinedInput.trim();
+      if (selectedPaper) return true;
 
       const trimmedInput = combinedInput.trim();
       if (!trimmedInput) return false;
@@ -492,7 +564,16 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       // First-time standard upload: FILES ARE MANDATORY
       return hasFiles;
     }
-  }, [isProcessing, isNegative, isModelAnswerMode, isMarkingSchemeMode, combinedInput, imageFile, imageFiles.length, getMatchingPapers, location.search, mode]);
+  }, [isProcessing, isNegative, isModelAnswerMode, isMarkingSchemeMode, selectedPaper, combinedInput, imageFile, imageFiles.length, getMatchingPapers, location.search, mode]);
+
+  const matchedPaper = useMemo(() => {
+    if (mode !== 'first-time') return null;
+    if (selectedPaper) return selectedPaper;
+    const trimmed = combinedInput.trim();
+    if (!trimmed) return null;
+    const matches = getMatchingPapers(trimmed);
+    return matches.length === 1 ? matches[0] : null;
+  }, [mode, selectedPaper, combinedInput, getMatchingPapers]);
 
   const validationMessageType = useMemo(() => {
     // Suppress warning if not in paper mode, input is physically empty (no text typed),  const validationMessageType = useMemo(() => {
@@ -520,10 +601,10 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   }, [validationMessageType]);
 
   const handleSuggestionClick = (suggestion: string) => {
-    // Click selected paper suggestion: populate input for confirmation
-    setSelectedTags([]); // Clear tags to prevent duplication in combinedInput
-    setChatInput(suggestion);
-    setShowAutocomplete(false);
+    // Attach selected paper as a visual card inside the composer (keep gallery open until close or send)
+    setSelectedPaper(suggestion);
+    setSelectedTags([]);
+    setChatInput('');
     inputRef.current?.focus();
   };
 
@@ -1075,7 +1156,9 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
 
     if (success) {
       setChatInput('');
+      setSelectedPaper(null);
       setSelectedTags([]);
+      setShowAutocomplete(false);
       setPreviewImage(null);
       setImageFile(null);
       setPreviewImages([]);
@@ -1202,16 +1285,14 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     console.error("Component Error:", error);
   };
 
-  const activeContextCount =
-    (isModelAnswerMode ? 1 : 0) +
-    (isMarkingSchemeMode ? 1 : 0) +
-    (selectedSubject ? 1 : 0) +
-    selectedTags.length;
-  const hasActiveContext = activeContextCount > 0;
+  const selectedPaperMeta = useMemo(
+    () => (selectedPaper ? parsePaperCardMeta(selectedPaper) : null),
+    [selectedPaper, parsePaperCardMeta]
+  );
 
   return (
     <>
-      {mode === 'first-time' && (
+      {mode === 'first-time' && !showAutocomplete && (
         <div className={`chat-title-section ${isExpanded ? 'shift-up' : ''}`}>
           <div className="user-greeting">
             <Sparkles size={18} className="greeting-sparkle" />
@@ -1220,6 +1301,102 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
           <p className="chat-title-greeting">
             What are we marking today?
           </p>
+        </div>
+      )}
+
+      {mode === 'first-time' && showAutocomplete && (
+        <div className="past-papers-gallery" ref={dropdownRef}>
+          {/* Level 1: Exam Boards (loaded from DB) */}
+          <div className="past-papers-gallery-top">
+            <div className="past-papers-tabs" role="tablist" aria-label="Exam boards">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={selectedBoard === null}
+                className={`past-papers-tab ${selectedBoard === null ? 'active' : ''}`}
+                onClick={() => handleBoardSelect(null)}
+              >
+                All
+              </button>
+              {metadata.boards.map((board: string) => (
+                <button
+                  key={board}
+                  type="button"
+                  role="tab"
+                  aria-selected={selectedBoard === board}
+                  className={`past-papers-tab ${selectedBoard === board ? 'active' : ''}`}
+                  onClick={() => handleBoardSelect(selectedBoard === board ? null : board)}
+                >
+                  {board}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="autocomplete-close-btn"
+              onClick={() => setShowAutocomplete(false)}
+              title="Close Past Papers"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          {/* Level 2: Subjects (loaded from DB) */}
+          {availableSubjects.length > 0 && (
+            <div className="past-papers-subfilters" role="tablist" aria-label="Subjects">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={selectedSubject === null}
+                className={`past-papers-subtab ${selectedSubject === null ? 'active' : ''}`}
+                onClick={() => {
+                  setSelectedSubject(null);
+                  setHighlightedIndex(-1);
+                }}
+              >
+                All Subjects
+              </button>
+              {availableSubjects.map((subject: string) => (
+                <button
+                  type="button"
+                  key={subject}
+                  role="tab"
+                  aria-selected={selectedSubject === subject}
+                  className={`past-papers-subtab ${selectedSubject === subject ? 'active' : ''}`}
+                  onClick={() => {
+                    setSelectedSubject(selectedSubject === subject ? null : subject);
+                    setHighlightedIndex(-1);
+                  }}
+                >
+                  {subject}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Clean single-column list items */}
+          {filteredResults.length > 0 ? (
+            <div className="autocomplete-results-list past-papers-list">
+              {filteredResults.map((result: string, index: number) => {
+                const isSelected = selectedPaper === result;
+                return (
+                  <div
+                    key={result}
+                    className={`autocomplete-item ${index === highlightedIndex ? 'highlighted' : ''} ${isSelected ? 'selected' : ''}`}
+                    onClick={() => handleSuggestionClick(result)}
+                  >
+                    <Brain size={12} className="suggestion-icon" />
+                    <span className="suggestion-text">{formatPaperDisplayLabel(result)}</span>
+                    {isSelected && <Check size={12} className="check-icon" />}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="past-papers-empty">
+              No matching past papers found. Try clearing a filter or typing another paper code.
+            </div>
+          )}
         </div>
       )}
 
@@ -1264,157 +1441,134 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
               </div>
             )}
 
-
-            {mode === 'first-time' && hasActiveContext && (
-              <div className="composer-context-tray">
-                <div className="composer-context-tray-left">
-                  {isModelAnswerMode && (
-                    <span className="composer-context-pill active-mode">
-                      <Sparkles size={12} />
-                      <span>Mode: Generate Model Answer</span>
-                      <button
-                        type="button"
-                        className="composer-context-pill-remove"
-                        onClick={() => setIsModelAnswerMode(false)}
-                        title="Exit Model Answer mode"
-                      >
-                        <X size={11} />
-                      </button>
-                    </span>
-                  )}
-
-                  {isMarkingSchemeMode && (
-                    <span className="composer-context-pill active-mode">
-                      <BookOpen size={12} />
-                      <span>Mode: Explain Mark Scheme</span>
-                      <button
-                        type="button"
-                        className="composer-context-pill-remove"
-                        onClick={() => setIsMarkingSchemeMode(false)}
-                        title="Exit Explain Mark Scheme mode"
-                      >
-                        <X size={11} />
-                      </button>
-                    </span>
-                  )}
-
-                  {selectedSubject && (
-                    <span className="composer-context-pill">
-                      <span>{selectedSubject === 'maths' ? 'Maths' : 'English Language'}</span>
-                      <button
-                        type="button"
-                        className="composer-context-pill-remove"
-                        onClick={() => setSelectedSubject(null)}
-                        title="Clear subject filter"
-                      >
-                        <X size={11} />
-                      </button>
-                    </span>
-                  )}
-
-                  {selectedTags.map((tag) => (
-                    <span key={tag} className="composer-context-pill">
-                      <span>{tag}</span>
-                      <button
-                        type="button"
-                        className="composer-context-pill-remove"
-                        onClick={() => removeTag(tag)}
-                        title={`Remove ${tag} filter`}
-                      >
-                        <X size={11} />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-
-                {activeContextCount > 1 && (
-                  <button
-                    type="button"
-                    className="composer-context-reset"
-                    onClick={() => {
-                      setSelectedSubject(null);
-                      setSelectedTags([]);
-                      setIsModelAnswerMode(false);
-                      setIsMarkingSchemeMode(false);
-                      setShowAutocomplete(false);
-                    }}
-                    title="Reset filters and mode"
-                  >
-                    <X size={12} />
-                    <span>Reset</span>
-                  </button>
-                )}
-              </div>
-            )}
-
-            {isExpanded && ((previewImage || previewImages.length > 0) || (imageFile && isPDF(imageFile)) || (imageFiles.length > 0 && imageFiles.some(file => isPDF(file)))) && (
-              <div className="followup-preview-section">
-                {isMultiImage ? (
-                  <div className="followup-image-preview">
-                    <div className="multi-image-preview-container">
-                      <div className="multi-image-scroll">
-                        {imageFiles.map((file, index) => {
-                          if (isPDF(file)) {
-                            return (
-                              <PDFPreview
-                                key={index}
-                                file={file}
-                                onRemove={() => removeImageAtIndex(index)}
-                              />
-                            );
-                          }
-                          // Find corresponding preview image
-                          const imageIndex = imageFiles.slice(0, index).filter(f => !isPDF(f)).length;
-                          const preview = previewImages[imageIndex];
-                          return (
-                            <div key={index} className="multi-image-item">
-                              <img
-                                src={preview}
-                                alt={`Preview ${index + 1}`}
-                                className="followup-preview-image clickable"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setActiveImageIndex(imageIndex);
-                                  setShowImageMode(true);
-                                }}
-                              />
-                              <button
-                                className="multi-image-remove"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  removeImageAtIndex(index);
-                                }}
-                                type="button"
-                                title="Remove this file"
-                              >
-                                ×
-                              </button>
-                              <span className="multi-image-label">Page {index + 1}</span>
-                            </div>
-                          );
-                        })}
-                      </div>
+            {((mode === 'first-time' && selectedPaper && selectedPaperMeta) ||
+              (isExpanded && ((previewImage || previewImages.length > 0) || (imageFile && isPDF(imageFile)) || (imageFiles.length > 0 && imageFiles.some(file => isPDF(file)))))) && (
+              <div className="composer-attachments-strip">
+                {mode === 'first-time' && selectedPaper && selectedPaperMeta && (
+                  <div className="attachment-tile paper-tile" title={`${selectedPaperMeta.title} · ${selectedPaperMeta.subtitle}`}>
+                    <span className="attachment-tile-badge">PAPER</span>
+                    <div className="attachment-tile-footer">
+                      <span className="attachment-tile-title">{selectedPaperMeta.title}</span>
+                      <span className="attachment-tile-sub">{selectedPaperMeta.subtitle}</span>
                     </div>
+                    <button
+                      type="button"
+                      className="attachment-tile-remove"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedPaper(null);
+                      }}
+                      title="Remove attached paper"
+                    >
+                      <X size={12} />
+                    </button>
                   </div>
-                ) : (
-                  <div className="followup-image-preview">
-                    {imageFile && isPDF(imageFile) ? (
-                      <PDFPreview file={imageFile} onRemove={removePreview} />
-                    ) : (
-                      <>
-                        <img
-                          src={previewImage || ''}
-                          alt="Preview"
-                          className="followup-preview-image clickable"
+                )}
+
+                {isExpanded && isMultiImage && imageFiles.map((file, index) => {
+                  if (isPDF(file)) {
+                    return (
+                      <div key={`pdf-${index}`} className="attachment-tile pdf-tile" title={file.name}>
+                        <div className="attachment-tile-pdf-header">
+                          <span className="attachment-tile-pdf-icon">
+                            <FileText size={13} />
+                          </span>
+                          <span className="attachment-tile-badge">PDF</span>
+                        </div>
+                        <div className="attachment-tile-footer">
+                          <span className="attachment-tile-filename">{file.name}</span>
+                        </div>
+                        <button
+                          type="button"
+                          className="attachment-tile-remove"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setActiveImageIndex(0);
-                            setShowImageMode(true);
+                            removeImageAtIndex(index);
                           }}
-                        />
-                        <button className="followup-remove-preview" onClick={(e) => { e.stopPropagation(); removePreview(); }} type="button">×</button>
-                      </>
-                    )}
+                          title="Remove PDF"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    );
+                  }
+                  const imageIndex = imageFiles.slice(0, index).filter(f => !isPDF(f)).length;
+                  const preview = previewImages[imageIndex];
+                  return (
+                    <div key={`img-${index}`} className="attachment-tile image-tile">
+                      <img
+                        src={preview}
+                        alt={`Page ${index + 1}`}
+                        className="attachment-tile-img"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveImageIndex(imageIndex);
+                          setShowImageMode(true);
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="attachment-tile-remove"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeImageAtIndex(index);
+                        }}
+                        title="Remove image"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  );
+                })}
+
+                {isExpanded && !isMultiImage && imageFile && isPDF(imageFile) && (
+                  <div className="attachment-tile pdf-tile" title={imageFile.name}>
+                    <div className="attachment-tile-pdf-header">
+                      <span className="attachment-tile-pdf-icon">
+                        <FileText size={13} />
+                      </span>
+                      <span className="attachment-tile-badge">PDF</span>
+                    </div>
+                    <div className="attachment-tile-footer">
+                      <span className="attachment-tile-filename">{imageFile.name}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="attachment-tile-remove"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removePreview();
+                      }}
+                      title="Remove PDF"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                )}
+
+                {isExpanded && !isMultiImage && !(imageFile && isPDF(imageFile)) && previewImage && (
+                  <div className="attachment-tile image-tile">
+                    <img
+                      src={previewImage}
+                      alt="Preview"
+                      className="attachment-tile-img"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActiveImageIndex(0);
+                        setShowImageMode(true);
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="attachment-tile-remove"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removePreview();
+                      }}
+                      title="Remove image"
+                    >
+                      <X size={12} />
+                    </button>
                   </div>
                 )}
               </div>
@@ -1432,13 +1586,19 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                       ? "AI is processing..."
                       : mode === 'follow-up'
                         ? "Ask a follow-up question about your marks..."
-                        : isModelAnswerMode
-                          ? "Search or select a past paper to generate a model answer (e.g. 1MA1/2H, 8700/1)..."
-                          : isMarkingSchemeMode
-                            ? "Search or select a past paper to explain its mark scheme (e.g. 1MA1/2H, 8700/1)..."
-                            : (imageFile || imageFiles.length > 0)
-                              ? "Add instructions or press send to mark..."
-                              : "Drop an exam paper, photo, or enter an exam code (e.g. 1MA1/2H)..."
+                        : selectedPaper && isModelAnswerMode
+                          ? "Press Enter or click ↑ to generate model answer..."
+                          : selectedPaper && isMarkingSchemeMode
+                            ? "Press Enter or click ↑ to explain mark scheme..."
+                            : selectedPaper && !(imageFile || imageFiles.length > 0)
+                              ? "Upload your answers to mark, or choose an action below..."
+                              : isModelAnswerMode
+                                ? "Search or select a past paper to generate a model answer (e.g. 1MA1/2H, 8700/1)..."
+                                : isMarkingSchemeMode
+                                  ? "Search or select a past paper to explain its mark scheme (e.g. 1MA1/2H, 8700/1)..."
+                                  : (imageFile || imageFiles.length > 0)
+                                    ? "Add instructions or press send to mark..."
+                                    : "Drop an exam paper, photo, or enter an exam code (e.g. 1MA1/2H)..."
                   }
                   disabled={isProcessing}
                   className="followup-text-input"
@@ -1473,6 +1633,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
               <div className="followup-buttons-row">
                 <div className="followup-left-buttons">
                   {mode === 'first-time' ? (
+                    <>
                     <div className="plus-menu-anchor" ref={plusMenuRef}>
                       <button
                         type="button"
@@ -1574,7 +1735,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                               setIsModelAnswerMode(newVal);
                               if (newVal) {
                                 setIsMarkingSchemeMode(false);
-                                setShowAutocomplete(true);
+                                if (!selectedPaper) setShowAutocomplete(true);
                                 inputRef.current?.focus();
                               }
                             }}
@@ -1596,7 +1757,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                               setIsMarkingSchemeMode(newVal);
                               if (newVal) {
                                 setIsModelAnswerMode(false);
-                                setShowAutocomplete(true);
+                                if (!selectedPaper) setShowAutocomplete(true);
                                 inputRef.current?.focus();
                               }
                             }}
@@ -1610,6 +1771,37 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                         </div>
                       )}
                     </div>
+
+                    {isModelAnswerMode && (
+                      <span className="inline-mode-pill">
+                        <Sparkles size={14} />
+                        <span>Model Answer</span>
+                        <button
+                          type="button"
+                          className="inline-mode-pill-remove"
+                          onClick={() => setIsModelAnswerMode(false)}
+                          title="Exit Model Answer mode"
+                        >
+                          <X size={12} />
+                        </button>
+                      </span>
+                    )}
+
+                    {isMarkingSchemeMode && (
+                      <span className="inline-mode-pill">
+                        <BookOpen size={14} />
+                        <span>Mark Scheme</span>
+                        <button
+                          type="button"
+                          className="inline-mode-pill-remove"
+                          onClick={() => setIsMarkingSchemeMode(false)}
+                          title="Exit Mark Scheme mode"
+                        >
+                          <X size={12} />
+                        </button>
+                      </span>
+                    )}
+                  </>
                   ) : (
                     <>
                       <button
@@ -1716,109 +1908,86 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                 </div>
               </div>
             </div>
+
+            {mode === 'first-time' && matchedPaper && !(imageFile || imageFiles.length > 0) && !isModelAnswerMode && !isMarkingSchemeMode && (
+              <div className="composer-bottom-action-strip">
+                <button
+                  type="button"
+                  className="composer-strip-btn primary"
+                  onClick={handleUploadClick}
+                  disabled={isProcessing || isNegative}
+                >
+                  <Paperclip size={14} />
+                  <span>Upload Answers</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="composer-strip-btn"
+                  onClick={() => {
+                    if (isNegative) {
+                      handleNegativeCreditsRedirect('camera_button_blocked');
+                      return;
+                    }
+                    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+                    if (isMobile) {
+                      handleOpenCameraHandoff();
+                    } else {
+                      setIsMobileUploadOpen(true);
+                    }
+                  }}
+                  disabled={isProcessing || isNegative}
+                >
+                  <Smartphone size={14} />
+                  <span>Scan</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="composer-strip-btn"
+                  onClick={() => {
+                    if (isNegative) {
+                      handleNegativeCreditsRedirect('mode_toggle_blocked');
+                      return;
+                    }
+                    setIsMarkingSchemeMode(false);
+                    setIsModelAnswerMode(true);
+                    inputRef.current?.focus();
+                  }}
+                  disabled={isProcessing || isNegative}
+                >
+                  <Sparkles size={14} />
+                  <span>Model Answer</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="composer-strip-btn"
+                  onClick={() => {
+                    if (isNegative) {
+                      handleNegativeCreditsRedirect('mode_toggle_blocked');
+                      return;
+                    }
+                    setIsModelAnswerMode(false);
+                    setIsMarkingSchemeMode(true);
+                    inputRef.current?.focus();
+                  }}
+                  disabled={isProcessing || isNegative}
+                >
+                  <BookOpen size={14} />
+                  <span>Explain Mark Scheme</span>
+                </button>
+              </div>
+            )}
           </div>
 
           {mode === 'first-time' && !showAutocomplete && (
             <div className="composer-below-section">
               <p className="composer-capability-note">
-                Official GCSE &amp; A-Level Maths &amp; English mark schemes built in · Any other subject supported
+                {matchedPaper && (isModelAnswerMode || isMarkingSchemeMode)
+                  ? `Ready — press Enter or click ↑ to ${isModelAnswerMode ? 'generate model answer' : 'explain mark scheme'}`
+                  : 'Official GCSE & A-Level Maths & English mark schemes built in · Any other subject supported'}
               </p>
-            </div>
-          )}
-
-          {showAutocomplete && mode === 'first-time' && (
-            <div className="autocomplete-dropdown inline-style" ref={dropdownRef}>
-              <div className="autocomplete-chips-section">
-                <div className="autocomplete-chips-header">
-                  <div className="autocomplete-chips-label">Quick Filters:</div>
-                  <button
-                    type="button"
-                    className="autocomplete-close-btn"
-                    onClick={() => setShowAutocomplete(false)}
-                    title="Close Past Papers"
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-                <div className="autocomplete-chips-container">
-                  {/* Subject Chips */}
-                  <button
-                    type="button"
-                    className={`filter-chip subject ${selectedSubject === 'maths' ? 'active' : ''}`}
-                    onClick={() => handleSubjectSelect('maths')}
-                  >
-                    Maths
-                  </button>
-                  <button
-                    type="button"
-                    className={`filter-chip subject ${selectedSubject === 'english' ? 'active' : ''}`}
-                    onClick={() => handleSubjectSelect('english')}
-                  >
-                    English Language
-                  </button>
-
-                  {/* Qualification Chips (Hide A-Level when GCSE English Language chip is active) */}
-                  {metadata.qualifications
-                    .filter((qual: string) => !(selectedSubject === 'english' && /a-level/i.test(qual)))
-                    .map((qual: string) => (
-                      <button
-                        type="button"
-                        key={qual}
-                        className={`filter-chip qualification ${selectedTags.includes(qual) ? 'active' : ''}`}
-                        onClick={() => toggleFilterTag(qual, metadata.qualifications)}
-                      >
-                        {qual}
-                      </button>
-                    ))}
-
-                  {/* Exam Board Chips */}
-                  {metadata.boards.map((board: string) => (
-                    <button
-                      type="button"
-                      key={board}
-                      className={`filter-chip board ${selectedTags.includes(board) ? 'active' : ''}`}
-                      onClick={() => toggleFilterTag(board, metadata.boards)}
-                    >
-                      {board}
-                    </button>
-                  ))}
-
-                  {/* Tier Chips (Only for GCSE Maths — English Language is untiered) */}
-                  {!selectedTags.includes('A-Level') && selectedSubject !== 'english' && metadata.tiers.map((tier: string) => (
-                    <button
-                      type="button"
-                      key={tier}
-                      className={`filter-chip tier ${selectedTags.includes(tier) ? 'active' : ''}`}
-                      onClick={() => toggleFilterTag(tier, metadata.tiers)}
-                    >
-                      {tier}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {filteredResults.length > 0 && (
-                <div className="autocomplete-results-list">
-                  <div className="autocomplete-results-label">
-                    {selectedSubject === 'english'
-                      ? 'English Language Past Papers:'
-                      : selectedSubject === 'maths'
-                        ? 'Mathematics Past Papers:'
-                        : 'Past Papers:'}
-                  </div>
-                  {filteredResults.map((result: string, index: number) => (
-                    <div
-                      key={result}
-                      className={`autocomplete-item ${index === highlightedIndex ? 'highlighted' : ''}`}
-                      onClick={() => handleSuggestionClick(result)}
-                    >
-                      <Brain size={12} className="suggestion-icon" />
-                      <span className="suggestion-text">{formatPaperDisplayLabel(result)}</span>
-                      {chatInput.toLowerCase().includes(result.toLowerCase()) && <Check size={12} className="check-icon" />}
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
           )}
         </div>
