@@ -429,7 +429,6 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
 
     setShowAutocomplete(true);
     setHighlightedIndex(-1);
-    inputRef.current?.focus();
   };
 
   const removeTag = (tagToRemove: string) => {
@@ -602,10 +601,10 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
 
   const handleSuggestionClick = (suggestion: string) => {
     // Attach selected paper as a visual card inside the composer (keep gallery open until close or send)
+    // Do not auto-focus textarea so mobile virtual keyboard stays dismissed while browsing
     setSelectedPaper(suggestion);
     setSelectedTags([]);
     setChatInput('');
-    inputRef.current?.focus();
   };
 
   // Helper function to detect PDF files
@@ -1707,13 +1706,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                             role="menuitem"
                             onClick={() => {
                               setShowPlusMenu(false);
-                              setShowAutocomplete((prev) => {
-                                const next = !prev;
-                                if (next) {
-                                  inputRef.current?.focus();
-                                }
-                                return next;
-                              });
+                              setShowAutocomplete((prev) => !prev);
                             }}
                           >
                             <Library size={16} className="plus-dropdown-icon" />

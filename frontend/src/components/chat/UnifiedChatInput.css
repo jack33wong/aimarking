@@ -876,38 +876,59 @@
 }
 
 /* ============================================================================
-   GEMINI-STYLE PAST PAPERS GALLERY (ABOVE COMPOSER, INPUT LOWERED TO BOTTOM)
+   GEMINI-STYLE PAST PAPERS GALLERY (PINNED TOP TABS + SCROLLABLE LIST + BOTTOM INPUT)
    ============================================================================ */
 
+.chat-container:has(.past-papers-gallery) {
+  overflow-y: hidden !important;
+  padding-top: 0;
+}
+
 .focused-app-entry:has(.past-papers-gallery) {
-  min-height: calc(100vh - 76px);
-  justify-content: flex-end;
-  padding-top: 24px;
-  padding-bottom: 24px;
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  justify-content: flex-start;
+  padding: 16px 20px calc(18px + env(safe-area-inset-bottom));
+  box-sizing: border-box;
 }
 
 .focused-app-entry:has(.past-papers-gallery) .landing-chat-input-placeholder {
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
-  flex: 1;
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
   width: 100%;
   margin-top: 0;
+}
+
+.landing-chat-input-placeholder:has(.past-papers-gallery) .followup-chat-input-bar.first-time {
+  flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+  .focused-app-entry:has(.past-papers-gallery) {
+    padding: 12px 12px calc(14px + env(safe-area-inset-bottom));
+  }
 }
 
 .past-papers-gallery {
   width: 100%;
   max-width: 860px;
-  margin: 0 auto 20px auto;
+  margin: 0 auto 12px auto;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  flex: 1;
+  gap: 12px;
+  flex: 1 1 auto;
   min-height: 0;
+  overflow: hidden;
   animation: dropdown-fade-in-inline 0.2s ease;
 }
 
 .past-papers-gallery-top {
+  flex-shrink: 0;
   position: relative;
   display: flex;
   align-items: center;
@@ -954,6 +975,7 @@
 }
 
 .past-papers-subfilters {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -986,10 +1008,12 @@
 }
 
 .past-papers-list {
-  max-height: calc(100vh - 340px);
-  min-height: 180px;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
   overflow-y: auto;
   overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
   padding-right: 4px;
 }
 
@@ -1009,6 +1033,12 @@
 
 .past-papers-list .autocomplete-item.selected {
   background: #333537;
+  color: #e3e3e3;
+}
+
+.past-papers-list .autocomplete-item.selected .suggestion-text,
+.past-papers-list .autocomplete-item.selected .suggestion-icon,
+.past-papers-list .autocomplete-item.selected .check-icon {
   color: #e3e3e3;
 }
 
