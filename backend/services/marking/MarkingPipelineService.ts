@@ -3289,14 +3289,16 @@ export class MarkingPipelineService {
                 const getSourceFileKey = (p: StandardizedPage) =>
                     `${(p as any)._sourceIndex ?? 'img'}_${p.originalFileName || 'default'}`;
 
-                const fileAnswerCounts = new Map<string, { total: number; answered: number; name: string }>();
+                const fileAnswerCounts = new Map<string, { total: number; answered: number; questionOnly: number; name: string }>();
                 for (const page of standardizedPages) {
                     const key = getSourceFileKey(page);
-                    const stat = fileAnswerCounts.get(key) || { total: 0, answered: 0, name: page.originalFileName || 'default' };
+                    const stat = fileAnswerCounts.get(key) || { total: 0, answered: 0, questionOnly: 0, name: page.originalFileName || 'default' };
                     stat.total++;
                     const cls = allClassificationResults.find(r => r.pageIndex === page.pageIndex);
                     if (cls?.result?.category === 'questionAnswer') {
                         stat.answered++;
+                    } else if (cls?.result?.category === 'questionOnly') {
+                        stat.questionOnly++;
                     }
                     fileAnswerCounts.set(key, stat);
                 }
@@ -3305,7 +3307,15 @@ export class MarkingPipelineService {
                 const pureReferenceFileKeys = new Set<string>();
                 if (hasAnsweredFile && fileAnswerCounts.size >= 2) {
                     fileAnswerCounts.forEach((stat, key) => {
-                        if (stat.answered === 0 && stat.total >= 2) {
+                        // Only eject genuine reference question papers (must have questionOnly pages, and when a
+                        // markingScope is active, must have actually donated stems so out-of-scope student-work
+                        // images skipped by markingScope are kept unmarked in the annotated output).
+                        if (
+                            stat.answered === 0 &&
+                            stat.total >= 2 &&
+                            stat.questionOnly > 0 &&
+                            (!markingScope || donatedStemsByQNum.size > 0)
+                        ) {
                             pureReferenceFileKeys.add(key);
                             console.log(
                                 `📑 [SEPARATE-ANSWER DEMUX] Ejecting Reference Question Paper "${stat.name}" (${stat.total} pages, 0 student work) after harvesting ${donatedStemsByQNum.size} question stem(s).`

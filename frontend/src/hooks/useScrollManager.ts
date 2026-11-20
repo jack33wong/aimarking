@@ -31,9 +31,33 @@ export const useScrollManager = (chatMessages: UnifiedMessage[], isAIThinking: b
 
   const scrollToMessage = useCallback((messageId: string | number, options?: ScrollIntoViewOptions) => {
     if (chatContainerElement && messageId) {
-      const targetMessage = chatContainerElement.querySelector(`[data-message-id="${messageId}"]`);
+      const targetMessage = chatContainerElement.querySelector(`[data-message-id="${messageId}"]`) as HTMLElement | null;
 
       if (targetMessage) {
+        if (options?.block === 'start') {
+          const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768;
+          // On initial submission (first user message + processing bubble), keep the container at top
+          // so the uploaded thumbnails and the thinking header stay cleanly visible below the mobile bar.
+          const isFirstTurn = chatMessages.length <= 2;
+          if (isFirstTurn) {
+            chatContainerElement.scrollTo({
+              top: 0,
+              behavior: options.behavior || 'smooth'
+            });
+            return true;
+          }
+
+          const containerRect = chatContainerElement.getBoundingClientRect();
+          const targetRect = targetMessage.getBoundingClientRect();
+          const topOffset = isMobile ? 116 : 140;
+          const nextTop = Math.max(0, targetRect.top - containerRect.top + chatContainerElement.scrollTop - topOffset);
+          chatContainerElement.scrollTo({
+            top: nextTop,
+            behavior: options.behavior || 'smooth'
+          });
+          return true;
+        }
+
         // Native behavior is now boosted by scroll-margin-top in CSS
         targetMessage.scrollIntoView(options || { behavior: 'smooth', block: 'center' });
         return true;
@@ -44,7 +68,7 @@ export const useScrollManager = (chatMessages: UnifiedMessage[], isAIThinking: b
       scrollToBottom();
     }
     return false;
-  }, [chatContainerElement, scrollToBottom]);
+  }, [chatContainerElement, chatMessages.length, scrollToBottom]);
 
   const scrollToNewResponse = useCallback(() => {
     if (newResponseMessageId) {

@@ -1005,6 +1005,95 @@ html.dark .skeleton-label {
   100% { background-position: 200% 0; }
 }
 
+@media (max-width: 768px) {
+  .skeleton-gallery-wrapper {
+    padding-left: 4px;
+  }
+
+  .skeleton-gallery {
+    gap: 8px;
+  }
+
+  .skeleton-item {
+    flex: 0 0 84px;
+    width: 84px;
+    height: 112px;
+    border-radius: 9px;
+  }
+
+  .skeleton-item--exiting {
+    animation: skeletonCardExitMobile 3.5s ease-in-out forwards;
+  }
+
+  .skeleton-viewfinder {
+    top: 7px;
+    left: 7px;
+    right: 7px;
+    bottom: 22px;
+  }
+
+  .skeleton-corner {
+    width: 10px;
+    height: 10px;
+  }
+
+  .skeleton-pdf-icon-badge svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  .skeleton-pdf-ext {
+    font-size: 8.5px;
+    padding: 1.5px 5px;
+  }
+
+  .skeleton-scrim ~ .skeleton-overlay {
+    padding: 4px 5px 5px;
+    gap: 4px;
+  }
+
+  .skeleton-status-dot {
+    width: 5px;
+    height: 5px;
+  }
+
+  .skeleton-label {
+    font-size: 7.5px;
+    letter-spacing: 0.02em;
+  }
+}
+
+@keyframes skeletonCardExitMobile {
+  0% {
+    opacity: 1;
+    filter: blur(0px);
+    transform: scale(1);
+    flex-basis: 84px;
+    width: 84px;
+    min-width: 84px;
+    margin-right: 0;
+  }
+  65% {
+    opacity: 0;
+    filter: blur(10px);
+    transform: scale(0.88);
+    flex-basis: 84px;
+    width: 84px;
+    min-width: 84px;
+    margin-right: 0;
+  }
+  100% {
+    opacity: 0;
+    filter: blur(10px);
+    transform: scale(0.88);
+    flex-basis: 0px;
+    width: 0px;
+    min-width: 0px;
+    margin-right: -8px;
+    border-width: 0;
+  }
+}
+
 /* AI Response Styling for Question text and Answer body */
 .markdown-math-renderer .model_question {
   color: var(--text-secondary);
