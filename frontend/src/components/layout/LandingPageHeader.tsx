@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { useAuth } from '../../contexts/AuthContext';
 import './LandingPageHeader.css';
 
 export const LandingPageHeader: React.FC = () => {
     const navigate = useNavigate();
     const location = useLocation();
+    const { user } = useAuth();
     const isPricingPage = location.pathname === '/pricing';
     const [isMenuOpen, setIsMenuOpen] = useState(false);
 
@@ -42,14 +44,26 @@ export const LandingPageHeader: React.FC = () => {
                     <Link to="/pricing" state={{ fromLanding: true }} className="nav-link" onClick={() => setIsMenuOpen(false)}>Pricing</Link>
 
                     <div className="mobile-only-actions">
-                        <Link to="/login" state={{ fromLanding: true }} className="nav-link" onClick={() => setIsMenuOpen(false)}>Sign in</Link>
-                        <Link to="/login" state={{ fromLanding: true, mode: 'signup' }} className="nav-btn-black" onClick={() => setIsMenuOpen(false)}>Sign up</Link>
+                        {user ? (
+                            <Link to="/app" className="nav-btn-black" onClick={() => setIsMenuOpen(false)}>Open App</Link>
+                        ) : (
+                            <>
+                                <Link to="/login" state={{ fromLanding: true }} className="nav-link" onClick={() => setIsMenuOpen(false)}>Sign in</Link>
+                                <Link to="/login" state={{ fromLanding: true, mode: 'signup' }} className="nav-btn-black" onClick={() => setIsMenuOpen(false)}>Sign up</Link>
+                            </>
+                        )}
                     </div>
                 </nav>
 
                 <div className="landing-header-right">
-                    <Link to="/login" state={{ fromLanding: true }} className="nav-link">Sign in</Link>
-                    <Link to="/login" state={{ fromLanding: true, mode: 'signup' }} className="nav-btn-black">Sign up</Link>
+                    {user ? (
+                        <Link to="/app" className="nav-btn-black">Open App</Link>
+                    ) : (
+                        <>
+                            <Link to="/login" state={{ fromLanding: true }} className="nav-link">Sign in</Link>
+                            <Link to="/login" state={{ fromLanding: true, mode: 'signup' }} className="nav-btn-black">Sign up</Link>
+                        </>
+                    )}
 
                     <button className="mobile-menu-toggle" onClick={toggleMenu} aria-label="Toggle Menu">
                         <div className="hamburger-icon">

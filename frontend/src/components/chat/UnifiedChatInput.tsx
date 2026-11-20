@@ -21,6 +21,7 @@ import { mobileUploadService } from '../../services/MobileUploadService';
 import { FileHandoff } from './FileHandoff';
 import { useTelemetry } from '../../hooks/useTelemetry';
 import { trackFunnelEvent } from '../../utils/funnelTracker';
+import { getLandingExamContext, clearLandingExamContext } from '../../utils/landingContext';
 import {
   preInspectUploadedFiles,
   recomputePreInspectFromSummaries,
@@ -261,6 +262,9 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   };
 
   const [showAutocomplete, setShowAutocomplete] = useState<boolean>(false);
+  const [isMetadataLoading, setIsMetadataLoading] = useState<boolean>(true);
+  const [paperSuggestionDismissed, setPaperSuggestionDismissed] = useState<boolean>(false);
+  const landingContextAppliedRef = useRef<boolean>(false);
   const [showPlusMenu, setShowPlusMenu] = useState<boolean>(false);
   const [plusMenuOpenUpward, setPlusMenuOpenUpward] = useState<boolean>(false);
   const plusMenuRef = useRef<HTMLDivElement>(null);
@@ -285,6 +289,34 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       document.removeEventListener('keydown', handleKeyDown);
     };
   }, [showPlusMenu]);
+
+  const normalizePaperSearch = useCallback((t: string) => {
+    return t.toLowerCase()
+      .replace(/\bmathematics\b/g, 'maths')
+      .replace(/\benglish language\b/g, 'englang')
+      .replace(/\beng lang\b/g, 'englang')
+      .replace(/\benglish\b/g, 'englang')
+      .replace(/\ba level\b/g, 'alevel')
+      // Split concatenated month + 2/4-digit year (e.g. "nov2024" -> "nov 2024", "jun25" -> "jun 2025", "sum2024" -> "sum 2024")
+      .replace(/\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|sum(?:mer)?|win(?:ter)?|aut(?:umn)?)(\d{2,4})\b/gi, (_, month, yr) => {
+        const fullYear = yr.length === 2 ? `20${yr}` : yr;
+        return `${month} ${fullYear}`;
+      })
+      .replace(/\bjan\b/g, 'january')
+      .replace(/\bfeb\b/g, 'february')
+      .replace(/\bmar\b/g, 'march')
+      .replace(/\bapr\b/g, 'april')
+      .replace(/\bjul\b/g, 'july')
+      .replace(/\baug\b/g, 'august')
+      .replace(/\bsep(?:t)?\b/g, 'september')
+      .replace(/\boct\b/g, 'october')
+      .replace(/\bnov\b/g, 'november')
+      .replace(/\bdec\b/g, 'december')
+      .replace(/\b(jun|june|may|sum|summer)\b/g, 'summer')
+      .replace(/[-,/]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }, []);
 
   // Dynamic filtering logic using useMemo (Modern React)
   const filteredResults = useMemo(() => {
@@ -317,34 +349,24 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     // 2. Further filter by typing buffer (V17.5 Vocabulary-Based Resilience)
     if (chatInput.trim().length > 0) {
       const input = chatInput.trim();
-      const normalize = (t: string) => t.toLowerCase()
-        .replace(/\bmathematics\b/g, 'maths')
-        .replace(/\benglish language\b/g, 'englang')
-        .replace(/\beng lang\b/g, 'englang')
-        .replace(/\benglish\b/g, 'englang')
-        .replace(/\b(june|may|summer)\b/g, 'summer')
-        .replace(/\ba level\b/g, 'alevel')
-        .replace(/[-,/]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
 
       // Build vocabulary from all available metadata
       const vocabulary = new Set<string>();
-      (metadata.boards || []).forEach(b => normalize(b).split(' ').forEach(w => w && vocabulary.add(w)));
-      (metadata.qualifications || []).forEach(q => normalize(q).split(' ').forEach(w => w && vocabulary.add(w)));
-      (metadata.tiers || []).forEach(t => normalize(t).split(' ').forEach(w => w && vocabulary.add(w)));
+      (metadata.boards || []).forEach(b => normalizePaperSearch(b).split(' ').forEach(w => w && vocabulary.add(w)));
+      (metadata.qualifications || []).forEach(q => normalizePaperSearch(q).split(' ').forEach(w => w && vocabulary.add(w)));
+      (metadata.tiers || []).forEach(t => normalizePaperSearch(t).split(' ').forEach(w => w && vocabulary.add(w)));
       (metadata.papers || []).forEach(p => {
         // Paper names contain codes and series
-        normalize(p).split(' ').forEach(w => w && vocabulary.add(w));
+        normalizePaperSearch(p).split(' ').forEach(w => w && vocabulary.add(w));
       });
 
-      const rawInputTokens = normalize(input).split(' ').filter(token => token.length > 0);
+      const rawInputTokens = normalizePaperSearch(input).split(' ').filter(token => token.length > 0);
       // Filter out tokens that aren't in our valid vocabulary
       const inputTokens = Array.from(new Set(rawInputTokens.filter(k => vocabulary.has(k))));
 
       if (inputTokens.length > 0) {
         filtered = filtered.filter(p => {
-          const paperTokens = normalize(p).split(' ').filter(token => token.length > 0);
+          const paperTokens = normalizePaperSearch(p).split(' ').filter(token => token.length > 0);
           return inputTokens.every(it =>
             paperTokens.some(pt => {
               if (pt === it) return true;
@@ -356,10 +378,24 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       }
     }
 
-    return filtered.sort((a: string, b: string) => {
+    // Deduplicate papers that normalize to the same canonical series (e.g. "June 2024" vs "Summer 2024")
+    const seenCanonical = new Map<string, string>();
+    filtered.forEach((p: string) => {
+      const key = normalizePaperSearch(p);
+      const existing = seenCanonical.get(key);
+      if (!existing) {
+        seenCanonical.set(key, p);
+      } else if (/\bsummer\b/i.test(existing) && /\b(june|may)\b/i.test(p)) {
+        // Prefer specific month label ("June 2024" / "May 2023") over generic "Summer 2024"
+        seenCanonical.set(key, p);
+      }
+    });
+    const uniqueFiltered = Array.from(seenCanonical.values());
+
+    return uniqueFiltered.sort((a: string, b: string) => {
       // Sort by Year and Month (Descending)
       const monthOrder: Record<string, number> = {
-        'january': 1, 'february': 2, 'march': 3, 'april': 4, 'may': 5, 'june': 6,
+        'january': 1, 'february': 2, 'march': 3, 'april': 4, 'may': 5, 'june': 6, 'summer': 6,
         'july': 7, 'august': 8, 'september': 9, 'october': 10, 'november': 11, 'december': 12
       };
 
@@ -381,7 +417,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       if (dateA.month !== dateB.month) return dateB.month - dateA.month;
       return a.localeCompare(b);
     }).slice(0, 10);
-  }, [metadata.papers, selectedTags, selectedBoard, selectedSubject, getPaperSubject, chatInput, mode, showAutocomplete]);
+  }, [metadata.papers, metadata.boards, metadata.qualifications, metadata.tiers, selectedTags, selectedBoard, selectedSubject, getPaperSubject, chatInput, mode, showAutocomplete, normalizePaperSearch]);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -396,15 +432,71 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   // Fetch metadata on mount
   useEffect(() => {
     const fetchMetadata = async () => {
+      setIsMetadataLoading(true);
       try {
         const data = await ConfigService.getExamMetadata();
         setMetadata(data);
+        setSelectedBoard((prev) => {
+          if (!prev || !data?.boards?.length) return prev;
+          const target = prev.toLowerCase();
+          const match = data.boards.find((b: string) => {
+            const bl = b.toLowerCase();
+            return bl === target || bl.includes(target) || target.includes(bl);
+          });
+          return match || prev;
+        });
       } catch (error) {
         console.error('Failed to fetch exam metadata:', error);
+      } finally {
+        setIsMetadataLoading(false);
       }
     };
     fetchMetadata();
   }, []);
+
+  // Reset composer, past papers gallery, and landing context when user clicks "New Marking"
+  useEffect(() => {
+    const handleWorkspaceReset = () => {
+      clearLandingExamContext();
+      landingContextAppliedRef.current = true;
+      setChatInput('');
+      setSelectedPaper(null);
+      setSelectedTags([]);
+      setSelectedBoard(null);
+      setSelectedSubject(null);
+      setShowAutocomplete(false);
+      setPaperSuggestionDismissed(false);
+      setIsModelAnswerMode(false);
+      setIsMarkingSchemeMode(false);
+    };
+    window.addEventListener('workspaceReset', handleWorkspaceReset);
+    return () => window.removeEventListener('workspaceReset', handleWorkspaceReset);
+  }, [setIsModelAnswerMode, setIsMarkingSchemeMode]);
+
+  // Auto-open and pre-filter Past Papers autocomplete from user's last visited SEO landing page
+  useEffect(() => {
+    if (mode !== 'first-time' || landingContextAppliedRef.current) return;
+
+    const params = new URLSearchParams(location.search);
+    const hasDeepLink = Boolean(params.get('code') || params.get('action') || params.get('mode'));
+    if (hasDeepLink || initialInput || pendingModelAnswerPaper || selectedPaper) return;
+
+    const landingCtx = getLandingExamContext();
+    if (!landingCtx) return;
+
+    landingContextAppliedRef.current = true;
+
+    const targetBoard = landingCtx.board;
+    const matchedBoard = (metadata.boards || []).find((b: string) => {
+      const bl = b.toLowerCase();
+      const target = targetBoard.toLowerCase();
+      return bl === target || bl.includes(target) || target.includes(bl);
+    });
+
+    setSelectedBoard(matchedBoard || targetBoard);
+    setSelectedSubject(landingCtx.subject);
+    setShowAutocomplete(true);
+  }, [mode, location.search, initialInput, pendingModelAnswerPaper, selectedPaper, metadata.boards]);
 
   // V16.7 Sync input with initialInput from context (for redirection)
   useEffect(() => {
@@ -473,26 +565,15 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     const trimmed = input.trim();
     if (!trimmed) return [];
 
-    const normalize = (t: string) => t.toLowerCase()
-      .replace(/\bmathematics\b/g, 'maths')
-      .replace(/\benglish language\b/g, 'englang')
-      .replace(/\beng lang\b/g, 'englang')
-      .replace(/\benglish\b/g, 'englang')
-      .replace(/\b(june|may|summer)\b/g, 'summer')
-      .replace(/\ba level\b/g, 'alevel')
-      .replace(/[-,/]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-
     const vocabulary = new Set<string>();
-    (metadata.boards || []).forEach(b => normalize(b).split(' ').forEach(w => w && vocabulary.add(w)));
-    (metadata.qualifications || []).forEach(q => normalize(q).split(' ').forEach(w => w && vocabulary.add(w)));
-    (metadata.tiers || []).forEach(t => normalize(t).split(' ').forEach(w => w && vocabulary.add(w)));
+    (metadata.boards || []).forEach(b => normalizePaperSearch(b).split(' ').forEach(w => w && vocabulary.add(w)));
+    (metadata.qualifications || []).forEach(q => normalizePaperSearch(q).split(' ').forEach(w => w && vocabulary.add(w)));
+    (metadata.tiers || []).forEach(t => normalizePaperSearch(t).split(' ').forEach(w => w && vocabulary.add(w)));
     (metadata.papers || []).forEach(p => {
-      normalize(p).split(' ').forEach(w => w && vocabulary.add(w));
+      normalizePaperSearch(p).split(' ').forEach(w => w && vocabulary.add(w));
     });
 
-    const rawInputTokens = normalize(trimmed).split(' ').filter(token => token.length > 0);
+    const rawInputTokens = normalizePaperSearch(trimmed).split(' ').filter(token => token.length > 0);
     const inputTokens = Array.from(new Set(rawInputTokens.filter(k => vocabulary.has(k))));
 
     if (inputTokens.length === 0) return [];
@@ -507,8 +588,8 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       candidatePapers = candidatePapers.filter((p) => getPaperSubject(p).toLowerCase() === subjLower);
     }
 
-    return candidatePapers.filter((p: string) => {
-      const paperTokens = normalize(p).split(' ').filter(token => token.length > 0);
+    const matched = candidatePapers.filter((p: string) => {
+      const paperTokens = normalizePaperSearch(p).split(' ').filter(token => token.length > 0);
 
       // Strict match on non-noisy keywords
       return inputTokens.every(it => {
@@ -518,10 +599,24 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
           return pt.includes(it);
         });
       });
-    }).sort((a: string, b: string) => {
+    });
+
+    // Deduplicate papers that normalize to the same canonical series (e.g. "June 2024" vs "Summer 2024")
+    const seenCanonical = new Map<string, string>();
+    matched.forEach((p: string) => {
+      const key = normalizePaperSearch(p);
+      const existing = seenCanonical.get(key);
+      if (!existing) {
+        seenCanonical.set(key, p);
+      } else if (/\bsummer\b/i.test(existing) && /\b(june|may)\b/i.test(p)) {
+        seenCanonical.set(key, p);
+      }
+    });
+
+    return Array.from(seenCanonical.values()).sort((a: string, b: string) => {
       // Sort by Year and Month (Descending)
       const monthOrder: Record<string, number> = {
-        'january': 1, 'february': 2, 'march': 3, 'april': 4, 'may': 5, 'june': 6,
+        'january': 1, 'february': 2, 'march': 3, 'april': 4, 'may': 5, 'june': 6, 'summer': 6,
         'july': 7, 'august': 8, 'september': 9, 'october': 10, 'november': 11, 'december': 12
       };
 
@@ -546,7 +641,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       // Secondary sort by paper code/name if dates are identical
       return a.localeCompare(b);
     });
-  }, [metadata.papers, selectedBoard, selectedSubject, getPaperSubject]);
+  }, [metadata.papers, metadata.boards, metadata.qualifications, metadata.tiers, selectedBoard, selectedSubject, getPaperSubject, normalizePaperSearch]);
 
   const canSend = useMemo(() => {
     if (isProcessing || isNegative) return false;
@@ -618,11 +713,12 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   }, [validationMessageType]);
 
   const handleSuggestionClick = (suggestion: string) => {
-    // Attach selected paper as a visual card inside the composer (keep gallery open until close or send)
+    // Attach selected paper as a visual card inside the composer (keep gallery open on both mobile and desktop)
     // Do not auto-focus textarea so mobile virtual keyboard stays dismissed while browsing
     setSelectedPaper(suggestion);
     setSelectedTags([]);
     setChatInput('');
+    setPaperSuggestionDismissed(false);
   };
 
   // Helper function to detect PDF files
@@ -1213,6 +1309,10 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       }
       return;
     }
+    if (mode === 'first-time') {
+      clearLandingExamContext();
+      landingContextAppliedRef.current = true;
+    }
     // Abort any in-flight pre-inspect request once the user submits
     if (preInspectAbortRef.current) {
       preInspectAbortRef.current.abort();
@@ -1270,10 +1370,17 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     }
 
     if (success) {
+      clearLandingExamContext();
+      landingContextAppliedRef.current = true;
       setChatInput('');
       setSelectedPaper(null);
       setSelectedTags([]);
+      setSelectedBoard(null);
+      setSelectedSubject(null);
       setShowAutocomplete(false);
+      setPaperSuggestionDismissed(false);
+      setIsModelAnswerMode(false);
+      setIsMarkingSchemeMode(false);
       setPreviewImage(null);
       setImageFile(null);
       setPreviewImages([]);
@@ -1336,6 +1443,66 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       void handleSendClick(typeof suggestion.prompt === 'string' ? suggestion.prompt : combinedInput);
     }
   }, [removePreview, preInspectResult, handleSendClick, combinedInput]);
+
+  useEffect(() => {
+    if (matchedPaper || showAutocomplete) {
+      setPaperSuggestionDismissed(false);
+    }
+  }, [matchedPaper, showAutocomplete, selectedBoard, selectedSubject]);
+
+  const handlePaperSuggestionAction = useCallback((action: 'model_answer' | 'marking_scheme' | 'upload' | 'scan' | 'browse_papers') => {
+    if (action === 'browse_papers') {
+      setShowAutocomplete(true);
+      return;
+    }
+    if (isNegative) {
+      handleNegativeCreditsRedirect(`paper_suggestion_${action}`);
+      return;
+    }
+    if (action === 'upload') {
+      setIsModelAnswerMode(false);
+      setIsMarkingSchemeMode(false);
+      handleUploadClick();
+      return;
+    }
+    if (action === 'scan') {
+      setIsModelAnswerMode(false);
+      setIsMarkingSchemeMode(false);
+      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      if (isMobile) {
+        handleOpenCameraHandoff();
+      } else {
+        setIsMobileUploadOpen(true);
+      }
+      return;
+    }
+    if (!matchedPaper || isProcessing) return;
+
+    trackFunnelEvent('paper_suggestion_action_clicked', {
+      action,
+      paper: matchedPaper,
+    }, user?.uid || null);
+
+    if (action === 'model_answer') {
+      setIsMarkingSchemeMode(false);
+      setIsModelAnswerMode(true);
+      inputRef.current?.focus();
+    } else if (action === 'marking_scheme') {
+      setIsModelAnswerMode(false);
+      setIsMarkingSchemeMode(true);
+      inputRef.current?.focus();
+    }
+  }, [
+    isNegative,
+    handleNegativeCreditsRedirect,
+    setIsModelAnswerMode,
+    setIsMarkingSchemeMode,
+    handleUploadClick,
+    handleOpenCameraHandoff,
+    matchedPaper,
+    isProcessing,
+    user?.uid,
+  ]);
 
   const handleKeyPress = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1527,7 +1694,11 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
           )}
 
           {/* Clean single-column list items */}
-          {filteredResults.length > 0 ? (
+          {isMetadataLoading && metadata.papers.length === 0 ? (
+            <div className="past-papers-empty">
+              Loading past papers...
+            </div>
+          ) : filteredResults.length > 0 ? (
             <div className="autocomplete-results-list past-papers-list">
               {filteredResults.map((result: string, index: number) => {
                 const isSelected = selectedPaper === result;
@@ -1609,6 +1780,122 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                   )}
                 </>
               ) : null}
+            </div>
+          )}
+
+          {mode === 'first-time' && !isProcessing && attachedFilesList.length === 0 && !paperSuggestionDismissed && (matchedPaper || showAutocomplete) && (
+            <div className="pre-inspect-panel" role="status" aria-live="polite">
+              {matchedPaper ? (
+                <>
+                  <div className="pre-inspect-header">
+                    <span className="pre-inspect-title">
+                      What would you like to do with {selectedPaperMeta ? `${selectedPaperMeta.title} (${selectedPaperMeta.subtitle})` : formatPaperDisplayLabel(matchedPaper)}?
+                    </span>
+                    <button
+                      type="button"
+                      className="pre-inspect-dismiss"
+                      onClick={() => setPaperSuggestionDismissed(true)}
+                      title="Dismiss"
+                      aria-label="Dismiss"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <div className="pre-inspect-list">
+                    <button
+                      type="button"
+                      className="pre-inspect-list-row"
+                      onClick={() => handlePaperSuggestionAction('model_answer')}
+                    >
+                      <Sparkles size={14} className="pre-inspect-row-icon" />
+                      <span>Generate model answers for this paper</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="pre-inspect-list-row"
+                      onClick={() => handlePaperSuggestionAction('marking_scheme')}
+                    >
+                      <BookOpen size={14} className="pre-inspect-row-icon" />
+                      <span>Explain the official marking scheme</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="pre-inspect-list-row"
+                      onClick={() => handlePaperSuggestionAction('upload')}
+                    >
+                      <Paperclip size={14} className="pre-inspect-row-icon" />
+                      <span>Upload your completed answers to mark (PDF or photos)</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="pre-inspect-list-row"
+                      onClick={() => handlePaperSuggestionAction('scan')}
+                    >
+                      <Smartphone size={14} className="pre-inspect-row-icon" />
+                      <span>Scan your handwritten answers with camera</span>
+                    </button>
+                    {!showAutocomplete && (
+                      <button
+                        type="button"
+                        className="pre-inspect-list-row"
+                        onClick={() => handlePaperSuggestionAction('browse_papers')}
+                      >
+                        <Library size={14} className="pre-inspect-row-icon" />
+                        <span>Choose a different past paper</span>
+                      </button>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="pre-inspect-header">
+                    <span className="pre-inspect-title">
+                      What would you like to do{selectedBoard || selectedSubject ? ` (${[selectedBoard, selectedSubject].filter(Boolean).join(' · ')})` : ''}?
+                    </span>
+                    <button
+                      type="button"
+                      className="pre-inspect-dismiss"
+                      onClick={() => setPaperSuggestionDismissed(true)}
+                      title="Dismiss"
+                      aria-label="Dismiss"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <div className="pre-inspect-list">
+                    <button
+                      type="button"
+                      className="pre-inspect-list-row"
+                      onClick={() => {
+                        if (filteredResults.length > 0) {
+                          setHighlightedIndex(0);
+                          const listEl = dropdownRef.current?.querySelector('.past-papers-list');
+                          listEl?.scrollTo({ top: 0, behavior: 'smooth' });
+                        }
+                      }}
+                    >
+                      <Sparkles size={14} className="pre-inspect-row-icon" />
+                      <span>Select a past paper from the list above for model answers or mark schemes</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="pre-inspect-list-row"
+                      onClick={() => handlePaperSuggestionAction('upload')}
+                    >
+                      <Paperclip size={14} className="pre-inspect-row-icon" />
+                      <span>Upload your completed answers to mark (PDF or photos)</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="pre-inspect-list-row"
+                      onClick={() => handlePaperSuggestionAction('scan')}
+                    >
+                      <Smartphone size={14} className="pre-inspect-row-icon" />
+                      <span>Scan your handwritten answers with camera</span>
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -2103,12 +2390,12 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
               </div>
             </div>
 
-            {mode === 'first-time' && matchedPaper && !(imageFile || imageFiles.length > 0) && !isModelAnswerMode && !isMarkingSchemeMode && (
+            {mode === 'first-time' && matchedPaper && paperSuggestionDismissed && !(imageFile || imageFiles.length > 0) && !isModelAnswerMode && !isMarkingSchemeMode && (
               <div className="composer-bottom-action-strip">
                 <button
                   type="button"
                   className="composer-strip-btn primary"
-                  onClick={handleUploadClick}
+                  onClick={() => handlePaperSuggestionAction('upload')}
                   disabled={isProcessing || isNegative}
                 >
                   <Paperclip size={14} />
@@ -2118,18 +2405,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                 <button
                   type="button"
                   className="composer-strip-btn"
-                  onClick={() => {
-                    if (isNegative) {
-                      handleNegativeCreditsRedirect('camera_button_blocked');
-                      return;
-                    }
-                    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-                    if (isMobile) {
-                      handleOpenCameraHandoff();
-                    } else {
-                      setIsMobileUploadOpen(true);
-                    }
-                  }}
+                  onClick={() => handlePaperSuggestionAction('scan')}
                   disabled={isProcessing || isNegative}
                 >
                   <Smartphone size={14} />
@@ -2139,15 +2415,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                 <button
                   type="button"
                   className="composer-strip-btn"
-                  onClick={() => {
-                    if (isNegative) {
-                      handleNegativeCreditsRedirect('mode_toggle_blocked');
-                      return;
-                    }
-                    setIsMarkingSchemeMode(false);
-                    setIsModelAnswerMode(true);
-                    inputRef.current?.focus();
-                  }}
+                  onClick={() => handlePaperSuggestionAction('model_answer')}
                   disabled={isProcessing || isNegative}
                 >
                   <Sparkles size={14} />
@@ -2157,15 +2425,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                 <button
                   type="button"
                   className="composer-strip-btn"
-                  onClick={() => {
-                    if (isNegative) {
-                      handleNegativeCreditsRedirect('mode_toggle_blocked');
-                      return;
-                    }
-                    setIsModelAnswerMode(false);
-                    setIsMarkingSchemeMode(true);
-                    inputRef.current?.focus();
-                  }}
+                  onClick={() => handlePaperSuggestionAction('marking_scheme')}
                   disabled={isProcessing || isNegative}
                 >
                   <BookOpen size={14} />

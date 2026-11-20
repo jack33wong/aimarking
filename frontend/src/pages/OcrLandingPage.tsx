@@ -6,6 +6,7 @@ import HeroAnimation from '../components/layout/HeroAnimation';
 import LandingFooter from '../components/layout/LandingFooter';
 import SeoHeader from '../components/common/SeoHeader';
 import { trackPaperInteraction } from '../utils/analytics';
+import { saveLandingExamContext } from '../utils/landingContext';
 import LevelToggle, { LevelToggleOption } from '../components/landing/LevelToggle';
 import './OcrLandingPage.css';
 import './PastPaperTable.css';
@@ -38,6 +39,15 @@ export const OcrLandingPage: React.FC = () => {
     React.useEffect(() => {
         setActiveTab(isEnglishRoute ? 'gcse-english' : 'gcse-maths');
     }, [isEnglishRoute]);
+
+    React.useEffect(() => {
+        saveLandingExamContext({
+            board: 'OCR',
+            subject: activeTab === 'gcse-english' ? 'English Language' : 'Mathematics',
+            qualification: activeTab === 'alevel-maths' ? 'A-Level' : 'GCSE',
+            sourcePath: location.pathname + location.search,
+        });
+    }, [activeTab, location.pathname, location.search]);
 
     React.useEffect(() => {
         const timer = setTimeout(() => setStartAnimations(true), 100);

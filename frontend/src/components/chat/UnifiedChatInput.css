@@ -2093,3 +2093,23 @@
 .pre-inspect-list-row:hover .pre-inspect-row-icon {
   color: var(--icon-secondary);
 }
+
+@media (max-width: 768px) {
+  .landing-chat-input-placeholder:has(.past-papers-gallery) .pre-inspect-panel {
+    padding: 0 2px 6px 2px;
+  }
+
+  .landing-chat-input-placeholder:has(.past-papers-gallery) .pre-inspect-header {
+    padding: 2px 2px 4px 2px;
+  }
+
+  .landing-chat-input-placeholder:has(.past-papers-gallery) .pre-inspect-title {
+    font-size: 12px;
+  }
+
+  .landing-chat-input-placeholder:has(.past-papers-gallery) .pre-inspect-list-row {
+    padding: 6px 4px;
+    font-size: 12px;
+    gap: 8px;
+  }
+}

@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { fireAdsPurchaseConversion } from '../../utils/analytics';
 import { trackFunnelEvent, getNavigationType } from '../../utils/funnelTracker';
+import { parseLandingExamContextFromUrl, saveLandingExamContext } from '../../utils/landingContext';
 
 // 1. Centralized Pricing Map (Source of Truth for Conversions)
 const PRICING_MAP: Record<string, Record<string, number>> = {
@@ -34,6 +35,10 @@ const AnalyticsTracker = () => {
     // Track route changes & initial page load navigation type
     useEffect(() => {
         const currentPath = location.pathname + location.search;
+        const landingCtx = parseLandingExamContextFromUrl(location.pathname, location.search);
+        if (landingCtx) {
+            saveLandingExamContext(landingCtx);
+        }
         if (lastTrackedPathRef.current !== currentPath) {
             const isFirst = lastTrackedPathRef.current === null;
             lastTrackedPathRef.current = currentPath;
