@@ -992,6 +992,29 @@ html.dark .follow-up-chat-input-container.follow-up-bottom::before {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
+  width: 100%;
+}
+
+.thinking-progress-pill {
+  margin-left: auto;
+  width: 76px;
+  height: 14px;
+  border: 1.5px solid var(--text-brand-light);
+  border-radius: 9999px;
+  padding: 2px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  background: transparent;
+}
+
+.thinking-progress-pill-fill {
+  height: 100%;
+  background: var(--text-brand-light);
+  border-radius: 9999px;
+  transition: width 0.35s ease;
+  min-width: 6px;
 }
 
 .thinking-dots {

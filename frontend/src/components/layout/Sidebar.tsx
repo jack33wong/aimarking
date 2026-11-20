@@ -61,7 +61,7 @@ const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const navigate = useNavigate();
   const { user, getAuthToken, isAdmin } = useAuth();
-  const { jobsBySessionId, dismissJob } = useMarkingJob();
+  const { jobsBySessionId, unreadSessionIds, dismissJob, markSessionRead } = useMarkingJob();
   const [chatSessions, setChatSessions] = useState<UnifiedSession[]>([]);
   const [activeTab, setActiveTab] = useState<string>(() => (isAdmin() ? 'admin_all' : 'all'));
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
@@ -410,6 +410,7 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   const handleSessionClick = (session: UnifiedSession) => {
     setSelectedSessionId(session.id);
+    markSessionRead(session.id);
     onMarkingHistoryClick(session);
     closeSidebarIfMobile();
   };
@@ -429,6 +430,7 @@ const Sidebar: React.FC<SidebarProps> = ({
       const deletedId = sessionToDelete;
       setSessionToDelete(null);
       dismissJob(deletedId);
+      markSessionRead(deletedId);
       EventManager.dispatch(EVENT_TYPES.SESSION_DELETED, { sessionId: deletedId });
       if (selectedSessionId === deletedId || window.location.pathname === `/app/${deletedId}`) {
         handleGoToMarkHomework();
@@ -795,7 +797,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                               {jobsBySessionId[session.id]?.status === 'processing' && (
                                 <span
                                   className="sidebar-job-spinner"
-                                  title="Marking in progress"
+                                  title="Processing"
                                   style={{
                                     width: '12px',
                                     height: '12px',
@@ -805,6 +807,12 @@ const Sidebar: React.FC<SidebarProps> = ({
                                     display: 'inline-block',
                                     animation: 'spin 1s linear infinite'
                                   }}
+                                />
+                              )}
+                              {jobsBySessionId[session.id]?.status !== 'processing' && unreadSessionIds?.[session.id] && (
+                                <span
+                                  className="sidebar-unread-dot"
+                                  title="Completed — unread"
                                 />
                               )}
                               {session.favorite && <Star size={12} className="favorite-star-sidebar" />}

@@ -612,4 +612,8 @@
         text-transform: uppercase;
         letter-spacing: 0.1em;
     }
+
+    .hero-new-feature-pill {
+        font-size: 0.7rem;
+       }
 }

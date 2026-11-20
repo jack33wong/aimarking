@@ -494,25 +494,55 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
           {!isUser && (
             <div className="assistant-header">
               <Brain size={20} className="assistant-brain-icon" />
-              {message.progressData && (
-                <div className="thinking-indicator">
-                  <div className="progress-main-line">
-                    {!message.progressData.isComplete && (
-                      <div className="thinking-dots">
-                        <div className="thinking-dot"></div>
-                        <div className="thinking-dot"></div>
-                        <div className="thinking-dot"></div>
+              {message.progressData && (() => {
+                const totalSteps = Array.isArray(message.progressData.allSteps) && message.progressData.allSteps.length > 0
+                  ? message.progressData.allSteps.length
+                  : 1;
+                const currentIdx = typeof message.progressData.currentStepIndex === 'number'
+                  ? Math.max(0, message.progressData.currentStepIndex)
+                  : 0;
+                const rawPercent = totalSteps <= 1
+                  ? 60
+                  : Math.round(((currentIdx + 1) / totalSteps) * 100);
+                const progressPercent = message.progressData.isComplete
+                  ? 100
+                  : Math.min(92, Math.max(15, rawPercent));
+
+                return (
+                  <div className="thinking-indicator">
+                    <div className="progress-main-line">
+                      {!message.progressData.isComplete && (
+                        <div className="thinking-dots">
+                          <div className="thinking-dot"></div>
+                          <div className="thinking-dot"></div>
+                          <div className="thinking-dot"></div>
+                        </div>
+                      )}
+                      <div className="thinking-text" onClick={handleProgressToggle}>
+                        {message.progressData.isComplete ? 'Show thinking' : (message.progressData.currentStepDescription || 'Processing...')}
                       </div>
-                    )}
-                    <div className="thinking-text" onClick={handleProgressToggle}>
-                      {message.progressData.isComplete ? 'Show thinking' : (message.progressData.currentStepDescription || 'Processing...')}
+                      <button className="progress-toggle-button" onClick={handleProgressToggle}>
+                        {showProgressDetails ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                      </button>
+                      {!message.progressData.isComplete && (
+                        <div
+                          className="thinking-progress-pill"
+                          role="progressbar"
+                          aria-valuenow={progressPercent}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          title={`${progressPercent}% (Step ${Math.min(currentIdx + 1, totalSteps)} of ${totalSteps})`}
+                        >
+                          <div
+                            className="thinking-progress-pill-fill"
+                            style={{ width: `${progressPercent}%` }}
+                          />
+                        </div>
+                      )}
                     </div>
-                    <button className="progress-toggle-button" onClick={handleProgressToggle}>
-                      {showProgressDetails ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                    </button>
                   </div>
-                </div>
-              )}
+                );
+              })()}
             </div>
           )}
 

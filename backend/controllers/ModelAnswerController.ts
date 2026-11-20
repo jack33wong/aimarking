@@ -253,6 +253,20 @@ export class ModelAnswerController {
                 sessionId = `session-model-${Date.now()}`;
             }
 
+            void FirestoreService.upsertMarkingJob(sessionId, {
+                userId,
+                status: 'processing',
+                title: 'Processing...',
+                startedAt: startTime,
+                progressData: {
+                    type: 'model-answer',
+                    currentStepDescription: 'AI is writing model answers...',
+                    allSteps: ['Finding exam paper...', 'Loading marking schemes...', 'AI is writing model answers...'],
+                    currentStepIndex: 2,
+                    isComplete: false
+                }
+            });
+
             // Create user message
             const userMessage = createUserMessage({
                 content: `Generate model answers for: ${paper}`,
@@ -338,6 +352,13 @@ export class ModelAnswerController {
             }
 
             // 8. Final SSE Update
+            void FirestoreService.upsertMarkingJob(sessionId, {
+                userId,
+                status: 'completed',
+                title: `Model Answer: ${paper}`,
+                progressData: aiMessage.progressData
+            });
+
             sendSseUpdate(res, {
                 type: 'complete',
                 result: {

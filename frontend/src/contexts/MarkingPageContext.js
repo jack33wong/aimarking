@@ -387,7 +387,8 @@ export const MarkingPageProvider = ({
       }
       dispatch({ type: 'SET_PAGE_MODE', payload: 'chat' });
       const existingJob = getJobForSessionRef.current(routeSessionId);
-      if (existingJob?.status === 'processing' && apiProcessor.processingSessionId !== routeSessionId) {
+      const hasInFlightLocalMsg = liveSession.messages.some(m => m.role === 'assistant' && m.isProcessing);
+      if (existingJob?.status === 'processing' && apiProcessor.processingSessionId !== routeSessionId && !hasInFlightLocalMsg) {
         startPollingJob(routeSessionId);
       }
       return;
@@ -935,10 +936,21 @@ export const MarkingPageProvider = ({
     }
 
     const liveSession = simpleSessionService.getCurrentSession() || currentSession;
-    const targetSessionId = liveSession?.id || null;
+    const existingStableSessionId = liveSession?.id && !liveSession.id.startsWith('temp-') ? liveSession.id : null;
+    const clientSubmissionId = existingStableSessionId || `session-model-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
     try {
-      startProcessing(targetSessionId);
+      const initializedSession = simpleSessionService.initClientSession(
+        clientSubmissionId,
+        existingStableSessionId ? liveSession.title : 'Processing...'
+      );
+      if (!existingStableSessionId && initializedSession && !clientSubmissionId.startsWith('temp-')) {
+        simpleSessionService.updateSidebarSession(initializedSession);
+      }
+      if (!existingStableSessionId || routeSessionId !== clientSubmissionId) {
+        navigate(`/app/${clientSubmissionId}`, { replace: true });
+      }
+      startProcessing(clientSubmissionId);
 
       const userMessageId = `user-${Date.now()}`;
       await addMessage({
@@ -947,7 +959,7 @@ export const MarkingPageProvider = ({
         content: `Generate model answers for: ${trimmedInput}`,
         timestamp: new Date().toISOString(),
         type: 'text'
-      }, targetSessionId);
+      }, clientSubmissionId);
       dispatch({ type: 'SET_PAGE_MODE', payload: 'chat' });
 
       // Generate AI message ID
@@ -960,14 +972,19 @@ export const MarkingPageProvider = ({
         currentStepIndex: 0,
       };
 
-      startAIThinking(progressData, aiMessageId, [], targetSessionId);
+      registerJob({
+        sessionId: clientSubmissionId,
+        title: existingStableSessionId ? liveSession.title : 'Processing...',
+        progressData
+      });
+      startAIThinking(progressData, aiMessageId, [], clientSubmissionId);
 
       // IMMEDIATELY hide the ribbon - we know this is model-answer before SSE completes.
       // The session object won't have usageMode set yet (backend does that), so set eagerly.
       setIsModelAnswerMode(true);
       setIsMarkingSchemeMode(false);
       // Mark session as synced so the useEffect doesn't overwrite this on next fire
-      lastSyncedModeSessionId.current = targetSessionId || 'pending-model-answer';
+      lastSyncedModeSessionId.current = clientSubmissionId;
 
       // Call the new SSE endpoint
       apiProcessor.processStreamRequest(
@@ -975,7 +992,7 @@ export const MarkingPageProvider = ({
         {
           paper: trimmedInput,
           model: selectedModel || 'fast',
-          sessionId: targetSessionId,
+          sessionId: clientSubmissionId,
           aiMessageId: aiMessageId
         },
         // Step mapping
@@ -983,8 +1000,25 @@ export const MarkingPageProvider = ({
           'retrieving_paper': 0,
           'retrieving_schemes': 1,
           'generating': 2
+        },
+        (nextProgress) => updateJobProgress(clientSubmissionId, nextProgress)
+      ).then((result) => {
+        const liveAfter = simpleSessionService.getCurrentSession();
+        const resolvedTitle =
+          result?.sessionTitle ||
+          result?.session?.title ||
+          result?.unifiedSession?.title ||
+          (liveAfter?.id === clientSubmissionId ? liveAfter?.title : undefined) ||
+          `Model Answer: ${trimmedInput}`;
+        completeJob(clientSubmissionId, resolvedTitle);
+        refreshCredits();
+      }).catch(err => {
+        if (err?.isTransportDisconnect) {
+          startPollingJob(clientSubmissionId);
+          return;
         }
-      ).catch(err => {
+        failJob(clientSubmissionId, err?.message || 'Failed to generate model answers');
+
         const guestCheck = extractGuestLimitError(err);
         if (guestCheck.isGuestLimit) {
           pendingUploadRef.current = { type: 'model_answer', paper: trimmedInput };
@@ -999,6 +1033,7 @@ export const MarkingPageProvider = ({
           if (!hasCompletedAITurn(liveSessionAfter)) {
             clearSession();
             dispatch({ type: 'SET_PAGE_MODE', payload: 'upload' });
+            navigate('/app', { replace: true });
           }
         } else if (err.credits_exhausted || err.response?.data?.credits_exhausted) {
           setShowCreditsModal(true);
@@ -1008,20 +1043,22 @@ export const MarkingPageProvider = ({
           if (!hasCompletedAITurn(liveSessionAfter)) {
             clearSession();
             dispatch({ type: 'SET_PAGE_MODE', payload: 'upload' });
+            navigate('/app', { replace: true });
           }
         }
-        stopAIThinking(targetSessionId);
-        stopProcessing(targetSessionId);
+        stopAIThinking(clientSubmissionId);
+        stopProcessing(clientSubmissionId);
       });
 
       return true;
     } catch (err) {
+      failJob(clientSubmissionId, err?.message || 'Failed to generate model answers');
       handleError(err);
-      stopAIThinking(targetSessionId);
-      stopProcessing(targetSessionId);
+      stopAIThinking(clientSubmissionId);
+      stopProcessing(clientSubmissionId);
       return false;
     }
-  }, [user, isNegative, checkNegativeCredits, selectedModel, currentSession, addMessage, clearSession, startProcessing, stopProcessing, startAIThinking, stopAIThinking, handleError, apiProcessor]);
+  }, [user, isNegative, checkNegativeCredits, selectedModel, currentSession, routeSessionId, navigate, addMessage, clearSession, startProcessing, stopProcessing, startAIThinking, stopAIThinking, handleError, apiProcessor, registerJob, updateJobProgress, completeJob, failJob, startPollingJob, refreshCredits]);
 
   const onExplainMarkingScheme = useCallback(async (input) => {
     const trimmedInput = input.trim();
@@ -1044,10 +1081,21 @@ export const MarkingPageProvider = ({
     }
 
     const liveSession = simpleSessionService.getCurrentSession() || currentSession;
-    const targetSessionId = liveSession?.id || null;
+    const existingStableSessionId = liveSession?.id && !liveSession.id.startsWith('temp-') ? liveSession.id : null;
+    const clientSubmissionId = existingStableSessionId || `session-marking-scheme-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
     try {
-      startProcessing(targetSessionId);
+      const initializedSession = simpleSessionService.initClientSession(
+        clientSubmissionId,
+        existingStableSessionId ? liveSession.title : 'Processing...'
+      );
+      if (!existingStableSessionId && initializedSession && !clientSubmissionId.startsWith('temp-')) {
+        simpleSessionService.updateSidebarSession(initializedSession);
+      }
+      if (!existingStableSessionId || routeSessionId !== clientSubmissionId) {
+        navigate(`/app/${clientSubmissionId}`, { replace: true });
+      }
+      startProcessing(clientSubmissionId);
 
       const userMessageId = `user-${Date.now()}`;
       await addMessage({
@@ -1056,7 +1104,7 @@ export const MarkingPageProvider = ({
         content: `Explain marking scheme for: ${trimmedInput}`,
         timestamp: new Date().toISOString(),
         type: 'text'
-      }, targetSessionId);
+      }, clientSubmissionId);
       dispatch({ type: 'SET_PAGE_MODE', payload: 'chat' });
 
       // Generate AI message ID
@@ -1069,13 +1117,18 @@ export const MarkingPageProvider = ({
         currentStepIndex: 0,
       };
 
-      startAIThinking(progressData, aiMessageId, [], targetSessionId);
+      registerJob({
+        sessionId: clientSubmissionId,
+        title: existingStableSessionId ? liveSession.title : 'Processing...',
+        progressData
+      });
+      startAIThinking(progressData, aiMessageId, [], clientSubmissionId);
 
       // IMMEDIATELY hide the ribbon - we know this is marking-scheme before SSE completes.
       setIsMarkingSchemeMode(true);
       setIsModelAnswerMode(false);
       // Mark session as synced so the useEffect doesn't overwrite this on next fire
-      lastSyncedModeSessionId.current = targetSessionId || 'pending-marking-scheme';
+      lastSyncedModeSessionId.current = clientSubmissionId;
 
       // Call the new SSE endpoint
       apiProcessor.processStreamRequest(
@@ -1083,7 +1136,7 @@ export const MarkingPageProvider = ({
         {
           paper: trimmedInput,
           model: selectedModel || 'fast',
-          sessionId: targetSessionId,
+          sessionId: clientSubmissionId,
           aiMessageId: aiMessageId
         },
         // Step mapping
@@ -1091,8 +1144,25 @@ export const MarkingPageProvider = ({
           'retrieving_paper': 0,
           'retrieving_schemes': 1,
           'generating': 2
+        },
+        (nextProgress) => updateJobProgress(clientSubmissionId, nextProgress)
+      ).then((result) => {
+        const liveAfter = simpleSessionService.getCurrentSession();
+        const resolvedTitle =
+          result?.sessionTitle ||
+          result?.session?.title ||
+          result?.unifiedSession?.title ||
+          (liveAfter?.id === clientSubmissionId ? liveAfter?.title : undefined) ||
+          `Marking Scheme: ${trimmedInput}`;
+        completeJob(clientSubmissionId, resolvedTitle);
+        refreshCredits();
+      }).catch(err => {
+        if (err?.isTransportDisconnect) {
+          startPollingJob(clientSubmissionId);
+          return;
         }
-      ).catch(err => {
+        failJob(clientSubmissionId, err?.message || 'Failed to retrieve marking scheme');
+
         const guestCheck = extractGuestLimitError(err);
         if (guestCheck.isGuestLimit) {
           pendingUploadRef.current = { type: 'marking_scheme', paper: trimmedInput };
@@ -1107,6 +1177,7 @@ export const MarkingPageProvider = ({
           if (!hasCompletedAITurn(liveSessionAfter)) {
             clearSession();
             dispatch({ type: 'SET_PAGE_MODE', payload: 'upload' });
+            navigate('/app', { replace: true });
           }
         } else if (err.credits_exhausted || err.response?.data?.credits_exhausted) {
           setShowCreditsModal(true);
@@ -1116,20 +1187,22 @@ export const MarkingPageProvider = ({
           if (!hasCompletedAITurn(liveSessionAfter)) {
             clearSession();
             dispatch({ type: 'SET_PAGE_MODE', payload: 'upload' });
+            navigate('/app', { replace: true });
           }
         }
-        stopAIThinking(targetSessionId);
-        stopProcessing(targetSessionId);
+        stopAIThinking(clientSubmissionId);
+        stopProcessing(clientSubmissionId);
       });
 
       return true;
     } catch (err) {
+      failJob(clientSubmissionId, err?.message || 'Failed to retrieve marking scheme');
       handleError(err);
-      stopAIThinking(targetSessionId);
-      stopProcessing(targetSessionId);
+      stopAIThinking(clientSubmissionId);
+      stopProcessing(clientSubmissionId);
       return false;
     }
-  }, [user, isNegative, checkNegativeCredits, selectedModel, currentSession, addMessage, clearSession, startProcessing, stopProcessing, startAIThinking, stopAIThinking, handleError, apiProcessor]);
+  }, [user, isNegative, checkNegativeCredits, selectedModel, currentSession, routeSessionId, navigate, addMessage, clearSession, startProcessing, stopProcessing, startAIThinking, stopAIThinking, handleError, apiProcessor, registerJob, updateJobProgress, completeJob, failJob, startPollingJob, refreshCredits]);
 
   // Ref to track the last handled session ID to prevent redundant scrolls on every message update
   const lastHandledSessionIdRef = useRef(null);

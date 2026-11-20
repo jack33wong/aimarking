@@ -315,6 +315,20 @@ export class MarkingSchemeController {
                 sessionId = `session-marking-scheme-${Date.now()}`;
             }
 
+            void FirestoreService.upsertMarkingJob(sessionId, {
+                userId,
+                status: 'processing',
+                title: 'Processing...',
+                startedAt: startTime,
+                progressData: {
+                    type: 'marking-scheme',
+                    currentStepDescription: 'AI is explaining marking scheme...',
+                    allSteps: ['Finding exam paper...', 'Loading marking schemes...', 'AI is explaining marking scheme...'],
+                    currentStepIndex: 2,
+                    isComplete: false
+                }
+            });
+
             const userMessage = createUserMessage({
                 content: `Explain marking scheme for: ${paper}`,
                 sessionId: sessionId,
@@ -395,6 +409,13 @@ export class MarkingSchemeController {
             }
 
             // 8. Final SSE Update
+            void FirestoreService.upsertMarkingJob(sessionId, {
+                userId,
+                status: 'completed',
+                title: `Marking Scheme: ${paper}`,
+                progressData: aiMessage.progressData
+            });
+
             sendSseUpdate(res, {
                 type: 'complete',
                 result: {

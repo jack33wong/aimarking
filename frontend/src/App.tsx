@@ -184,11 +184,37 @@ function AppContent() {
       const { simpleSessionService } = await import('./services/markingApiService');
       const cached = (simpleSessionService as any).getCachedSession?.(result.id);
       const response = await simpleSessionService.getSession(result.id);
+      const latestCached = (simpleSessionService as any).getCachedSession?.(result.id) || cached;
       if (response.success && response.session) {
-        setSelectedMarkingResult(response.session);
-      } else if (cached && Array.isArray(cached.messages) && cached.messages.length > 0) {
+        const serverMsgs = Array.isArray(response.session.messages) ? response.session.messages : [];
+        const cachedMsgs = Array.isArray(latestCached?.messages) ? latestCached.messages : [];
+        const inFlightAssistantMsg = [...cachedMsgs].reverse().find((m: any) => m.role === 'assistant' && m.isProcessing);
+        const serverHasCompletedAssistant = serverMsgs.some((m: any) => m.role === 'assistant' && !m.isProcessing);
+        const cachedHasCompletedAssistant = cachedMsgs.some((m: any) => m.role === 'assistant' && !m.isProcessing);
+
+        if (inFlightAssistantMsg && !serverHasCompletedAssistant) {
+          const lastServerMsg = serverMsgs[serverMsgs.length - 1];
+          const lastServerTs = lastServerMsg
+            ? new Date(lastServerMsg.timestamp || lastServerMsg.createdAt || 0).getTime()
+            : 0;
+          const inFlightTs = new Date(inFlightAssistantMsg.timestamp || 0).getTime();
+          const orderedInFlightMsg =
+            lastServerTs > 0 && inFlightTs <= lastServerTs
+              ? { ...inFlightAssistantMsg, timestamp: new Date(lastServerTs + 1).toISOString() }
+              : inFlightAssistantMsg;
+          setSelectedMarkingResult({
+            ...response.session,
+            title: latestCached?.title === 'Processing...' ? 'Processing...' : response.session.title,
+            messages: [...serverMsgs, orderedInFlightMsg]
+          });
+        } else if (!serverHasCompletedAssistant && cachedHasCompletedAssistant) {
+          setSelectedMarkingResult(latestCached);
+        } else {
+          setSelectedMarkingResult(response.session);
+        }
+      } else if (latestCached && Array.isArray(latestCached.messages) && latestCached.messages.length > 0) {
         setSelectedMarkingResult({
-          ...cached,
+          ...latestCached,
           ...(response?.progressData ? { progressData: response.progressData } : {})
         });
       } else {

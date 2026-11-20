@@ -903,6 +903,28 @@ router.get('/session/:sessionId', optionalAuth, async (req, res) => {
     }
 
     if (session) {
+      const hasAssistantMessage =
+        Array.isArray(session.messages) &&
+        session.messages.some((m: any) => m.role === 'assistant');
+      const sessionTimestamp = new Date(
+        (session as any).updatedAt || (session as any).createdAt || 0
+      ).getTime();
+      const isRecentIncompleteSession =
+        !hasAssistantMessage &&
+        sessionTimestamp > 0 &&
+        Date.now() - sessionTimestamp < JOB_FRESHNESS_MS;
+
+      if (isRecentIncompleteSession) {
+        return res.json({
+          success: true,
+          status: 'processing',
+          sessionId,
+          progressData: job?.progressData || null,
+          session,
+          messages: session.messages,
+        });
+      }
+
       return res.json({
         success: true,
         status: 'completed',

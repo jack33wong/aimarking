@@ -133,7 +133,7 @@ export const LandingPage: React.FC = () => {
 
                     <div className="hero-new-feature-pill" onClick={() => navigate('/app')}>
                         <span className="pill-badge">NEW</span>
-                        <span className="pill-text">Mark Maths &amp; English Instantly — Or Upload Any Subject + Your Mark Scheme</span>
+                        <span className="pill-text">Upload any subject + mark scheme</span>
                         <span className="pill-arrow">→</span>
                     </div>
 

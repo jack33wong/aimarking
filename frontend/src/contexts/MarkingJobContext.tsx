@@ -4,6 +4,7 @@ import { simpleSessionService } from '../services/markingApiService';
 import './MarkingJobToast.css';
 
 const ACTIVE_JOBS_STORAGE_KEY = 'intellimark_active_jobs_v1';
+const UNREAD_SESSIONS_STORAGE_KEY = 'intellimark_unread_sessions_v1';
 const POLL_INTERVAL_MS = 2500;
 const AUTO_DISMISS_MS = 7000;
 const MAX_CONSECUTIVE_POLL_ERRORS = 12;
@@ -32,11 +33,13 @@ interface RegisterJobInput {
 interface MarkingJobContextValue {
   jobsBySessionId: Record<string, MarkingJob>;
   activeJobs: MarkingJob[];
+  unreadSessionIds: Record<string, boolean>;
   registerJob: (input: RegisterJobInput) => void;
   updateJobProgress: (sessionId: string, progressData: any) => void;
   completeJob: (sessionId: string, title?: string) => void;
   failJob: (sessionId: string, error?: string) => void;
   dismissJob: (sessionId: string) => void;
+  markSessionRead: (sessionId: string) => void;
   startPollingJob: (sessionId: string) => void;
   getJobForSession: (sessionId?: string | null) => MarkingJob | null;
 }
@@ -108,11 +111,35 @@ function persistActiveJobs(jobs: Record<string, MarkingJob>) {
   }
 }
 
+function loadPersistedUnreadSessions(): Record<string, boolean> {
+  try {
+    const raw = sessionStorage.getItem(UNREAD_SESSIONS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistUnreadSessions(unread: Record<string, boolean>) {
+  try {
+    if (Object.keys(unread).length === 0) {
+      sessionStorage.removeItem(UNREAD_SESSIONS_STORAGE_KEY);
+    } else {
+      sessionStorage.setItem(UNREAD_SESSIONS_STORAGE_KEY, JSON.stringify(unread));
+    }
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
 export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const navigate = useNavigate();
   const location = useLocation();
 
   const [jobsBySessionId, setJobsBySessionId] = useState<Record<string, MarkingJob>>(() => loadPersistedJobs());
+  const [unreadSessionIds, setUnreadSessionIds] = useState<Record<string, boolean>>(() => loadPersistedUnreadSessions());
   const jobsRef = useRef<Record<string, MarkingJob>>(jobsBySessionId);
   const pollingTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const autoDismissTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -192,6 +219,17 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     });
   }, [clearAutoDismissTimerForSession, clearTimerForSession, commitJobs]);
 
+  const markSessionRead = useCallback((sessionId: string) => {
+    if (!sessionId) return;
+    setUnreadSessionIds(prev => {
+      if (!prev[sessionId]) return prev;
+      const next = { ...prev };
+      delete next[sessionId];
+      persistUnreadSessions(next);
+      return next;
+    });
+  }, []);
+
   const completeJob = useCallback((sessionId: string, title?: string) => {
     if (!sessionId) return;
     clearTimerForSession(sessionId);
@@ -199,6 +237,14 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     delete pollAttemptsRef.current[sessionId];
     const trimmedTitle = typeof title === 'string' ? title.trim() : '';
     const isViewing = isViewingSessionPath(window.location.pathname, sessionId);
+    if (!isViewing && !sessionId.startsWith('temp-')) {
+      setUnreadSessionIds(prev => {
+        if (prev[sessionId]) return prev;
+        const next = { ...prev, [sessionId]: true };
+        persistUnreadSessions(next);
+        return next;
+      });
+    }
     commitJobs(prev => {
       const existing = prev[sessionId];
       if (!existing) return prev;
@@ -268,7 +314,11 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         return;
       }
 
-      if (res?.status === 'processing') {
+      const hasCompletedAssistantInSession =
+        Array.isArray(res?.session?.messages) &&
+        res.session.messages.some((m: any) => m.role === 'assistant' && !m.isProcessing);
+
+      if (res?.status === 'processing' || (res?.session && !hasCompletedAssistantInSession && !res?.fallbackResult && res?.status !== 'failed')) {
         pollAttemptsRef.current[sessionId] = 0;
         if (res.progressData) {
           updateJobProgress(sessionId, res.progressData);
@@ -464,21 +514,25 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const contextValue = useMemo<MarkingJobContextValue>(() => ({
     jobsBySessionId,
     activeJobs,
+    unreadSessionIds,
     registerJob,
     updateJobProgress,
     completeJob,
     failJob,
     dismissJob,
+    markSessionRead,
     startPollingJob,
     getJobForSession
   }), [
     jobsBySessionId,
     activeJobs,
+    unreadSessionIds,
     registerJob,
     updateJobProgress,
     completeJob,
     failJob,
     dismissJob,
+    markSessionRead,
     startPollingJob,
     getJobForSession
   ]);
@@ -487,6 +541,12 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const currentRouteSessionId = location.pathname.startsWith('/app/')
     ? location.pathname.slice('/app/'.length).split('/')[0]
     : null;
+
+  useEffect(() => {
+    if (currentRouteSessionId && unreadSessionIds[currentRouteSessionId]) {
+      markSessionRead(currentRouteSessionId);
+    }
+  }, [currentRouteSessionId, unreadSessionIds, markSessionRead]);
 
   const visibleToastJobs = Object.values(jobsBySessionId).filter(job => {
     if (job.sessionId === currentRouteSessionId) {

@@ -222,6 +222,9 @@ class SimpleSessionService {
     // Only merge localSession properties if staying within the SAME session ID
     // (Prevents stale userId or sessionStats from Session A leaking into Session B)
     const isSameSession = Boolean(localSession && newSessionData && localSession.id === newSessionData.id);
+    const cachedSessionForId = isSameSession
+      ? localSession
+      : (newSessionData?.id ? this.inMemorySessionCache.get(newSessionData.id) : null);
     let mergedSession = isSameSession ? { ...localSession, ...newSessionData } : { ...newSessionData };
     mergedSession.title = newSessionData.title || (isSameSession ? localSession?.title : null) || 'Chat Session';
 
@@ -256,11 +259,43 @@ class SimpleSessionService {
       });
 
       // FIXED: Sort messages by timestamp to ensure correct order
+      // Always keep in-flight processing assistant messages after committed user/assistant messages
       mergedSession.messages = filteredMessages.sort((a, b) => {
+        const aProc = Boolean(a.isProcessing);
+        const bProc = Boolean(b.isProcessing);
+        if (aProc !== bProc) {
+          return aProc ? 1 : -1;
+        }
         const timestampA = new Date(a.timestamp || a.createdAt || 0).getTime();
         const timestampB = new Date(b.timestamp || b.createdAt || 0).getTime();
-        return timestampA - timestampB; // Ascending order (oldest first)
+        if (timestampA !== timestampB) {
+          return timestampA - timestampB; // Ascending order (oldest first)
+        }
+        if (a.role !== b.role) {
+          return a.role === 'user' ? -1 : 1;
+        }
+        return 0;
       });
+
+      // Preserve in-memory processing assistant message (thinking-indicator) when user switches away and back
+      // before the backend has saved the completed assistant message to Firestore (e.g., Model Answer & Marking Scheme)
+      const cachedMessages = cachedSessionForId?.messages || [];
+      const inFlightAssistantMsg = [...cachedMessages].reverse().find(m => m.role === 'assistant' && m.isProcessing);
+      if (inFlightAssistantMsg) {
+        const serverHasAssistantReply = mergedSession.messages.some(
+          m => m.id === inFlightAssistantMsg.id || (m.role === 'assistant' && !m.isProcessing)
+        );
+        if (!serverHasAssistantReply) {
+          const lastMsg = mergedSession.messages[mergedSession.messages.length - 1];
+          const lastTs = lastMsg ? new Date(lastMsg.timestamp || lastMsg.createdAt || 0).getTime() : 0;
+          const inFlightTs = new Date(inFlightAssistantMsg.timestamp || 0).getTime();
+          const normalizedInFlightMsg =
+            lastTs > 0 && inFlightTs <= lastTs
+              ? { ...inFlightAssistantMsg, timestamp: new Date(lastTs + 1).toISOString() }
+              : inFlightAssistantMsg;
+          mergedSession.messages = [...mergedSession.messages, normalizedInFlightMsg];
+        }
+      }
     } else if (isSameSession && localSession?.messages) {
       // Fallback to local messages ONLY when staying within the same session
       mergedSession.messages = localSession.messages;
@@ -573,18 +608,20 @@ class SimpleSessionService {
       }
 
       if (data.aiMessage) {
+        this.addMessage(data.aiMessage, resolvedTargetId || targetSessionId || activeId);
         if (!isViewingTarget) {
           if (resolvedTargetId && data.sessionTitle) {
+            const cachedCompleted = this.inMemorySessionCache.get(resolvedTargetId);
             this.updateSidebarSession({
+              ...(cachedCompleted || {}),
               id: resolvedTargetId,
               title: data.sessionTitle,
+              lastMessage: data.aiMessage,
               updatedAt: new Date().toISOString()
             });
           }
           return this.state.currentSession;
         }
-        // Unauthenticated users get only AI message - append to current session
-        this.addMessage(data.aiMessage, targetSessionId || activeId);
 
         // Update session title and ID in current session (for session header display only)
         // Don't update sidebar for unauthenticated users
@@ -675,18 +712,20 @@ class SimpleSessionService {
       const isViewingTarget = !targetSessionId || activeId === targetSessionId || (resolvedTargetId && activeId === resolvedTargetId);
 
       if (data.aiMessage) {
+        this.addMessage(data.aiMessage, resolvedTargetId || targetSessionId || activeId);
         if (!isViewingTarget) {
           if (resolvedTargetId && data.sessionTitle) {
+            const cachedCompleted = this.inMemorySessionCache.get(resolvedTargetId);
             this.updateSidebarSession({
+              ...(cachedCompleted || {}),
               id: resolvedTargetId,
               title: data.sessionTitle,
+              lastMessage: data.aiMessage,
               updatedAt: new Date().toISOString()
             });
           }
           return this.state.currentSession;
         }
-        // All users (authenticated and unauthenticated) now get only AI message - append to current session
-        this.addMessage(data.aiMessage, targetSessionId || activeId);
 
         // Update session title and ID in current session (for session header display only)
         // Don't update sidebar for unauthenticated users
