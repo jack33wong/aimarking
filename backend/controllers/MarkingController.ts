@@ -982,7 +982,7 @@ export class MarkingController {
                 });
             }
 
-            res.status(200).json(result);
+            res.status(200).json({ ...result, preInspectSessionId: digestSessionId });
         } catch (error: any) {
             console.error('❌ [PRE-INSPECT] Failed:', error?.message || error);
             if (capturedLogs) {

@@ -253,17 +253,47 @@ router.get('/paper-questions', async (req, res) => {
   }
 });
 
+const FUNNEL_EVENTS = new Set([
+  'marking_submit_clicked',
+  'auth_wall_shown',
+  'auth_wall_dismissed',
+  'auth_wall_converted'
+]);
+
 // POST /api/config/telemetry - Lightweight client funnel & drop-off logger
 // Accepts both application/json and text/plain (used by sendBeacon to avoid cross-origin OPTIONS preflight on Safari)
 router.post('/telemetry', express.json({ type: ['application/json', 'text/plain'], limit: '50kb' }), (req, res) => {
   try {
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
     const { event, userId, anonymousId, path, origin, timestamp, ...metadata } = body;
-    if (process.env.LOG_FUNNEL === 'true') {
+
+    if (body?.type === 'funnel' && FUNNEL_EVENTS.has(event)) {
+      const userIP = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'unknown';
+      const actor = typeof userId === 'string' && userId.trim() ? userId.trim() : `guest:${userIP}`;
+      const { trigger, isGuest, fileCount, hasMarkScheme, timeOpenMs, dismissMethod, method, preInspectSessionId } = body;
+      const details = [
+        trigger ? `trigger=${trigger}` : null,
+        typeof isGuest === 'boolean' ? `isGuest=${isGuest}` : null,
+        typeof fileCount === 'number' ? `files=${fileCount}` : null,
+        typeof hasMarkScheme === 'boolean' ? `ms=${hasMarkScheme}` : null,
+        typeof timeOpenMs === 'number' ? `openMs=${timeOpenMs}` : null,
+        dismissMethod ? `via=${dismissMethod}` : null,
+        method ? `method=${method}` : null
+      ].filter(Boolean).join(' | ');
+
+      const funnelLine = `📊 [FUNNEL] ${event} | ${actor} | ${details}`;
+      console.log(funnelLine);
+      AdminAlertService.appendFunnelEventToPreInspectDigest({
+        actor,
+        preInspectSessionId: typeof preInspectSessionId === 'string' ? preInspectSessionId : null,
+        line: funnelLine,
+      });
+    } else if (process.env.LOG_FUNNEL === 'true') {
       console.log(
         `📊 [FUNNEL] event=${event || 'unknown'} | user=${userId || 'guest'} | anon=${anonymousId || 'unknown'} | path=${path || '/'} | data=${JSON.stringify(metadata)}`
       );
     }
+
     const userAgent = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : undefined;
     AdminAlertService.recordTelemetryEvent(anonymousId, userId, event, path, metadata, userAgent);
 

@@ -14,6 +14,7 @@ import '../common/LoadingSpinner.css';
 import API_CONFIG from '../../config/api';
 import { analyticsService } from '../../services/AnalyticsService';
 import { fireAdsSignupConversion } from '../../utils/analytics';
+import { markAuthWallConverted } from '../../utils/funnelTracker';
 import SEO from '../common/SEO';
 
 const Login = () => {
@@ -97,6 +98,7 @@ const Login = () => {
 
       // Track successful social login/signup in GA4
       analyticsService.logSignUp(provider);
+      markAuthWallConverted(provider === 'google' ? 'google' : 'email', result.user?.uid || null);
 
       // The useEffect listening for the `user` object will now handle the redirect.
     } catch (error) {
@@ -131,6 +133,7 @@ const Login = () => {
       if (!result.success) {
         setFirebaseError(result.message);
       } else {
+        markAuthWallConverted('email', result.user?.uid || auth?.currentUser?.uid || null);
         // Track successful email signup
         if (isSignUp) {
           console.log('[Ads Evidence] 🆕 Brand new Email User detected. Firing Sign-up conversion.');

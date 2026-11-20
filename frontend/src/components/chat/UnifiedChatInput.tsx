@@ -20,7 +20,7 @@ import ConfirmationModal from '../common/ConfirmationModal';
 import { mobileUploadService } from '../../services/MobileUploadService';
 import { FileHandoff } from './FileHandoff';
 import { useTelemetry } from '../../hooks/useTelemetry';
-import { trackFunnelEvent } from '../../utils/funnelTracker';
+import { trackFunnelEvent, getLatestPreInspectSessionId, setLatestPreInspectSessionId } from '../../utils/funnelTracker';
 import { getLandingExamContext, clearLandingExamContext } from '../../utils/landingContext';
 import {
   preInspectUploadedFiles,
@@ -1231,6 +1231,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
 
     if (mode !== 'first-time' || attachedFilesList.length === 0 || isProcessing) {
       setPreInspectResult(null);
+      setLatestPreInspectSessionId(null);
       setIsPreInspecting(false);
       setPreInspectDismissed(false);
       if (attachedFilesList.length === 0) {
@@ -1324,6 +1325,20 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     const fileToSend = imageFile;
     const filesToSend = imageFiles;
 
+    const markingFileCount = (isMultiImage && filesToSend.length > 0)
+      ? filesToSend.length
+      : (fileToSend ? 1 : 0);
+
+    if (markingFileCount > 0) {
+      trackFunnelEvent('marking_submit_clicked', {
+        type: 'funnel',
+        isGuest: !user,
+        fileCount: markingFileCount,
+        hasMarkScheme: Boolean(preInspectResult?.hasMarkScheme),
+        preInspectSessionId: preInspectResult?.preInspectSessionId || getLatestPreInspectSessionId() || null
+      }, user?.uid || null);
+    }
+
     let success = true;
 
     if (isMultiImage && filesToSend.length > 0) {
@@ -1387,6 +1402,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       setIsExpanded(false);
       setFileSizeWarning(null);
       setPreInspectResult(null);
+      setLatestPreInspectSessionId(null);
       setIsPreInspecting(false);
       setPreInspectDismissed(false);
 
@@ -1405,7 +1421,8 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   }, [
     canSend, isNegative, isProcessing, combinedInput, imageFile, imageFiles, isMultiImage, mode,
     onAnalyzeImage, onFollowUpImage, onAnalyzeMultiImage, onFollowUpMultiImage, onSendMessage,
-    onGenerateModelAnswer, onExplainMarkingScheme, isModelAnswerMode, isMarkingSchemeMode, handleNegativeCreditsRedirect
+    onGenerateModelAnswer, onExplainMarkingScheme, isModelAnswerMode, isMarkingSchemeMode, handleNegativeCreditsRedirect,
+    user, preInspectResult
   ]);
 
   const handlePreInspectAction = useCallback((suggestion: PreInspectSuggestionAction) => {

@@ -2277,6 +2277,7 @@ export const MarkingPageProvider = ({
       <GuestLimitModal
         isOpen={showGuestLimitModal}
         hasPendingUpload={Boolean(pendingUploadRef.current)}
+        fileCount={pendingUploadRef.current?.files?.length || (pendingUploadRef.current?.file ? 1 : 0)}
         requestType={
           pendingUploadRef.current?.type ||
           (isModelAnswerMode ? 'model_answer' : (isMarkingSchemeMode ? 'marking_scheme' : 'marking'))

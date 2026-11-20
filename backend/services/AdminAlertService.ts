@@ -789,6 +789,47 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
   }
 
   /**
+   * Append a client funnel event line to an active PRE_INSPECT session digest
+   * (matched by exact preInspectSessionId or most recent pre-inspect-* digest for actor).
+   */
+  public static appendFunnelEventToPreInspectDigest(params: {
+    actor: string;
+    preInspectSessionId?: string | null;
+    line: string;
+  }): boolean {
+    try {
+      const { actor, preInspectSessionId, line } = params;
+      if (!line) return false;
+
+      let target: SessionDigestEntry | undefined;
+      if (preInspectSessionId && typeof preInspectSessionId === 'string') {
+        target = this.sessionDigests.get(preInspectSessionId.trim());
+      }
+
+      if (!target && actor) {
+        const entries = Array.from(this.sessionDigests.values());
+        for (let i = entries.length - 1; i >= 0; i--) {
+          const entry = entries[i];
+          if (entry.sessionId.startsWith('pre-inspect-') && entry.userId === actor) {
+            target = entry;
+            break;
+          }
+        }
+      }
+
+      if (!target || target.turns.length === 0) return false;
+
+      const lastTurn = target.turns[target.turns.length - 1];
+      lastTurn.logsText = lastTurn.logsText ? `${lastTurn.logsText}\n${line}` : line;
+      lastTurn.lineCount = (lastTurn.lineCount || 0) + 1;
+      target.lastActivityAt = new Date().toISOString();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Record a turn (MARKING, QUESTION_MODE, REMARK, or FOLLOW_UP_CHAT) into the
    * idle-timeout session digest for `sessionId`. One combined email is sent
    * after `MARKING_LOG_IDLE_TIMEOUT_MS` (default 5 min) of inactivity.

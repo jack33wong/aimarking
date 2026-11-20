@@ -1,6 +1,7 @@
 import imageCompression from 'browser-image-compression';
 import API_CONFIG from '../config/api';
 import { auth } from '../config/firebase';
+import { setLatestPreInspectSessionId } from '../utils/funnelTracker';
 
 export type PreInspectOverallStatus = 'ready' | 'action_needed' | 'invalid';
 
@@ -52,6 +53,7 @@ export interface PreInspectFileSummary {
 
 export interface PreInspectResult {
   preInspectToken: string;
+  preInspectSessionId?: string;
   overallStatus: PreInspectOverallStatus;
   docType: PreInspectDocType;
   isWarning?: boolean;
@@ -213,6 +215,9 @@ export async function preInspectUploadedFiles(
   const data = (await response.json()) as PreInspectResult;
   if (data?.preInspectToken) {
     setPendingPreInspectContext({ preInspectToken: data.preInspectToken });
+  }
+  if (data?.preInspectSessionId) {
+    setLatestPreInspectSessionId(data.preInspectSessionId);
   }
   return data;
 }

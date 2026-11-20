@@ -1,6 +1,11 @@
-import React from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { User, Lock, Sparkles, ArrowRight, X } from 'lucide-react';
+import {
+    markAuthWallShown,
+    markAuthWallDismissed,
+    getLatestPreInspectSessionId
+} from '../../utils/funnelTracker';
 import './GuestLimitModal.css';
 
 export type GuestRequestType = 'marking' | 'model_answer' | 'marking_scheme' | 'single' | 'multi' | string;
@@ -14,6 +19,8 @@ interface GuestLimitModalProps {
     resetAt?: string | null;
     hasPendingUpload?: boolean;
     requestType?: GuestRequestType;
+    fileCount?: number;
+    preInspectSessionId?: string | null;
     onSignup?: (mode?: 'signup' | 'login') => Promise<void> | void;
 }
 
@@ -96,9 +103,52 @@ const GuestLimitModal: React.FC<GuestLimitModalProps> = ({
     usageLimit,
     hasPendingUpload = false,
     requestType = 'marking',
+    fileCount = 0,
+    preInspectSessionId = null,
     onSignup
 }) => {
     const navigate = useNavigate();
+    const outcomeFiredRef = useRef(false);
+    const wasOpenRef = useRef(false);
+
+    const normalizedType = (requestType || 'marking').toLowerCase().replace(/[-_]/g, '');
+    const isMarkingTrigger =
+        !normalizedType.includes('modelanswer') &&
+        !normalizedType.includes('markingscheme') &&
+        !normalizedType.includes('markscheme');
+
+    useEffect(() => {
+        if (isOpen && !wasOpenRef.current) {
+            outcomeFiredRef.current = false;
+            if (isMarkingTrigger) {
+                markAuthWallShown({
+                    trigger: 'marking_submit',
+                    fileCount: fileCount || (hasPendingUpload ? 1 : 0),
+                    preInspectSessionId: preInspectSessionId || getLatestPreInspectSessionId() || null
+                });
+            }
+        }
+        wasOpenRef.current = isOpen;
+    }, [isOpen, isMarkingTrigger, fileCount, hasPendingUpload, preInspectSessionId]);
+
+    const handleDismiss = useCallback((dismissMethod: 'close_button' | 'backdrop' | 'escape') => {
+        if (isMarkingTrigger && !outcomeFiredRef.current) {
+            outcomeFiredRef.current = true;
+            markAuthWallDismissed(dismissMethod);
+        }
+        onClose();
+    }, [isMarkingTrigger, onClose]);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                handleDismiss('escape');
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [isOpen, handleDismiss]);
 
     if (!isOpen) return null;
 
@@ -107,6 +157,7 @@ const GuestLimitModal: React.FC<GuestLimitModalProps> = ({
     const content = getModalContent(requestType, hasPendingUpload, effectiveLimit);
 
     const handleAuthAction = async (mode: 'signup' | 'login') => {
+        outcomeFiredRef.current = true;
         if (onSignup) {
             await onSignup(mode);
         } else {
@@ -120,9 +171,16 @@ const GuestLimitModal: React.FC<GuestLimitModalProps> = ({
     };
 
     return (
-        <div className="guest-limit-modal-overlay">
+        <div
+            className="guest-limit-modal-overlay"
+            onClick={(e) => {
+                if (e.target === e.currentTarget) {
+                    handleDismiss('backdrop');
+                }
+            }}
+        >
             <div className="guest-limit-modal-container">
-                <button className="guest-limit-modal-close" onClick={onClose} aria-label="Close">
+                <button className="guest-limit-modal-close" onClick={() => handleDismiss('close_button')} aria-label="Close">
                     <X size={20} />
                 </button>
 

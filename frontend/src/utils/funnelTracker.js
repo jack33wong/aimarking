@@ -1,6 +1,45 @@
 import API_CONFIG from '../config/api';
 
 const ANON_ID_KEY = 'aimarking_anon_id';
+const AUTH_WALL_FUNNEL_KEY = 'aimarking_auth_wall_funnel';
+
+let latestPreInspectSessionId = null;
+let activeAuthWallState = null;
+
+export const setLatestPreInspectSessionId = (sessionId) => {
+  latestPreInspectSessionId = typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null;
+};
+
+export const getLatestPreInspectSessionId = () => latestPreInspectSessionId;
+
+const persistAuthWallState = (state) => {
+  activeAuthWallState = state;
+  try {
+    if (state) {
+      sessionStorage.setItem(AUTH_WALL_FUNNEL_KEY, JSON.stringify(state));
+    } else {
+      sessionStorage.removeItem(AUTH_WALL_FUNNEL_KEY);
+    }
+  } catch {
+    // Ignore sessionStorage restrictions
+  }
+};
+
+const readAuthWallState = () => {
+  if (activeAuthWallState) return activeAuthWallState;
+  try {
+    const raw = sessionStorage.getItem(AUTH_WALL_FUNNEL_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      activeAuthWallState = parsed;
+      return parsed;
+    }
+  } catch {
+    // Ignore malformed storage
+  }
+  return null;
+};
 
 export const getAnonymousId = () => {
   try {
@@ -62,4 +101,61 @@ export const trackFunnelEvent = (eventName, metadata = {}, userId = null) => {
   } catch (_) {
     // Telemetry must never throw or interrupt user flow
   }
+};
+
+export const markAuthWallShown = ({
+  trigger = 'marking_submit',
+  fileCount = 0,
+  preInspectSessionId = null
+} = {}) => {
+  const resolvedPreInspectSessionId = preInspectSessionId || getLatestPreInspectSessionId() || null;
+  const state = {
+    trigger,
+    openedAt: Date.now(),
+    fileCount: typeof fileCount === 'number' ? fileCount : 0,
+    preInspectSessionId: resolvedPreInspectSessionId,
+    outcomeFired: false
+  };
+  persistAuthWallState(state);
+
+  trackFunnelEvent('auth_wall_shown', {
+    type: 'funnel',
+    trigger,
+    fileCount: state.fileCount,
+    preInspectSessionId: resolvedPreInspectSessionId
+  }, null);
+};
+
+export const markAuthWallDismissed = (dismissMethod = 'close_button') => {
+  const state = readAuthWallState();
+  if (!state || state.trigger !== 'marking_submit' || state.outcomeFired) {
+    return;
+  }
+  const timeOpenMs = Math.max(0, Date.now() - (Number(state.openedAt) || Date.now()));
+  persistAuthWallState(null);
+
+  trackFunnelEvent('auth_wall_dismissed', {
+    type: 'funnel',
+    trigger: 'marking_submit',
+    timeOpenMs,
+    dismissMethod,
+    preInspectSessionId: state.preInspectSessionId || null
+  }, null);
+};
+
+export const markAuthWallConverted = (method = 'email', userId = null) => {
+  const state = readAuthWallState();
+  if (!state || state.trigger !== 'marking_submit' || state.outcomeFired) {
+    return;
+  }
+  const timeOpenMs = Math.max(0, Date.now() - (Number(state.openedAt) || Date.now()));
+  persistAuthWallState(null);
+
+  trackFunnelEvent('auth_wall_converted', {
+    type: 'funnel',
+    trigger: 'marking_submit',
+    method,
+    timeOpenMs,
+    preInspectSessionId: state.preInspectSessionId || null
+  }, userId);
 };
