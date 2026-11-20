@@ -737,7 +737,12 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
                         <div className="skeleton-overlay">
                           <span className="skeleton-label">Analyzing Page {idx + 1}...</span>
                         </div>
-                        {validImageSrc && <div className="skeleton-shimmer" style={{ opacity: 0.3 }}></div>}
+                        {validImageSrc && (
+                          <>
+                            <div className="skeleton-shimmer skeleton-shimmer--over-image"></div>
+                            <div className="skeleton-scan-line"></div>
+                          </>
+                        )}
                       </div>
                     );
                   })}

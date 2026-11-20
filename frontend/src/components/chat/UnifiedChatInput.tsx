@@ -23,7 +23,9 @@ import { useTelemetry } from '../../hooks/useTelemetry';
 import { trackFunnelEvent } from '../../utils/funnelTracker';
 import {
   preInspectUploadedFiles,
+  recomputePreInspectFromSummaries,
   setPendingPreInspectContext,
+  type PreInspectFileSummary,
   type PreInspectResult,
   type PreInspectSuggestionAction,
 } from '../../services/preInspectService';
@@ -139,6 +141,9 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   const [isPreInspecting, setIsPreInspecting] = useState<boolean>(false);
   const [preInspectDismissed, setPreInspectDismissed] = useState<boolean>(false);
   const preInspectAbortRef = useRef<AbortController | null>(null);
+  /** Per-file cached pre-inspect summaries keyed by `${name}:${size}:${lastModified}` so removing a file never re-inspects remaining files */
+  const inspectedFileMapRef = useRef<Map<string, PreInspectFileSummary>>(new Map());
+  const lastPreInspectTokenRef = useRef<string>('');
 
   const [showUpgradeModal, setShowUpgradeModal] = useState<boolean>(false);
   const [isMobileUploadOpen, setIsMobileUploadOpen] = useState<boolean>(false);
@@ -257,6 +262,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
 
   const [showAutocomplete, setShowAutocomplete] = useState<boolean>(false);
   const [showPlusMenu, setShowPlusMenu] = useState<boolean>(false);
+  const [plusMenuOpenUpward, setPlusMenuOpenUpward] = useState<boolean>(false);
   const plusMenuRef = useRef<HTMLDivElement>(null);
   const [highlightedIndex, setHighlightedIndex] = useState<number>(-1);
 
@@ -1133,7 +1139,28 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       setPreInspectResult(null);
       setIsPreInspecting(false);
       setPreInspectDismissed(false);
+      if (attachedFilesList.length === 0) {
+        inspectedFileMapRef.current.clear();
+        lastPreInspectTokenRef.current = '';
+      }
       setPendingPreInspectContext({ preInspectToken: null, allowGenericSubjectMarking: false });
+      return;
+    }
+
+    const fileKey = (f: File) => `${f.name}:${f.size}:${f.lastModified}`;
+    const cachedSummaries = attachedFilesList.map((f) => inspectedFileMapRef.current.get(fileKey(f)));
+    const allRemainingAlreadyInspected =
+      cachedSummaries.length > 0 &&
+      cachedSummaries.every((s): s is PreInspectFileSummary => Boolean(s && s.inspected));
+
+    // ⚡ Instant 0ms local recomputation when every remaining file was already inspected
+    // (e.g. user removed a problematic file — zero network request, zero LLM call, no spinner flash!)
+    if (allRemainingAlreadyInspected && lastPreInspectTokenRef.current) {
+      const localResult = recomputePreInspectFromSummaries(cachedSummaries, lastPreInspectTokenRef.current);
+      setPreInspectDismissed(false);
+      setIsPreInspecting(false);
+      setPreInspectResult(localResult);
+      setPendingPreInspectContext({ preInspectToken: lastPreInspectTokenRef.current });
       return;
     }
 
@@ -1151,6 +1178,17 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
           signal: controller.signal,
         });
         if (!controller.signal.aborted) {
+          if (res?.preInspectToken) {
+            lastPreInspectTokenRef.current = res.preInspectToken;
+          }
+          if (res?.perFileRoles && res.perFileRoles.length === attachedFilesList.length) {
+            attachedFilesList.forEach((f, idx) => {
+              const summary = res.perFileRoles[idx];
+              if (summary && summary.inspected) {
+                inspectedFileMapRef.current.set(fileKey(f), summary);
+              }
+            });
+          }
           setPreInspectResult(res);
           setIsPreInspecting(false);
         }
@@ -1797,6 +1835,11 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                             handleNegativeCreditsRedirect('plus_menu_blocked');
                             return;
                           }
+                          if (!showPlusMenu) {
+                            const rect = plusMenuRef.current?.getBoundingClientRect();
+                            const spaceBelow = rect ? window.innerHeight - rect.bottom : 400;
+                            setPlusMenuOpenUpward(spaceBelow < 300);
+                          }
                           setShowPlusMenu((prev) => !prev);
                         }}
                         disabled={isProcessing || isNegative}
@@ -1814,7 +1857,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                       </button>
 
                       {showPlusMenu && (
-                        <div className="plus-dropdown-menu" role="menu">
+                        <div className={`plus-dropdown-menu ${plusMenuOpenUpward ? 'open-upward' : ''}`} role="menu">
                           <button
                             type="button"
                             className="plus-dropdown-item"

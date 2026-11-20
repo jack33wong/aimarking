@@ -524,8 +524,8 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                       style={{
                         width: '14px',
                         height: '14px',
-                        border: '2px solid rgba(255,255,255,0.3)',
-                        borderTopColor: '#38bdf8',
+                        border: '2px solid var(--border-strong, rgba(148,163,184,0.35))',
+                        borderTopColor: 'var(--text-blue, #38bdf8)',
                         borderRadius: '50%',
                         display: 'inline-block',
                         flexShrink: 0,

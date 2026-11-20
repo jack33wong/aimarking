@@ -37,10 +37,17 @@ export interface PreInspectSuggestionAction {
 export interface PreInspectFileSummary {
   fileName: string;
   role: PreInspectFileRole;
+  examBoard?: string;
   subject?: string;
   paperCode?: string;
   pageCount: number;
   sampledPages: number[];
+  inspected?: boolean;
+  hasHandwriting?: boolean;
+  hasPrintedQuestions?: boolean;
+  requiresMarkScheme?: boolean;
+  hasCatalogedOfficialScheme?: boolean;
+  isUnofficialPaper?: boolean;
 }
 
 export interface PreInspectResult {
@@ -184,4 +191,189 @@ export async function preInspectUploadedFiles(
     setPendingPreInspectContext({ preInspectToken: data.preInspectToken });
   }
   return data;
+}
+
+function normalizeFullPaperCodeClient(code?: string): string | undefined {
+  if (!code) return undefined;
+  const m = code.toUpperCase().match(/\b([0-9A-Z]{3,6}\/[0-9A-Z]{1,3})\b/);
+  return m ? m[1] : undefined;
+}
+
+/**
+ * Pure client-side recomputation when a user removes a file and all remaining files
+ * have already been inspected. Avoids any redundant network/server call (0ms, 0 LLM calls).
+ */
+export function recomputePreInspectFromSummaries(
+  perFileRoles: PreInspectFileSummary[],
+  existingToken: string
+): PreInspectResult {
+  const schemeFiles = perFileRoles.filter((f) => f.role === 'mark_scheme');
+  const nonSchemeFiles = perFileRoles.filter((f) => f.role !== 'mark_scheme');
+  const hasUploadedMarkScheme = schemeFiles.length > 0;
+  const hasCatalogedOfficialScheme = nonSchemeFiles.some((f) => f.hasCatalogedOfficialScheme === true);
+  const hasMarkScheme = hasUploadedMarkScheme || hasCatalogedOfficialScheme;
+
+  const paperCode = nonSchemeFiles.find((f) => f.paperCode)?.paperCode || perFileRoles.find((f) => f.paperCode)?.paperCode;
+  const examBoard = nonSchemeFiles.find((f) => f.examBoard)?.examBoard || perFileRoles.find((f) => f.examBoard)?.examBoard;
+  const subject = nonSchemeFiles.find((f) => f.subject)?.subject || perFileRoles.find((f) => f.subject)?.subject;
+  const hasHandwriting = nonSchemeFiles.some((f) => f.hasHandwriting === true || f.role === 'student_paper');
+  const contentFiles = nonSchemeFiles.filter((f) => f.role !== 'cover_only' && f.role !== 'non_academic' && f.role !== 'unreadable');
+  const hasPrintedQuestions = contentFiles.length === 0 ? true : contentFiles.some((f) => f.hasPrintedQuestions !== false);
+  const isUnofficialPaper = nonSchemeFiles.some((f) => f.isUnofficialPaper === true);
+  const labelPrefix = [examBoard, paperCode, subject].filter(Boolean).join(' · ') || 'Uploaded file';
+
+  const base = {
+    preInspectToken: existingToken,
+    examBoard,
+    subject,
+    paperCode,
+    hasMarkScheme,
+    requiresMarkScheme: false,
+    hasHandwriting,
+    bannerMessage: '',
+    perFileRoles,
+  };
+
+  if (hasUploadedMarkScheme && nonSchemeFiles.length === 0) {
+    const msLabel = [examBoard, paperCode, subject].filter(Boolean).join(' · ');
+    return {
+      ...base,
+      overallStatus: 'action_needed',
+      docType: 'mark_scheme_only',
+      isWarning: true,
+      bannerTitle: `${msLabel ? `${msLabel} · ` : ''}Mark scheme only — attach student paper`,
+      suggestions: [{ id: 'attach-paper', label: 'Attach student paper to mark', action: 'attach_file' }],
+    };
+  }
+
+  if (nonSchemeFiles.length > 0 && nonSchemeFiles.every((f) => f.role === 'unreadable')) {
+    return {
+      ...base,
+      overallStatus: 'invalid',
+      docType: 'unreadable',
+      isWarning: true,
+      bannerTitle: 'Image looks blurry or unreadable',
+      suggestions: [{ id: 'replace-file', label: 'Replace file', action: 'replace_file' }],
+    };
+  }
+
+  if (nonSchemeFiles.length > 0 && nonSchemeFiles.every((f) => f.role === 'non_academic')) {
+    return {
+      ...base,
+      overallStatus: 'invalid',
+      docType: 'non_academic',
+      isWarning: true,
+      bannerTitle: 'Not an academic exam or homework image',
+      suggestions: [{ id: 'replace-file', label: 'Replace file', action: 'replace_file' }],
+    };
+  }
+
+  if (nonSchemeFiles.length > 0 && nonSchemeFiles.every((f) => f.role === 'cover_only')) {
+    return {
+      ...base,
+      overallStatus: 'action_needed',
+      docType: 'cover_only',
+      isWarning: true,
+      bannerTitle: `${labelPrefix} · Cover page only (no questions found)`,
+      suggestions: [{ id: 'replace-cover', label: 'Replace with question or answer pages', action: 'replace_file' }],
+    };
+  }
+
+  if (hasUploadedMarkScheme && nonSchemeFiles.length > 0) {
+    const studentCode = normalizeFullPaperCodeClient(nonSchemeFiles.find((f) => f.paperCode)?.paperCode);
+    const schemeCode = normalizeFullPaperCodeClient(schemeFiles.find((f) => f.paperCode)?.paperCode);
+    if (studentCode && schemeCode && studentCode !== schemeCode) {
+      return {
+        ...base,
+        overallStatus: 'action_needed',
+        docType: 'paper_mismatch',
+        isWarning: true,
+        paperCode: studentCode,
+        bannerTitle: `Paper mismatch: ${studentCode} paper vs ${schemeCode} mark scheme`,
+        suggestions: [{ id: 'replace-mismatch', label: 'Replace mismatched file', action: 'replace_file' }],
+      };
+    }
+  }
+
+  const distinctStudentCodes = Array.from(
+    new Set(nonSchemeFiles.map((f) => normalizeFullPaperCodeClient(f.paperCode)).filter((c): c is string => Boolean(c)))
+  );
+  if (distinctStudentCodes.length > 1) {
+    return {
+      ...base,
+      overallStatus: 'action_needed',
+      docType: 'multi_paper_not_supported',
+      isWarning: true,
+      paperCode: distinctStudentCodes[0],
+      bannerTitle: `Multiple papers detected (${distinctStudentCodes.slice(0, 2).join(' & ')}) — upload 1 paper at a time`,
+      suggestions: [{ id: 'replace-multi-paper', label: 'Replace with a single paper', action: 'replace_file' }],
+    };
+  }
+
+  const needsMarkSchemeFiles = nonSchemeFiles.filter((f) => f.requiresMarkScheme === true);
+  if (!hasMarkScheme && needsMarkSchemeFiles.length > 0) {
+    const subjLabel = needsMarkSchemeFiles[0]?.subject || subject || 'This subject';
+    const titleLead = [examBoard, paperCode, subjLabel].filter(Boolean).join(' · ');
+    return {
+      ...base,
+      overallStatus: 'action_needed',
+      docType: 'missing_mark_scheme',
+      isWarning: false,
+      subject: subjLabel,
+      requiresMarkScheme: true,
+      bannerTitle: `${titleLead} — attach a mark scheme for official grading`,
+      suggestions: [
+        { id: 'attach-ms', label: 'Attach official mark scheme (recommended)', action: 'attach_file' },
+        { id: 'generic-rubric', label: 'Mark now with AI General Rubric', action: 'submit_generic_rubric' },
+      ],
+    };
+  }
+
+  if (hasHandwriting && !hasPrintedQuestions && !hasMarkScheme && contentFiles.length > 0) {
+    return {
+      ...base,
+      overallStatus: 'action_needed',
+      docType: 'answers_without_questions',
+      isWarning: true,
+      bannerTitle: `${labelPrefix} · Answers only (no questions detected) — generic mark scheme will be used`,
+      suggestions: [
+        { id: 'attach-q-or-ms', label: 'Attach question paper or mark scheme for official grading', action: 'attach_file' },
+      ],
+    };
+  }
+
+  if (isUnofficialPaper && !hasMarkScheme) {
+    return {
+      ...base,
+      overallStatus: 'action_needed',
+      docType: 'unofficial_paper',
+      isWarning: false,
+      bannerTitle: `${labelPrefix} · Practice/unofficial paper — attach its mark scheme if available`,
+      suggestions: [{ id: 'attach-practice-ms', label: 'Attach mark scheme (optional)', action: 'attach_file' }],
+    };
+  }
+
+  if (hasHandwriting || hasMarkScheme) {
+    return {
+      ...base,
+      overallStatus: 'ready',
+      docType: 'student_work',
+      isWarning: false,
+      bannerTitle: hasCatalogedOfficialScheme
+        ? `${labelPrefix} · Official mark scheme found · Ready to mark`
+        : hasUploadedMarkScheme
+          ? `${labelPrefix} + Mark Scheme · Ready to mark`
+          : `${labelPrefix} · Ready to mark`,
+      suggestions: [],
+    };
+  }
+
+  return {
+    ...base,
+    overallStatus: 'ready',
+    docType: 'question_paper',
+    isWarning: false,
+    bannerTitle: `${labelPrefix} · Question paper detected`,
+    suggestions: [{ id: 'attach-answers', label: 'Attach my handwritten answers to mark', action: 'attach_file' }],
+  };
 }

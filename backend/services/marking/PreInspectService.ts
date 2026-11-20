@@ -58,6 +58,12 @@ export interface PreInspectFileSummary {
   paperCode?: string;
   pageCount: number;
   sampledPages: number[];
+  inspected?: boolean;
+  hasHandwriting?: boolean;
+  hasPrintedQuestions?: boolean;
+  requiresMarkScheme?: boolean;
+  hasCatalogedOfficialScheme?: boolean;
+  isUnofficialPaper?: boolean;
 }
 
 export interface PreInspectResponse {
@@ -549,7 +555,7 @@ export class PreInspectService {
     geos: GeometryAnalysisResult[]
   ): PreInspectFileSummary {
     if (geos.length === 0) {
-      return { fileName, role: 'student_paper', pageCount, sampledPages };
+      return { fileName, role: 'student_paper', pageCount, sampledPages, inspected: false };
     }
 
     const paperCode = pickBestPaperCode(geos.map((g) => g.paper_code_hint));
@@ -561,6 +567,10 @@ export class PreInspectService {
     const unreadableCount = geos.filter((g) => g.is_acceptable_quality === false).length;
     const coverCount = geos.filter((g) => g.is_cover_page).length;
     const hasHandwriting = geos.some((g) => g.has_handwriting === true && !g.is_cover_page && !g.is_marking_scheme);
+    const contentGeos = geos.filter((g) => !g.is_cover_page && !g.is_marking_scheme && g.is_acceptable_quality !== false && g.detected_subject !== 'NON_ACADEMIC');
+    const hasPrintedQuestions = contentGeos.length === 0 ? true : contentGeos.some((g) => g.has_printed_questions !== false);
+    const requiresMarkScheme = filterAcademicUnsupportedPages(geos).length > 0;
+    const isUnofficialPaper = geos.some((g) => g.is_unofficial_or_practice_paper === true);
 
     let role: PreInspectFileRole = 'question_paper';
     if (schemeCount > 0 && schemeCount >= Math.ceil(geos.length / 2)) {
@@ -585,6 +595,11 @@ export class PreInspectService {
       paperCode,
       pageCount,
       sampledPages,
+      inspected: true,
+      hasHandwriting,
+      hasPrintedQuestions,
+      requiresMarkScheme,
+      isUnofficialPaper,
     };
   }
 
@@ -795,6 +810,11 @@ export class PreInspectService {
       if (catalogedScheme) {
         hasMarkScheme = true;
         hasCatalogedOfficialScheme = true;
+        nonSchemeFiles.forEach((f) => {
+          if (f.requiresMarkScheme) {
+            f.hasCatalogedOfficialScheme = true;
+          }
+        });
       }
     }
 
