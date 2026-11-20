@@ -68,9 +68,9 @@ export function parseMarkingScope(customText?: string): MarkingScope | null {
     }
   }
 
-  // 3. Explicit single page: "only mark page 4", "mark page 4 only", "just page 3"
+  // 3. Explicit single page: "only mark page 4", "mark page 4 only", "mark page 4", "just page 3"
   const singlePageMatch = text.match(
-    /\b(?:only\s+(?:mark|grade|check)\s+|(?:mark|grade|check)\s+only\s+|just\s+(?:mark\s+)?)page\s*(\d{1,3})\b/i
+    /\b(?:(?:only|just)\s+(?:mark|grade|check)\s+|(?:mark|grade|check)\s+(?:only\s+)?|just\s+)page\s*(\d{1,3})\b/i
   ) || text.match(
     /\b(?:mark|grade|check)\s+page\s*(\d{1,3})\s+only\b/i
   );
@@ -121,9 +121,9 @@ export function parseMarkingScope(customText?: string): MarkingScope | null {
     }
   }
 
-  // 6. Explicit list/single question with "only/mark/just": "only mark Q3, Q5, Q7" or "only mark Q4"
+  // 6. Explicit list/single question: "mark q1 and q2", "mark Q1, Q2", "only mark Q3, Q5, Q7", "mark question 4"
   const explicitQListMatch = text.match(
-    /\b(?:only\s+(?:mark|grade|check)|(?:mark|grade|check)\s+only|just\s+(?:mark|grade|check))\s+((?:(?:questions?|q\.?)\s*\d{1,3}(?:\s*(?:,|and|&)\s*)?)+)/i
+    /\b(?:(?:only|just)\s+(?:mark|grade|check)|(?:mark|grade|check)(?:\s+only)?)\s+((?:questions?|qs?\.?|q)\s*\d{1,3}(?:\s*(?:,|and|&)\s*(?:(?:questions?|qs?\.?|q)\s*)?\d{1,3})*)\b/i
   );
   if (explicitQListMatch) {
     const nums = Array.from(explicitQListMatch[1].matchAll(/\d{1,3}/g))

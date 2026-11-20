@@ -6,7 +6,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom';
 import './ChatMessage.css';
 import YourWorkSection from './YourWorkSection';
-import { Brain, ChevronDown, ChevronUp, Lock, Paperclip, Sparkles, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { Brain, ChevronDown, ChevronUp, FileText, Lock, Paperclip, Sparkles, ThumbsUp, ThumbsDown } from 'lucide-react';
 import MarkingFeedbackModal from '../modals/MarkingFeedbackModal';
 import EventManager, { EVENT_TYPES } from '../../utils/eventManager';
 import { useAuth } from '../../contexts/AuthContext';
@@ -33,6 +33,309 @@ import { engagementTracker } from '../../utils/engagementTracker';
 import './ChatMessage.css';
 import '../common/SimpleImageGallery.css';
 import type { UnifiedMessage } from '../../types';
+
+function getWeightedStepRange(totalSteps: number, currentIdx: number): { start: number; end: number; tauSec: number } {
+  const clampedIdx = Math.max(0, Math.min(currentIdx, Math.max(totalSteps - 1, 0)));
+
+  if (totalSteps === 8) {
+    const ranges: Array<[number, number, number]> = [
+      [5, 8, 3],
+      [8, 16, 5],
+      [16, 25, 5],
+      [25, 42, 10],
+      [42, 48, 4],
+      [48, 52, 3],
+      [52, 88, 22],
+      [88, 96, 6],
+    ];
+    const [start, end, tauSec] = ranges[clampedIdx] || [88, 96, 6];
+    return { start, end, tauSec };
+  }
+
+  if (totalSteps === 3) {
+    const ranges: Array<[number, number, number]> = [
+      [10, 18, 2],
+      [18, 28, 2],
+      [28, 94, 16],
+    ];
+    const [start, end, tauSec] = ranges[clampedIdx] || [28, 94, 16];
+    return { start, end, tauSec };
+  }
+
+  if (totalSteps === 4) {
+    const ranges: Array<[number, number, number]> = [
+      [10, 18, 3],
+      [18, 30, 4],
+      [30, 88, 18],
+      [88, 96, 5],
+    ];
+    const [start, end, tauSec] = ranges[clampedIdx] || [88, 96, 5];
+    return { start, end, tauSec };
+  }
+
+  if (totalSteps <= 1) {
+    return { start: 18, end: 90, tauSec: 8 };
+  }
+
+  const stepWidth = 86 / totalSteps;
+  const start = Math.round(8 + clampedIdx * stepWidth);
+  const end = Math.min(95, Math.round(8 + (clampedIdx + 1) * stepWidth));
+  const tauSec = clampedIdx === totalSteps - 1 ? 14 : 6;
+  return { start, end, tauSec };
+}
+
+const ThinkingProgressBar: React.FC<{ progressData: any }> = ({ progressData }) => {
+  const totalSteps = Array.isArray(progressData?.allSteps) && progressData.allSteps.length > 0
+    ? progressData.allSteps.length
+    : 1;
+  const currentIdx = typeof progressData?.currentStepIndex === 'number'
+    ? Math.max(0, progressData.currentStepIndex)
+    : 0;
+  const isComplete = Boolean(progressData?.isComplete);
+
+  const { start, end, tauSec } = getWeightedStepRange(totalSteps, currentIdx);
+  const stepEnteredAtRef = useRef<number>(Date.now());
+  const lastStepIdxRef = useRef<number>(currentIdx);
+  const maxPercentRef = useRef<number>(start);
+  const [displayPercent, setDisplayPercent] = useState<number>(isComplete ? 100 : start);
+
+  useEffect(() => {
+    if (isComplete) {
+      maxPercentRef.current = 100;
+      setDisplayPercent(100);
+      return;
+    }
+
+    if (lastStepIdxRef.current !== currentIdx) {
+      lastStepIdxRef.current = currentIdx;
+      stepEnteredAtRef.current = Date.now();
+    }
+
+    const computeNext = () => {
+      const elapsedSec = (Date.now() - stepEnteredAtRef.current) / 1000;
+      const eased = Math.round(start + (end - start) * (1 - Math.exp(-elapsedSec / tauSec)));
+      const monotonic = Math.max(maxPercentRef.current, Math.min(end, eased));
+      maxPercentRef.current = monotonic;
+      setDisplayPercent(monotonic);
+    };
+
+    computeNext();
+    const timer = window.setInterval(computeNext, 1000);
+    return () => window.clearInterval(timer);
+  }, [currentIdx, start, end, tauSec, isComplete]);
+
+  if (isComplete) return null;
+
+  return (
+    <div
+      className="thinking-progress-pill"
+      role="progressbar"
+      aria-valuenow={displayPercent}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      title={`${displayPercent}% (Step ${Math.min(currentIdx + 1, totalSteps)} of ${totalSteps})`}
+    >
+      <div
+        className="thinking-progress-pill-fill"
+        style={{ width: `${displayPercent}%` }}
+      />
+    </div>
+  );
+};
+
+type SkeletonInputItem = { kind: 'pdf-placeholder' } | { kind: 'image'; src: string };
+
+interface DisplayedSkeletonItem {
+  id: string;
+  kind: 'pdf-placeholder' | 'image';
+  src?: string;
+  pageNumber: number;
+  entering: boolean;
+  exiting: boolean;
+}
+
+const ProcessingSkeletonGallery: React.FC<{
+  items: SkeletonInputItem[];
+  hasYourWork: boolean;
+}> = ({ items, hasYourWork }) => {
+  const [displayed, setDisplayed] = useState<DisplayedSkeletonItem[]>(() =>
+    items.map((item, idx) => ({
+      id: item.kind === 'pdf-placeholder' ? `pdf-${idx}` : `page-${idx}`,
+      kind: item.kind,
+      src: item.kind === 'image' ? item.src : undefined,
+      pageNumber: idx + 1,
+      entering: false,
+      exiting: false,
+    }))
+  );
+
+  const exitTimerRef = useRef<number | null>(null);
+  const itemsKey = items
+    .map((item) => (item.kind === 'image' ? `img:${item.src.length}:${item.src.slice(-24)}` : 'pdf'))
+    .join('|');
+
+  useEffect(() => {
+    if (exitTimerRef.current !== null) {
+      window.clearTimeout(exitTimerRef.current);
+      exitTimerRef.current = null;
+    }
+
+    setDisplayed((prev) => {
+      const activePrev = prev.filter((p) => !p.exiting);
+
+      // Case 1: Uploaded PDF(s) -> N converted images (fade out PDF card(s) + fade in all N images in sync)
+      const prevWasPdf = activePrev.length > 0 && activePrev.every((p) => p.kind === 'pdf-placeholder');
+      const nextIsImages = items.length > 0 && items.every((i) => i.kind === 'image');
+      if (prevWasPdf && nextIsImages) {
+        const exitingPdfs: DisplayedSkeletonItem[] = activePrev.map((p) => ({
+          ...p,
+          entering: false,
+          exiting: true,
+        }));
+        const enteringImages: DisplayedSkeletonItem[] = items.map((item, idx) => ({
+          id: `page-${idx}`,
+          kind: 'image',
+          src: item.kind === 'image' ? item.src : undefined,
+          pageNumber: idx + 1,
+          entering: true,
+          exiting: false,
+        }));
+        return [...exitingPdfs, ...enteringImages];
+      }
+
+      // Case 2: Post-Mapper narrowing (subset of currently displayed images -> slow fade-out + collapse for excluded cards)
+      const prevHasImages = activePrev.length > 0 && activePrev.every((p) => p.kind === 'image' && Boolean(p.src));
+      if (prevHasImages && nextIsImages && items.length < activePrev.length) {
+        const incomingSrcSet = new Set(
+          items.map((i) => (i.kind === 'image' ? i.src : '')).filter(Boolean)
+        );
+        const matchedCount = activePrev.filter((p) => p.src && incomingSrcSet.has(p.src)).length;
+
+        if (matchedCount > 0) {
+          const nextList: DisplayedSkeletonItem[] = activePrev.map((p) =>
+            p.src && incomingSrcSet.has(p.src)
+              ? { ...p, entering: false, exiting: false }
+              : { ...p, entering: false, exiting: true }
+          );
+
+          // Append any newly included in-scope pages that weren't in the initial 25-page preview
+          const existingSrcSet = new Set(activePrev.map((p) => p.src).filter(Boolean));
+          items.forEach((item, idx) => {
+            if (item.kind === 'image' && !existingSrcSet.has(item.src)) {
+              nextList.push({
+                id: `scoped-${idx}-${item.src.slice(-16)}`,
+                kind: 'image',
+                src: item.src,
+                pageNumber: idx + 1,
+                entering: true,
+                exiting: false,
+              });
+            }
+          });
+
+          return nextList;
+        }
+      }
+
+      // Case 3: Direct sync (initial load or unchanged items)
+      return items.map((item, idx) => {
+        const existing = activePrev[idx];
+        const sameItem =
+          existing &&
+          existing.kind === item.kind &&
+          (item.kind === 'pdf-placeholder' || existing.src === item.src);
+        if (sameItem) return existing;
+        return {
+          id: item.kind === 'pdf-placeholder' ? `pdf-${idx}` : `page-${idx}`,
+          kind: item.kind,
+          src: item.kind === 'image' ? item.src : undefined,
+          pageNumber: idx + 1,
+          entering: false,
+          exiting: false,
+        };
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [itemsKey]);
+
+  // Remove exiting cards after their 3.5s fade-out + collapse finishes
+  useEffect(() => {
+    const hasExiting = displayed.some((d) => d.exiting);
+    if (!hasExiting) return;
+
+    exitTimerRef.current = window.setTimeout(() => {
+      setDisplayed((prev) => prev.filter((d) => !d.exiting));
+      exitTimerRef.current = null;
+    }, 3600);
+
+    return () => {
+      if (exitTimerRef.current !== null) {
+        window.clearTimeout(exitTimerRef.current);
+        exitTimerRef.current = null;
+      }
+    };
+  }, [displayed]);
+
+  if (displayed.length === 0) return null;
+
+  return (
+    <div className={`skeleton-gallery-wrapper ${hasYourWork ? 'has-your-work' : ''}`}>
+      <div className="skeleton-gallery thumbnail-horizontal">
+        {displayed.map((item) => {
+          const isPdfOnly = item.kind === 'pdf-placeholder';
+          const classNames = [
+            'skeleton-item',
+            isPdfOnly ? 'skeleton-item--pdf' : '',
+            item.entering ? 'skeleton-item--entering' : '',
+            item.exiting ? 'skeleton-item--exiting' : '',
+          ]
+            .filter(Boolean)
+            .join(' ');
+
+          return (
+            <div
+              key={item.id}
+              className={classNames}
+              aria-hidden={item.exiting || undefined}
+              aria-label={isPdfOnly ? `Converting PDF ${item.pageNumber}...` : `Scanning Page ${item.pageNumber}...`}
+            >
+              {isPdfOnly ? (
+                <div className="skeleton-pdf-placeholder" aria-hidden="true">
+                  <div className="skeleton-pdf-icon-badge">
+                    <FileText size={28} strokeWidth={1.75} />
+                    <span className="skeleton-pdf-ext">PDF</span>
+                  </div>
+                </div>
+              ) : (
+                item.src && (
+                  <img
+                    src={item.src}
+                    alt={`Processing page ${item.pageNumber}`}
+                    className="skeleton-image-preview"
+                  />
+                )
+              )}
+              <div className="skeleton-scrim" aria-hidden="true"></div>
+              <div className="skeleton-viewfinder" aria-hidden="true">
+                <span className="skeleton-corner skeleton-corner--tl"></span>
+                <span className="skeleton-corner skeleton-corner--tr"></span>
+                <span className="skeleton-corner skeleton-corner--bl"></span>
+                <span className="skeleton-corner skeleton-corner--br"></span>
+                <div className="skeleton-scan-beam"></div>
+              </div>
+              <div className="skeleton-overlay">
+                <span className="skeleton-status-dot" aria-hidden="true"></span>
+                <span className="skeleton-label">
+                  {isPdfOnly ? `PDF` : `SCANNING · P${item.pageNumber}`}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
 
 interface ChatMessageProps {
   message: UnifiedMessage;
@@ -494,55 +797,28 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
           {!isUser && (
             <div className="assistant-header">
               <Brain size={20} className="assistant-brain-icon" />
-              {message.progressData && (() => {
-                const totalSteps = Array.isArray(message.progressData.allSteps) && message.progressData.allSteps.length > 0
-                  ? message.progressData.allSteps.length
-                  : 1;
-                const currentIdx = typeof message.progressData.currentStepIndex === 'number'
-                  ? Math.max(0, message.progressData.currentStepIndex)
-                  : 0;
-                const rawPercent = totalSteps <= 1
-                  ? 60
-                  : Math.round(((currentIdx + 1) / totalSteps) * 100);
-                const progressPercent = message.progressData.isComplete
-                  ? 100
-                  : Math.min(92, Math.max(15, rawPercent));
-
-                return (
-                  <div className="thinking-indicator">
-                    <div className="progress-main-line">
-                      {!message.progressData.isComplete && (
-                        <div className="thinking-dots">
-                          <div className="thinking-dot"></div>
-                          <div className="thinking-dot"></div>
-                          <div className="thinking-dot"></div>
-                        </div>
-                      )}
-                      <div className="thinking-text" onClick={handleProgressToggle}>
-                        {message.progressData.isComplete ? 'Show thinking' : (message.progressData.currentStepDescription || 'Processing...')}
+              {message.progressData && (
+                <div className="thinking-indicator">
+                  <div className="progress-main-line">
+                    {!message.progressData.isComplete && (
+                      <div className="thinking-dots">
+                        <div className="thinking-dot"></div>
+                        <div className="thinking-dot"></div>
+                        <div className="thinking-dot"></div>
                       </div>
-                      <button className="progress-toggle-button" onClick={handleProgressToggle}>
-                        {showProgressDetails ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                      </button>
-                      {!message.progressData.isComplete && (
-                        <div
-                          className="thinking-progress-pill"
-                          role="progressbar"
-                          aria-valuenow={progressPercent}
-                          aria-valuemin={0}
-                          aria-valuemax={100}
-                          title={`${progressPercent}% (Step ${Math.min(currentIdx + 1, totalSteps)} of ${totalSteps})`}
-                        >
-                          <div
-                            className="thinking-progress-pill-fill"
-                            style={{ width: `${progressPercent}%` }}
-                          />
-                        </div>
-                      )}
+                    )}
+                    <div className="thinking-text" onClick={handleProgressToggle}>
+                      {message.progressData.isComplete ? 'Show thinking' : (message.progressData.currentStepDescription || 'Processing...')}
                     </div>
+                    <button className="progress-toggle-button" onClick={handleProgressToggle}>
+                      {showProgressDetails ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    </button>
+                    {!message.progressData.isComplete && (
+                      <ThinkingProgressBar progressData={message.progressData} />
+                    )}
                   </div>
-                );
-              })()}
+                </div>
+              )}
             </div>
           )}
 
@@ -749,43 +1025,30 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
           {!isUser &&
             message.isProcessing &&
             !message.progressData?.isComplete &&
-            (message as any).imageDataArray?.length > 0 && (
-              <div className={`skeleton-gallery-wrapper ${hasYourWork ? 'has-your-work' : ''}`}>
-                <div className="skeleton-gallery thumbnail-horizontal">
-                  {(message as any).imageDataArray.map((imgItem: any, idx: number) => {
-                    const src = typeof imgItem === 'string' ? imgItem : imgItem?.url;
-                    const isPdf = isPdfMessage() || (imgItem?.originalFileName && imgItem.originalFileName.toLowerCase().endsWith('.pdf')) || (typeof imgItem === 'string' && imgItem.toLowerCase().endsWith('.pdf'));
-                    const validImageSrc = isPdf ? null : src;
-                    
-                    return (
-                      <div key={idx} className="skeleton-item" aria-label={`Analyzing Page ${idx + 1}...`}>
-                        {validImageSrc ? (
-                          <>
-                            <img src={validImageSrc} alt={`Processing page ${idx + 1}`} className="skeleton-image-preview" />
-                            <div className="skeleton-scrim" aria-hidden="true"></div>
-                            <div className="skeleton-viewfinder" aria-hidden="true">
-                              <span className="skeleton-corner skeleton-corner--tl"></span>
-                              <span className="skeleton-corner skeleton-corner--tr"></span>
-                              <span className="skeleton-corner skeleton-corner--bl"></span>
-                              <span className="skeleton-corner skeleton-corner--br"></span>
-                              <div className="skeleton-scan-beam"></div>
-                            </div>
-                          </>
-                        ) : (
-                          <div className="skeleton-shimmer"></div>
-                        )}
-                        <div className="skeleton-overlay">
-                          <span className="skeleton-status-dot" aria-hidden="true"></span>
-                          <span className="skeleton-label">
-                            {validImageSrc ? `SCANNING · P${idx + 1}` : `Analyzing Page ${idx + 1}...`}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+            (message as any).imageDataArray?.length > 0 && (() => {
+              const renderableSkeletonItems = ((message as any).imageDataArray as any[])
+                .map((imgItem: any): SkeletonInputItem | null => {
+                  if (imgItem && typeof imgItem === 'object' && imgItem.type === 'pdf-placeholder') {
+                    return { kind: 'pdf-placeholder' };
+                  }
+                  const src = typeof imgItem === 'string' ? imgItem : imgItem?.url;
+                  const isItemRawPdf =
+                    !src ||
+                    (typeof src === 'string' && (src.startsWith('data:application/pdf') || /\.pdf($|\?)/i.test(src))) ||
+                    (!String(src).startsWith('data:image/') && imgItem?.originalFileName && imgItem.originalFileName.toLowerCase().endsWith('.pdf'));
+                  return isItemRawPdf ? { kind: 'pdf-placeholder' } : { kind: 'image', src };
+                })
+                .filter((item): item is SkeletonInputItem => Boolean(item));
+
+              if (renderableSkeletonItems.length === 0) return null;
+
+              return (
+                <ProcessingSkeletonGallery
+                  items={renderableSkeletonItems}
+                  hasYourWork={hasYourWork}
+                />
+              );
+            })()}
 
           {/* Assistant Galleries and Images (HIDDEN IN QUESTION MODE) */}
           {!isUser && message.type !== 'question_response' && isMultiImageMessage() && (message as any)?.imageDataArray?.length > 1 && (!message.isProcessing || message.progressData?.isComplete) && (

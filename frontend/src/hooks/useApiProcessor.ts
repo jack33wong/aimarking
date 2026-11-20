@@ -167,8 +167,19 @@ export const useApiProcessor = () => {
           isComplete: data.isComplete || false,
         };
 
+        const convertedThumbnails = Array.isArray((data as any).convertedThumbnails) && (data as any).convertedThumbnails.length > 0
+          ? (data as any).convertedThumbnails
+          : null;
+
         // Use the simpler update method
-        (simpleSessionService.updateMessageInCurrentSession as any)(messageToUpdate.id, { progressData }, targetSessionId);
+        (simpleSessionService.updateMessageInCurrentSession as any)(
+          messageToUpdate.id,
+          {
+            progressData,
+            ...(convertedThumbnails ? { imageDataArray: convertedThumbnails } : {})
+          },
+          targetSessionId
+        );
       }
     }
   }, []);

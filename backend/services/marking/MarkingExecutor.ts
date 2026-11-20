@@ -657,6 +657,44 @@ function computeAnswerAreaBboxForZone(
  * Builds a short-circuited 0/max QuestionResult for completely unattempted questions
  * (zero student work), using neutral `not_attempted` pills instead of red crosses.
  */
+function formatCompactMarkingScheme(scheme: any, questionId: string, totalMarks: number): string {
+  if (!scheme) return `[${questionId}] [MAX SCORE: ${totalMarks}]`;
+  if (typeof scheme === 'string') return scheme;
+
+  const lines: string[] = [];
+  const subQuestionMarks = scheme.questionMarks?.subQuestionMarks;
+  const subMaxScores = scheme.subQuestionMaxScores || {};
+
+  if (subQuestionMarks && typeof subQuestionMarks === 'object' && Object.keys(subQuestionMarks).length > 0) {
+    for (const [subKey, marksList] of Object.entries(subQuestionMarks)) {
+      const maxVal = subMaxScores[subKey] ?? (Array.isArray(marksList) ? marksList.length : 0);
+      lines.push(`[${subKey}] [MAX SCORE: ${maxVal}]`);
+      if (Array.isArray(marksList)) {
+        for (const m of marksList as any[]) {
+          const code = m?.mark || m?.code || '';
+          const ans = m?.answer || m?.guidance || '';
+          const note = m?.comments ? ` [Examiner Notes: ${m.comments}]` : '';
+          if (code || ans) lines.push(`- ${code}: ${ans}${note}`.trim());
+        }
+      }
+    }
+  } else if (Array.isArray(scheme.questionMarks?.marks) && scheme.questionMarks.marks.length > 0) {
+    lines.push(`[${questionId}] [MAX SCORE: ${totalMarks}]`);
+    for (const m of scheme.questionMarks.marks) {
+      const code = m?.mark || m?.code || '';
+      const ans = m?.answer || m?.guidance || '';
+      const note = m?.comments ? ` [Examiner Notes: ${m.comments}]` : '';
+      if (code || ans) lines.push(`- ${code}: ${ans}${note}`.trim());
+    }
+  } else if (typeof scheme.markingSchemeText === 'string' && scheme.markingSchemeText.trim()) {
+    return scheme.markingSchemeText.trim();
+  } else {
+    return `[${questionId}] [MAX SCORE: ${totalMarks}]`;
+  }
+
+  return lines.join('\n').trim() || `[${questionId}] [MAX SCORE: ${totalMarks}]`;
+}
+
 export function buildUnattemptedQuestionResult(
   task: MarkingTask,
   semanticZones: Record<string, any[]>,
@@ -703,6 +741,8 @@ export function buildUnattemptedQuestionResult(
     });
   }
 
+  const compactScheme = formatCompactMarkingScheme(task.markingScheme, questionId, totalMarks);
+
   return {
     questionNumber: questionId,
     score: {
@@ -721,7 +761,8 @@ export function buildUnattemptedQuestionResult(
     totalMarks,
     mathpixCalls: 0,
     confidence: 1.0,
-    markingScheme: JSON.stringify(task.markingScheme || {}),
+    markingScheme: compactScheme,
+    promptMarkingScheme: compactScheme,
     studentWork: '',
     databaseQuestionText: task.markingScheme?.databaseQuestionText || task.questionText,
     questionText: task.questionText || '',

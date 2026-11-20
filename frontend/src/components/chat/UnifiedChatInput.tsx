@@ -509,14 +509,11 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   // Autocomplete will now stay open as long as there is input (no outside-click close)
 
 
-  // Filter suggestions based on input
+  // Filter suggestions based on input (never auto-open past paper list on typing)
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
     setChatInput(value);
     if (mode === 'first-time') {
-      if (value.trim().length > 0) {
-        setShowAutocomplete(true);
-      }
       setHighlightedIndex(-1);
     }
   };
@@ -978,6 +975,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     }
 
     setIsExpanded(true);
+    setShowAutocomplete(false);
   }, [imageFiles, imageFile, isMultiImage, isProcessing]);
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {

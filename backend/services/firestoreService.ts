@@ -630,7 +630,33 @@ export class FirestoreService {
         });
         sessionDoc.imagesPreview = images.slice(0, 5); // Keep top 5
 
-        // Extract metadata from messages if available (for Library performance)
+        // Extract lightweight metadata from messages (avoid duplicating full questionText/markingScheme at top-level)
+        const buildCompactDetectedQuestion = (dq: any) => {
+          if (!dq || typeof dq !== 'object') return dq;
+          return {
+            ...dq,
+            ...(Array.isArray(dq.examPapers)
+              ? {
+                  examPapers: dq.examPapers.map((ep: any) => ({
+                    ...ep,
+                    ...(Array.isArray(ep?.questions)
+                      ? {
+                          questions: ep.questions.map((q: any) => ({
+                            questionNumber: q.questionNumber,
+                            marks: q.marks,
+                            totalMarks: q.totalMarks,
+                            awardedMarks: q.awardedMarks,
+                            pageIndex: q.pageIndex,
+                            sourceImageIndex: q.sourceImageIndex
+                          }))
+                        }
+                      : {})
+                  }))
+                }
+              : {})
+          };
+        };
+
         const assistantMarkingMsg = unifiedMessages.find((m: any) => m.role === 'assistant' && (m.studentScore || m.detectedQuestion));
 
         if (assistantMarkingMsg) {
@@ -638,14 +664,35 @@ export class FirestoreService {
             sessionDoc.studentScore = assistantMarkingMsg.studentScore;
           }
           if (assistantMarkingMsg.detectedQuestion && !sessionDoc.detectedQuestion) {
-            sessionDoc.detectedQuestion = assistantMarkingMsg.detectedQuestion;
+            sessionDoc.detectedQuestion = buildCompactDetectedQuestion(assistantMarkingMsg.detectedQuestion);
           }
         }
       }
 
-      // Explicit detectedQuestion override if provided
+      // Explicit detectedQuestion override if provided (keep compact at top-level; full copy lives on the message)
       if (detectedQuestion) {
-        sessionDoc.detectedQuestion = detectedQuestion;
+        sessionDoc.detectedQuestion = {
+          ...detectedQuestion,
+          ...(Array.isArray(detectedQuestion.examPapers)
+            ? {
+                examPapers: detectedQuestion.examPapers.map((ep: any) => ({
+                  ...ep,
+                  ...(Array.isArray(ep?.questions)
+                    ? {
+                        questions: ep.questions.map((q: any) => ({
+                          questionNumber: q.questionNumber,
+                          marks: q.marks,
+                          totalMarks: q.totalMarks,
+                          awardedMarks: q.awardedMarks,
+                          pageIndex: q.pageIndex,
+                          sourceImageIndex: q.sourceImageIndex
+                        }))
+                      }
+                    : {})
+                }))
+              }
+            : {})
+        };
       }
 
       // Save complete session document to unifiedSessions collection
@@ -658,16 +705,16 @@ export class FirestoreService {
         let finalPayload = sanitizeForFirestore(sessionDoc);
 
         // 2. Measure the actual byte size of the pure text/JSON
-        const byteSize = Buffer.byteLength(JSON.stringify(finalPayload), 'utf8');
+        let byteSize = Buffer.byteLength(JSON.stringify(finalPayload), 'utf8');
 
         // 3. 🛑 THE FAILSAFE (1MB limit = 1,048,576 bytes)
-        if (byteSize > 900000) { // If it's over 900KB, it's dangerously close
-          console.warn(`⚠️ Payload is ${byteSize} bytes! Offloading heavy OCR arrays to avoid Firestore crash.`);
+        if (byteSize > 850000) { // Leave headroom for Firestore protobuf overhead
+          console.warn(`⚠️ Payload is ${byteSize} bytes! Offloading heavy fields to avoid Firestore crash.`);
 
           const heavyData: any = {};
           let strippedCount = 0;
 
-          // Strip the heaviest, non-essential arrays from the nested messages
+          // Strip heavy OCR arrays first
           if (finalPayload.unifiedMessages && Array.isArray(finalPayload.unifiedMessages)) {
             finalPayload.unifiedMessages.forEach((msg: any, idx: number) => {
               if (msg.rawOcrBlocks || msg.stepsDataForMapping || msg.taggedOcrBlocks || msg.studentWork) {
@@ -684,6 +731,45 @@ export class FirestoreService {
                 strippedCount++;
               }
             });
+          }
+
+          byteSize = Buffer.byteLength(JSON.stringify(finalPayload), 'utf8');
+
+          // Second pass: if still over 850KB (e.g. massive 40+ question paper), trim heavy scheme/text strings in messages
+          if (byteSize > 850000 && Array.isArray(finalPayload.unifiedMessages)) {
+            finalPayload.unifiedMessages.forEach((msg: any, idx: number) => {
+              if (msg.markingContext?.questionResults && Array.isArray(msg.markingContext.questionResults)) {
+                heavyData[`msg_${idx}_markingContextSchemes`] = msg.markingContext.questionResults.map((qr: any) => ({
+                  number: qr.number,
+                  scheme: qr.scheme,
+                  text: qr.text
+                }));
+                msg.markingContext.questionResults = msg.markingContext.questionResults.map((qr: any) => ({
+                  ...qr,
+                  scheme: typeof qr.scheme === 'string' && qr.scheme.length > 400 ? `${qr.scheme.slice(0, 400)}...` : qr.scheme,
+                  text: typeof qr.text === 'string' && qr.text.length > 400 ? `${qr.text.slice(0, 400)}...` : qr.text
+                }));
+                strippedCount++;
+              }
+              if (Array.isArray(msg.detectedQuestion?.examPapers)) {
+                msg.detectedQuestion.examPapers = msg.detectedQuestion.examPapers.map((ep: any) => ({
+                  ...ep,
+                  ...(Array.isArray(ep?.questions)
+                    ? {
+                        questions: ep.questions.map((q: any) => ({
+                          ...q,
+                          markingScheme: typeof q.markingScheme === 'string' && q.markingScheme.length > 500
+                            ? `${q.markingScheme.slice(0, 500)}...`
+                            : q.markingScheme
+                        }))
+                      }
+                    : {})
+                }));
+                strippedCount++;
+              }
+            });
+            byteSize = Buffer.byteLength(JSON.stringify(finalPayload), 'utf8');
+            console.warn(`📦 [FIRESTORE-FAILSAFE] Trimmed payload to ${byteSize} bytes.`);
           }
 
           if (strippedCount > 0) {

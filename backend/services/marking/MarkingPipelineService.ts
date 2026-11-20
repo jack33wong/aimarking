@@ -1539,6 +1539,9 @@ export class MarkingPipelineService {
             let markingTasks: MarkingTask[] = [];
             let pdfContext: any = null;
             let pageDimensionsMap = new Map<number, { width: number; height: number }>();
+            const earlyMarkingScope = parseMarkingScope(options.customText);
+            let earlyPrunedPdfMarkingScope: ReturnType<typeof parseMarkingScope> = null;
+            const sseThumbnailCache = new Map<number, string>();
             const MARK_SCHEME_FILENAME_REGEX = /(^|[-_\s.])(rms|ms|mark[-_\s]?scheme|marking[-_\s]?scheme)([-_\s.]|$)/i;
             // Zero-API-cost PDF page 1-2 text peek via Ghostscript (~15-40ms in parallel)
             // Classifies digital mark schemes by actual PDF content rather than filename alone.
@@ -1592,23 +1595,69 @@ export class MarkingPipelineService {
                 });
 
                 if (isPdf) {
-                    const effectivePreRasterRawPages = preRasterPlan.hasValidSelectedRawPages
-                        ? preRasterPlan.plans.reduce((sum, p) => sum + (p.selectedLocalPageIndices?.length ?? 0), 0)
-                        : preRasterPlan.totalKnownRawPages;
+                    const filePlan = preRasterPlan.plans[0];
+                    let effectiveSelectedPageIndices: number[] | undefined = filePlan?.selectedLocalPageIndices?.length
+                        ? filePlan.selectedLocalPageIndices
+                        : undefined;
+
+                    // Early page-range pruning for single PDF uploads when user explicitly requests physical page range (e.g. "mark page 1 to 3")
+                    if (
+                        !effectiveSelectedPageIndices &&
+                        earlyMarkingScope?.type === 'pages' &&
+                        earlyMarkingScope.minPage !== undefined &&
+                        earlyMarkingScope.maxPage !== undefined
+                    ) {
+                        const maxKnownPages = preRasterPlan.totalKnownRawPages || earlyMarkingScope.maxPage;
+                        const clampedStart = Math.max(1, earlyMarkingScope.minPage);
+                        const clampedEnd = Math.min(earlyMarkingScope.maxPage, maxKnownPages);
+                        if (clampedStart <= clampedEnd && clampedEnd < maxKnownPages) {
+                            const indices: number[] = [];
+                            const includeCoverForMetadata = clampedStart > 1;
+                            if (includeCoverForMetadata) {
+                                indices.push(0); // Preserve cover page (index 0) for exam paper code detection
+                            }
+                            for (let p = clampedStart; p <= clampedEnd; p++) {
+                                indices.push(p - 1);
+                            }
+                            effectiveSelectedPageIndices = indices;
+                            earlyPrunedPdfMarkingScope = includeCoverForMetadata
+                                ? {
+                                    ...earlyMarkingScope,
+                                    minPage: 2,
+                                    maxPage: indices.length
+                                }
+                                : earlyMarkingScope;
+                            console.log(`✂️ [EARLY-PDF-SCOPE] Pruning single PDF rasterization to ${indices.length}/${maxKnownPages} page(s) for scope "${earlyMarkingScope.label}" (0-based indices: ${indices.join(', ')}).`);
+                        }
+                    }
+
+                    const effectivePreRasterRawPages = effectiveSelectedPageIndices
+                        ? effectiveSelectedPageIndices.length
+                        : preRasterPlan.hasValidSelectedRawPages
+                            ? preRasterPlan.plans.reduce((sum, p) => sum + (p.selectedLocalPageIndices?.length ?? 0), 0)
+                            : preRasterPlan.totalKnownRawPages;
                     if (!isProOrUltra && effectivePreRasterRawPages > MAX_RAW_COMBINED_PAGES) {
                         throw buildRawCombinedLimitError(effectivePreRasterRawPages);
                     }
-                    progressCallback(createProgressData(1, 'Converting PDF...', MULTI_IMAGE_STEPS));
+                    const expectedThumbnailCount = Math.min(
+                        25,
+                        earlyPrunedPdfMarkingScope?.type === 'pages' && (earlyPrunedPdfMarkingScope.minPage ?? 1) > 1
+                            ? Math.max(1, effectivePreRasterRawPages - 1)
+                            : effectivePreRasterRawPages
+                    );
+                    progressCallback({
+                        ...createProgressData(1, 'Converting PDF...', MULTI_IMAGE_STEPS),
+                        ...(expectedThumbnailCount > 0 ? { expectedThumbnailCount } : {})
+                    } as any);
                     const pdfBuffer = files[0].buffer;
                     const originalFileName = files[0].originalname || 'document.pdf';
-                    const filePlan = preRasterPlan.plans[0];
-                    const hasSelectedPages = Boolean(filePlan?.selectedLocalPageIndices?.length);
+                    const hasSelectedPages = Boolean(effectiveSelectedPageIndices?.length);
                     stepTimings['pdf_conversion'] = { start: Date.now() };
 
                     // Use pdfMaxPagesOption so Pro/Ultra have no limit and Free combined Question + Mark Scheme PDFs can exempt MS pages in Stage 2
                     standardizedPages = await PdfProcessingService.convertPdfToImages(pdfBuffer, {
                         ...(hasSelectedPages ? {} : { maxPages: pdfMaxPagesOption, maxPagesErrorMessage: getPageLimitErrorMessage }),
-                        ...(hasSelectedPages ? { selectedPageIndices: filePlan!.selectedLocalPageIndices } : {})
+                        ...(hasSelectedPages ? { selectedPageIndices: effectiveSelectedPageIndices } : {})
                     });
 
                     // Enforce Raw Combined Page Limit before Stage 2 mark-scheme exemption
@@ -1616,10 +1665,13 @@ export class MarkingPipelineService {
                         throw buildRawCombinedLimitError(standardizedPages.length);
                     }
                     // Set originalFileName, _sourceIndex, and preserve global _rawPageIndex
-                    standardizedPages.forEach((page) => {
+                    standardizedPages.forEach((page, idx) => {
                         page.originalFileName = originalFileName;
                         (page as any)._sourceIndex = 0;
-                        (page as any)._rawPageIndex = (filePlan?.globalRawOffset ?? 0) + page.pageIndex;
+                        (page as any)._rawPageIndex = effectiveSelectedPageIndices
+                            ? effectiveSelectedPageIndices[idx]
+                            : (filePlan?.globalRawOffset ?? 0) + page.pageIndex;
+                        page.pageIndex = idx;
                     });
 
                     if (stepTimings['pdf_conversion']) {
@@ -1637,7 +1689,21 @@ export class MarkingPipelineService {
                     }
 
                     // Multiple PDFs processing
-                    progressCallback(createProgressData(1, `Converting ${files.length} PDFs in parallel...`, MULTI_IMAGE_STEPS));
+                    const expectedMultiPdfThumbnailCount = Math.min(
+                        25,
+                        files.reduce((sum, file, idx) => {
+                            if (hasNonSchemeStudentFiles && isExplicitMarkSchemePdfFile(file)) return sum;
+                            const plan = preRasterPlan.plans[idx];
+                            const pages = preRasterPlan.hasValidSelectedRawPages
+                                ? (plan?.selectedLocalPageIndices?.length ?? 0)
+                                : (plan?.rawPageCount ?? 0);
+                            return sum + pages;
+                        }, 0)
+                    );
+                    progressCallback({
+                        ...createProgressData(1, `Converting ${files.length} PDFs in parallel...`, MULTI_IMAGE_STEPS),
+                        ...(expectedMultiPdfThumbnailCount > 0 ? { expectedThumbnailCount: expectedMultiPdfThumbnailCount } : {})
+                    } as any);
                     stepTimings['pdf_conversion'] = { start: Date.now() };
 
                     const pdfConversionPromises = files.map(async (file, index) => {
@@ -2086,6 +2152,32 @@ export class MarkingPipelineService {
             }
 
             console.log(`📊 [RAW UPLOAD] User ${userId || 'anonymous'} (${userPlan}) uploaded ${standardizedPages.length} raw page(s) pre-geometry.`);
+
+            // Stream lightweight converted PDF page thumbnails immediately so frontend animation shows actual PDF pages instead of a blank placeholder
+            if (!preFlightBucket && (isPdf || isMultiplePdfs || isMixedUpload) && standardizedPages.length > 0) {
+                try {
+                    const hasMetadataCoverOffset =
+                        earlyPrunedPdfMarkingScope?.type === 'pages' && (earlyPrunedPdfMarkingScope.minPage ?? 1) > 1;
+                    const scopedPreviewSource = hasMetadataCoverOffset
+                        ? standardizedPages.slice(1)
+                        : standardizedPages;
+                    const previewPages = scopedPreviewSource.slice(0, 25);
+                    const convertedThumbnails = await Promise.all(
+                        previewPages.map(async (p, previewIdx) => {
+                            const thumb = await ImageUtils.createLightweightCopy(p.imageData, 260);
+                            const pageIdx = hasMetadataCoverOffset ? previewIdx + 1 : previewIdx;
+                            sseThumbnailCache.set(pageIdx, thumb);
+                            return thumb;
+                        })
+                    );
+                    progressCallback({
+                        ...createProgressData(1, `Converted PDF to ${standardizedPages.length} page(s)...`, MULTI_IMAGE_STEPS),
+                        convertedThumbnails
+                    } as any);
+                } catch (thumbErr) {
+                    console.warn('[PDF-THUMBNAILS] Failed to generate SSE preview thumbnails:', thumbErr);
+                }
+            }
 
             // --- 1. Vision Orientation Fix (Deterministic) ---
             // P3 Optimization: When raw pages exceed effectiveMaxPages (e.g. 65 > 50), defer Vision Orientation until
@@ -3025,7 +3117,7 @@ export class MarkingPipelineService {
 
             // Parse explicit user marking scope from Student Input early so Stage-2 Classification
             // can skip out-of-scope pages/questions ($0 Stage-2 LLM cost) before meta-page filtering.
-            const markingScope = parseMarkingScope(options.customText);
+            const markingScope = earlyPrunedPdfMarkingScope || parseMarkingScope(options.customText);
             if (markingScope) {
                 console.log(`🎯 [MARKING-SCOPE] Parsed explicit user scope: ${markingScope.label}`);
             }
@@ -3293,6 +3385,29 @@ export class MarkingPipelineService {
 
             if (excludedPageIndices.length > 0) {
                 console.log(`✂️ [MARKING-SCOPE] Excluded out-of-scope page indices: ${excludedPageIndices.join(', ')} (${markingScope?.label})`);
+                // Narrow the frontend scanning thumbnails down to only the in-scope pages (e.g. "mark Q1, Q2" -> 1-2 pages instead of all 20)
+                try {
+                    const excludedSet = new Set(excludedPageIndices);
+                    const inScopeEntries = standardizedPages
+                        .map((page, idx) => ({ page, idx }))
+                        .filter(({ idx }) => !excludedSet.has(idx))
+                        .slice(0, 25);
+                    if (inScopeEntries.length > 0 && inScopeEntries.length < standardizedPages.length) {
+                        const scopedThumbnails = await Promise.all(
+                            inScopeEntries.map(async ({ page, idx }) => {
+                                const cached = sseThumbnailCache.get(idx);
+                                if (cached) return cached;
+                                return ImageUtils.createLightweightCopy(page.imageData, 260);
+                            })
+                        );
+                        progressCallback({
+                            ...createProgressData(3, `Focusing on ${inScopeEntries.length} in-scope page(s)...`, MULTI_IMAGE_STEPS),
+                            convertedThumbnails: scopedThumbnails
+                        } as any);
+                    }
+                } catch (scopeThumbErr) {
+                    console.warn('[PDF-THUMBNAILS] Failed to narrow SSE preview thumbnails to marking scope:', scopeThumbErr);
+                }
             }
             if (preservedBlankQuestionPageIndices.length > 0) {
                 console.log(`📋 [BLANK-QUESTION-KEEP] Preserved blank question page(s) [${preservedBlankQuestionPageIndices.join(', ')}] in Marking Mode so the total denominator reflects the full exam.`);
