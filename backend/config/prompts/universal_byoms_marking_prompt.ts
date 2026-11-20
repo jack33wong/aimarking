@@ -83,15 +83,14 @@ When a question or sub-question has \`[LEVEL DESCRIPTORS]\` or \`[PARADIGM: LEVE
      * If a \`[DRAWING]\` block exists for that sub-question in \`STUDENT WORK (CLEAN STEPS)\`, link to its \`line_id\` and \`linked_ocr_id\` with \`ocr_match_status: "VISUAL"\`.
      * Otherwise, link to the nearest relevant \`RAW OCR BLOCKS\` ID (such as the prompt line \`"Plot this data on Figure 1"\`, table row, or diagram caption) with \`ocr_match_status: "MATCHED"\` so the mark is anchored directly beside that prompt/diagram on the page.
 2. **Strict Sub-Question Silo, Budget & Concise Margin Reasoning Rule**:
-   - Every annotation MUST include \`"subQuestion"\` (e.g. \`"1a"\`, \`"1b"\`, \`"1c"\`).
-   - If a short-answer / \`KEYWORD_POINT\` (\`B0\`) or single-error \`A0\` response spans multiple lines, anchor the single \`cross\` on the **final line** of the sub-question's answer so the margin note sits cleanly below the work without overlapping lower lines.
-   - Constrain \`annotations[].reasoning\` to **5–8 words (≤ 55 chars)** in concise examiner shorthand (no filler like \`"Incorrect method:"\` or \`"Final answer of X is incorrect"\`) because it is rendered directly in the page margin; put full step-by-step working/LoR coaching in \`step_by_step_evaluation\` (or \`rubricEvaluation\`):
-     * For \`M0\` / \`P0\` (intermediate working steps with \`action: "cross"\`): show only the brief method correction (≤ 35 chars, e.g., \`"8000 = 4/5, not 1/5"\` or \`"Need 15 × 14 = 210"\`), without repeating \`; ans: <final answer>\` on every line.
-     * For omitted steps, comparisons, or explanations: use \`"Missing: ..."\` instead of \`"Ans: ..."\` (e.g., \`"Missing: link to Fig 1"\` or \`"Missing: comparison of medians"\`).
-     * For standalone \`A0\` / \`B0\` (final answer / short-answer marks with \`action: "cross"\`): ALWAYS include a brief 3–5 word reason alongside the answer (e.g., \`"Divide by 1000; Ans: 56"\` or \`"Need GNI/GDP per capita; Ans: GDP"\`) instead of bare \`"Ans: 56"\`. Do **not** repeat \`; Ans: <value>\` if the correct answer is already stated in the error phrase.
-     * For completely blank/unattempted sub-questions (zero student work): emit \`action: "not_attempted"\`, \`text: "Not attempted"\`, \`reasoning: "Not attempted"\` instead of a red cross.
-     * For \`action: "tick"\`: keep \`reasoning\` ≤ 6 words (e.g., \`"Ash blocks solar radiation"\`).
-   - Never exceed \`[MAX SCORE]\` for any sub-question or the total question budget.
+   - Every annotation MUST include \`"subQuestion"\` (e.g. \`"1a"\`, \`"1b"\`, \`"1c"\`). Never exceed \`[MAX SCORE]\`.
+   - Anchor a single \`B0\`/\`A0\` cross on the **final line** of that sub-question's answer.
+   - Keep \`annotations[].reasoning\` to **5–8 words (≤ 55 chars)** with NO filler (\`"Incorrect method:"\`, \`"Final answer of X is incorrect"\`):
+     * \`M0\` / \`P0\` (intermediate \`cross\`): method correction only (≤ 35 chars, e.g., \`"8000 = 4/5, not 1/5"\`); never repeat \`; ans: <final answer>\`.
+     * Omitted steps/comparisons/explanations: use \`"Missing: ..."\` (e.g., \`"Missing: comparison of medians"\`).
+     * Standalone \`A0\` / \`B0\`: include a 3–5 word reason + answer (e.g., \`"Divide by 1000; Ans: 56"\` or \`"Need GNI/GDP per capita; Ans: GDP"\`), not bare \`"Ans: 56"\`; do not duplicate \`; Ans: <value>\` if already stated.
+     * Completely blank sub-questions (zero work): emit \`action: "not_attempted"\`, \`text: "Not attempted"\`, \`reasoning: "Not attempted"\`.
+     * \`action: "tick"\`: ≤ 6 words (e.g., \`"Ash blocks solar radiation"\`).
 3. **1-to-1 Line & OCR Block Linking**:
    - Every step in \`STUDENT WORK (CLEAN STEPS)\` MUST have an entry in \`step_by_step_evaluation\`.
    - Copy the exact \`line_id\` (e.g. \`p0_q1_line_1\`, never invent \`line_1\`) from \`STUDENT WORK (CLEAN STEPS)\` and the exact \`linked_ocr_id\` (\`p0_ocr_1\`, ...) from \`RAW OCR BLOCKS\`.

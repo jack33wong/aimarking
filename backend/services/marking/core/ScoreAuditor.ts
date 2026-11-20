@@ -64,6 +64,19 @@ export class ScoreAuditor {
         let inferredTotalMarks = 0;
         const survivorList: any[] = [];
         const isGeneric = Boolean(scheme?.isGeneric);
+        const hasIncompleteBudgets = Boolean(scheme?.hasIncompleteSubQuestionBudgets);
+        const schemeTotalMarks = Number(scheme?.totalMarks || scheme?.parentQuestionMarks || 0);
+        const rawTotalAwardedMarks = annotations.reduce((sum, a) => {
+            if (!a || a.action === 'cross' || a.action === 'not_attempted' || a.isUnattempted) return sum;
+            return sum + sanitizeValue(a.text || '0');
+        }, 0);
+        const bypassSubGuillotineForGeneric = Boolean(
+            isGeneric && (
+                hasIncompleteBudgets ||
+                schemeTotalMarks <= 0 ||
+                rawTotalAwardedMarks <= schemeTotalMarks
+            )
+        );
 
         Object.keys(buckets).forEach(subQ => {
             const anns = buckets[subQ];
@@ -105,6 +118,8 @@ export class ScoreAuditor {
                 budget = 99;
             }
 
+            const effectiveSubBudget = bypassSubGuillotineForGeneric ? 99 : budget;
+
             let currentVal = 0;
             let subInferredMax = 0;
             const survivors: any[] = [];
@@ -115,7 +130,7 @@ export class ScoreAuditor {
                 }
                 const val = sanitizeValue(ann.text || "0");
                 subInferredMax += countAttemptedWeight(ann.text || "0");
-                if (currentVal + val <= budget) {
+                if (currentVal + val <= effectiveSubBudget) {
                     survivors.push(ann);
                     currentVal += val;
                 }
@@ -123,7 +138,7 @@ export class ScoreAuditor {
             survivors.forEach(s => survivorList.push(s));
             grandTotal += currentVal;
 
-            if (hasExplicitSubBudget) {
+            if (hasExplicitSubBudget && !bypassSubGuillotineForGeneric) {
                 inferredTotalMarks += budget;
             } else if (isGeneric) {
                 inferredTotalMarks += Math.max(currentVal, subInferredMax, 1);

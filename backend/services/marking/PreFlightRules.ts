@@ -112,6 +112,58 @@ export function filterAcademicUnsupportedPages(geometryResults: Array<GeometryAn
 }
 
 /**
+ * In a multi-page upload where the majority of non-scheme academic pages belong to a built-in supported
+ * subject (MATHS or ENGLISH_LANGUAGE) and the unsupported page count is below the multi-page consensus
+ * rejection threshold (< 2 pages AND < 40% of non-scheme pages), rescue the minority academic page(s)
+ * in-place so a single Mechanics/word-problem page in the middle of a Maths paper is never silently dropped.
+ */
+export function rescueMinorityUnsupportedPagesInSupportedBatch(
+  geometryResults: Array<GeometryAnalysisResult | undefined>
+): { rescuedCount: number; dominantSupportedSubject?: 'MATHS' | 'ENGLISH_LANGUAGE' } {
+  const nonSchemeGeos = geometryResults.filter(
+    (g): g is GeometryAnalysisResult => Boolean(g) && !g!.is_marking_scheme && g!.is_acceptable_quality !== false
+  );
+  if (nonSchemeGeos.length < 2) {
+    return { rescuedCount: 0 };
+  }
+
+  const unsupportedPages = filterAcademicUnsupportedPages(geometryResults);
+  if (unsupportedPages.length === 0) {
+    return { rescuedCount: 0 };
+  }
+
+  const unsupportedRatio = unsupportedPages.length / Math.max(1, nonSchemeGeos.length);
+  if (unsupportedPages.length >= 2 || unsupportedRatio >= 0.4) {
+    return { rescuedCount: 0 };
+  }
+
+  const mathsCount = nonSchemeGeos.filter(
+    (g) => g.is_supported_doc !== false && (g.detected_subject === 'MATHS' || !g.detected_subject)
+  ).length;
+  const engLangCount = nonSchemeGeos.filter(
+    (g) => g.is_supported_doc !== false && g.detected_subject === 'ENGLISH_LANGUAGE'
+  ).length;
+
+  if (mathsCount === 0 && engLangCount === 0) {
+    return { rescuedCount: 0 };
+  }
+
+  const dominantSupportedSubject: 'MATHS' | 'ENGLISH_LANGUAGE' =
+    engLangCount > mathsCount ? 'ENGLISH_LANGUAGE' : 'MATHS';
+
+  let rescuedCount = 0;
+  for (const g of unsupportedPages) {
+    g.is_supported_doc = true;
+    g.detected_subject = dominantSupportedSubject;
+    g.unsupported_subject_name = undefined;
+    g.rejection_reason = undefined;
+    rescuedCount++;
+  }
+
+  return { rescuedCount, dominantSupportedSubject };
+}
+
+/**
  * Collapse compatible subject aliases from unsupported academic geometry results.
  */
 export function extractDistinctUnsupportedSubjects(unsupportedPages: GeometryAnalysisResult[]): string[] {

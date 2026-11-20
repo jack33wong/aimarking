@@ -149,19 +149,17 @@ export class MarkingPromptService {
                         normalizedScheme.subQuestionMaxScores?.[suffix] ??
                         normalizedScheme.subQuestionMaxScores?.[dotStripped];
                     return maxS && maxS > 0
-                        ? `[${sq}] [MAX SCORE: ${maxS}] — Evaluate student work for [${sq}] and award up to ${maxS} mark(s).`
-                        : `[${sq}] — Determine max marks from the "[ X marks ]" printed in RAW OCR BLOCKS / image and evaluate student work for [${sq}].`;
+                        ? `[${sq}] [MAX SCORE: ${maxS}]`
+                        : `[${sq}] — Read "[ X marks ]" from RAW OCR BLOCKS / image.`;
                 }).join('\n') + '\n';
             }
 
             return `
 ${genericHeader}
-> [INSTRUCTION]: You are the CHIEF EXAMINER grading in Generic Rubric Mode (no official scheme attached).
-> 1. **MARK EVERY SUB-QUESTION**: You MUST evaluate and output marking annotations (\`B1\`/\`M1\`/\`A1\` or \`B0\`/\`M0\`/\`A0\`) for EVERY sub-question listed below where the student has written work or ticked a box. Never skip a sub-question.
-> 2. **RESPECT SUB-QUESTION BUDGETS**: Use the \`[MAX SCORE]\` listed below (or the \`[ X marks ]\` printed in RAW OCR BLOCKS if not listed) as the strict maximum for each sub-question.
-> 3. **CUT (Guillotine)**: Do not exceed the budget for any sub-question.
-> 4. **MATCH TICK COUNT TO SUB-QUESTION MARKS**: When a sub-question is worth N marks (e.g. "(5 marks)") and the student's solution earns full marks, emit N one-mark tick annotations (e.g. M1, M1, M1, A1, A1) distributed across their lines of working so the annotation sum equals the awarded marks.
-> 5. **FINAL-LINE CROSS ANCHOR & CONCISE REASONING**: If a short-answer \`B0\` or single-error \`A0\` response spans multiple lines, anchor the single \`cross\` on the **final line** of that sub-question's answer. Keep \`annotations[].reasoning\` concise (5–8 words, ≤ 55 chars), without repeating \`; ans: <value>\` if the correct answer is already stated in the error phrase.
+> [INSTRUCTION]: CHIEF EXAMINER — Generic Rubric Mode (no official scheme attached).
+> 1. **MARK EVERY SUB-QUESTION**: Output \`B1\`/\`M1\`/\`A1\` or \`B0\`/\`M0\`/\`A0\` for EVERY attempted sub-question below. Never skip a part.
+> 2. **RESPECT BUDGETS & MATCH TICK COUNT**: Do not exceed \`[MAX SCORE]\` (or printed \`[ X marks ]\`). If a part is worth N marks and earns full marks, emit N one-mark ticks (e.g. M1, M1, A1) across working lines.
+> 3. **FINAL-LINE CROSS & CONCISE REASONING**: Anchor a single \`B0\`/\`A0\` cross on the final line of that part. Keep \`reasoning\` ≤ 8 words (≤ 55 chars), without duplicating \`; ans: <value>\` if already stated.
 ${subQBreakdown}`;
         }
 

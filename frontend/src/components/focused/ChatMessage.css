@@ -699,6 +699,20 @@
   border: 1px solid var(--border-main);
 }
 
+.skeleton-image-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  opacity: 0.55;
+  filter: contrast(1.03);
+}
+
+html.dark .skeleton-image-preview {
+  opacity: 0.72;
+  filter: brightness(0.95) contrast(1.05);
+}
+
 .skeleton-shimmer {
   position: absolute;
   top: 0;
@@ -708,18 +722,31 @@
   background: linear-gradient(
     110deg,
     transparent 20%,
-    rgba(124, 58, 237, 0.14) 45%,
-    rgba(255, 255, 255, 0.42) 50%,
-    rgba(124, 58, 237, 0.14) 55%,
+    rgba(100, 116, 139, 0.16) 44%,
+    rgba(255, 255, 255, 0.52) 50%,
+    rgba(100, 116, 139, 0.16) 56%,
     transparent 80%
   );
   background-size: 220% 100%;
   animation: shimmer 1.6s infinite linear;
   pointer-events: none;
+  z-index: 2;
+}
+
+html.dark .skeleton-shimmer {
+  background: linear-gradient(
+    110deg,
+    transparent 18%,
+    rgba(148, 163, 184, 0.22) 44%,
+    rgba(241, 245, 249, 0.55) 50%,
+    rgba(148, 163, 184, 0.22) 56%,
+    transparent 82%
+  );
+  background-size: 220% 100%;
 }
 
 .skeleton-shimmer--over-image {
-  opacity: 0.85;
+  opacity: 0.9;
 }
 
 .skeleton-scan-line {
@@ -727,16 +754,23 @@
   left: 0;
   right: 0;
   height: 3px;
-  background: linear-gradient(90deg, transparent, #8b5cf6 50%, transparent);
-  box-shadow: 0 0 10px rgba(139, 92, 246, 0.75);
+  background: linear-gradient(90deg, transparent 4%, #94a3b8 30%, #e2e8f0 50%, #94a3b8 70%, transparent 96%);
+  box-shadow: 0 0 10px 2px rgba(100, 116, 139, 0.65);
   animation: skeleton-scan-sweep 1.8s ease-in-out infinite;
   pointer-events: none;
+  z-index: 3;
+}
+
+html.dark .skeleton-scan-line {
+  height: 3.5px;
+  background: linear-gradient(90deg, transparent 2%, #94a3b8 25%, #f8fafc 50%, #94a3b8 75%, transparent 98%);
+  box-shadow: 0 0 12px 2.5px rgba(203, 213, 225, 0.8), 0 0 5px 1px rgba(255, 255, 255, 0.55);
 }
 
 @keyframes skeleton-scan-sweep {
-  0% { top: 4%; opacity: 0.35; }
+  0% { top: 4%; opacity: 0.45; }
   50% { top: 76%; opacity: 1; }
-  100% { top: 4%; opacity: 0.35; }
+  100% { top: 4%; opacity: 0.45; }
 }
 
 .skeleton-overlay {
@@ -749,12 +783,17 @@
   border-top: 1px solid var(--border-subtle);
   display: flex;
   justify-content: center;
+  z-index: 4;
 }
 
 .skeleton-label {
-  font-size: 9px;
-  color: var(--text-tertiary);
-  font-weight: 500;
+  font-size: 9.5px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+html.dark .skeleton-label {
+  color: var(--text-primary);
 }
 
 @keyframes shimmer {

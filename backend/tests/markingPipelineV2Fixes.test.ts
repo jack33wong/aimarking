@@ -2,10 +2,12 @@ import {
     extractLeadingBaseQNum,
     resolvePageMinSortWeight,
     computeIsScrambledPdf,
+    detectIsFrontCover,
     getInstanceMinWeight,
     getAnnotationMarkVal,
     applyPointBasedGuillotine
 } from '../services/marking/MarkingPipelineService.js';
+import { ScoreAuditor } from '../services/marking/core/ScoreAuditor.js';
 
 describe('MarkingPipelineService V2 5-Fix Suite', () => {
     describe('Fix 1: resolvePageMinSortWeight (decimal sub-parts & intro stems)', () => {
@@ -236,6 +238,45 @@ describe('MarkingPipelineService V2 5-Fix Suite', () => {
             expect(res.finalizedAnnotations).toHaveLength(1);
             expect(res.finalizedAnnotations[0].text).toBe('M1');
         });
+
+        it('ScoreAuditor.enforceStrictBudget preserves all 15/15 marks in Generic Mode when OCR swaps sub-question budgets (3i=3, 3ii=2 instead of 2 and 3)', () => {
+            const annotations = [
+                { action: 'tick', text: 'M1', subQuestion: '3i' },
+                { action: 'tick', text: 'A1', subQuestion: '3i' },
+                { action: 'tick', text: 'M1', subQuestion: '3ii' },
+                { action: 'tick', text: 'M1', subQuestion: '3ii' },
+                { action: 'tick', text: 'A1', subQuestion: '3ii' },
+                { action: 'tick', text: 'M1', subQuestion: '3iii' },
+                { action: 'tick', text: 'M1', subQuestion: '3iii' },
+                { action: 'tick', text: 'M1', subQuestion: '3iii' },
+                { action: 'tick', text: 'A1', subQuestion: '3iii' },
+                { action: 'tick', text: 'A1', subQuestion: '3iii' },
+                { action: 'tick', text: 'M1', subQuestion: '3iva' },
+                { action: 'tick', text: 'M1', subQuestion: '3iva' },
+                { action: 'tick', text: 'A1', subQuestion: '3iva' },
+                { action: 'tick', text: 'M1', subQuestion: '3ivb' },
+                { action: 'tick', text: 'A1', subQuestion: '3ivb' }
+            ];
+
+            const scheme = {
+                isGeneric: true,
+                questionNumber: '3',
+                totalMarks: 0,
+                hasIncompleteSubQuestionBudgets: true,
+                subQuestionMaxScores: {
+                    '3b': 2,
+                    '3i': 3,  // OCR swapped 3i (2 marks) and 3ii (3 marks)
+                    '3ii': 2,
+                    '3iva': 3
+                }
+            };
+
+            const strictResult = ScoreAuditor.enforceStrictBudget(annotations, scheme);
+            expect(strictResult.awardedMarks).toBe(15);
+            expect(strictResult.inferredTotalMarks).toBe(15);
+            expect(strictResult.annotations).toHaveLength(15);
+            expect(strictResult.annotations.filter(a => a.subQuestion === '3ii')).toHaveLength(3);
+        });
     });
 
     describe('Multi-page ordering integration (Fixes 1–4)', () => {
@@ -286,6 +327,37 @@ describe('MarkingPipelineService V2 5-Fix Suite', () => {
             expect(getInstanceMinWeight(pages[3].questions[0], '11')).toBeLessThan(
                 getInstanceMinWeight(pages[2].questions[0], '11')
             );
+        });
+
+        it('detects a displaced front cover uploaded at the end of a batch (originalIdx > 0) even when Surgical OCR skips frontPage', () => {
+            // Unofficial test title cover uploaded at index 8 (e.g., removed and re-attached at the end),
+            // where Surgical OCR skipped it (pageOcrText is empty) and Mapper classified it as frontPage
+            expect(detectIsFrontCover({
+                isGeoCover: false,
+                originalIdx: 8,
+                isMeta: true,
+                pageOcrText: '',
+                mapperCategory: 'frontPage'
+            })).toBe(true);
+
+            // Official cover flagged by Geometry at index 8 with empty OCR text
+            expect(detectIsFrontCover({
+                isGeoCover: true,
+                originalIdx: 8,
+                isMeta: true,
+                pageOcrText: '',
+                mapperCategory: 'metadata'
+            })).toBe(true);
+
+            // Interior blank filler page at index 5 must NOT be treated as a front cover
+            expect(detectIsFrontCover({
+                isGeoCover: false,
+                originalIdx: 5,
+                isMeta: true,
+                pageOcrText: '',
+                mapperCategory: 'metadata',
+                geoTextSnippet: 'There are no questions printed on this page'
+            })).toBe(false);
         });
     });
 });

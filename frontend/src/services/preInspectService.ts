@@ -144,9 +144,33 @@ export async function preInspectUploadedFiles(
   const eligibleFiles = files.filter((f) => f && f.size > 0 && f.size <= MAX_PREINSPECT_FILE_BYTES);
   if (eligibleFiles.length === 0) return null;
 
+  const MAX_INSPECTED_IMAGES_CLIENT = 2;
+  let imageQuota = 0;
+  const shouldCompressImageAtIdx = eligibleFiles.map((f) => {
+    const isPdf = f.type === 'application/pdf' || /\.pdf$/i.test(f.name || '');
+    if (isPdf) return false;
+    if (imageQuota < MAX_INSPECTED_IMAGES_CLIENT) {
+      imageQuota++;
+      return true;
+    }
+    return false;
+  });
+
+  const createPlaceholderFile = (file: File) =>
+    new File([new Uint8Array([0])], file.name || 'image.jpg', { type: file.type || 'image/jpeg' });
+
   const [hashes, preparedFiles] = await Promise.all([
     Promise.all(eligibleFiles.map((f) => computeFileSha256Hex(f))),
-    Promise.all(eligibleFiles.map((f) => prepareFileForPreInspect(f))),
+    Promise.all(
+      eligibleFiles.map((f, idx) => {
+        const isPdf = f.type === 'application/pdf' || /\.pdf$/i.test(f.name || '');
+        if (isPdf) return Promise.resolve(f);
+        if (shouldCompressImageAtIdx[idx]) return prepareFileForPreInspect(f);
+        // For images beyond the 2-image inspection quota, send a 1-byte placeholder instead of
+        // compressing & uploading extra photos that the backend will not inspect during Pre-Inspect!
+        return Promise.resolve(createPlaceholderFile(f));
+      })
+    ),
   ]);
 
   if (options?.signal?.aborted) return null;
@@ -345,10 +369,12 @@ export function recomputePreInspectFromSummaries(
   if (isUnofficialPaper && !hasMarkScheme) {
     return {
       ...base,
-      overallStatus: 'action_needed',
+      overallStatus: hasHandwriting ? 'ready' : 'action_needed',
       docType: 'unofficial_paper',
       isWarning: false,
-      bannerTitle: `${labelPrefix} · Practice/unofficial paper — attach its mark scheme if available`,
+      bannerTitle: hasHandwriting
+        ? `${labelPrefix} · Practice/unofficial paper · Ready to mark (attach mark scheme if available)`
+        : `${labelPrefix} · Practice/unofficial paper — attach its mark scheme if available`,
       suggestions: [{ id: 'attach-practice-ms', label: 'Attach mark scheme (optional)', action: 'attach_file' }],
     };
   }

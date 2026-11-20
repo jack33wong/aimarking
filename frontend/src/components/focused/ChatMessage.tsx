@@ -730,7 +730,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
                     return (
                       <div key={idx} className="skeleton-item">
                         {validImageSrc ? (
-                          <img src={validImageSrc} alt={`Processing page ${idx + 1}`} className="skeleton-image-preview" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.5 }} />
+                          <img src={validImageSrc} alt={`Processing page ${idx + 1}`} className="skeleton-image-preview" />
                         ) : (
                           <div className="skeleton-shimmer"></div>
                         )}

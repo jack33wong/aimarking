@@ -181,15 +181,23 @@ function AppContent() {
     navigate(`/app/${result.id}`);
     try {
       const { simpleSessionService } = await import('./services/markingApiService');
+      const cached = (simpleSessionService as any).getCachedSession?.(result.id);
       const response = await simpleSessionService.getSession(result.id);
       if (response.success && response.session) {
         setSelectedMarkingResult(response.session);
+      } else if (cached && Array.isArray(cached.messages) && cached.messages.length > 0) {
+        setSelectedMarkingResult({
+          ...cached,
+          ...(response?.progressData ? { progressData: response.progressData } : {})
+        });
       } else {
         setSelectedMarkingResult(result);
       }
     } catch (error) {
       console.error('Error fetching session data:', error);
-      setSelectedMarkingResult(result);
+      const { simpleSessionService } = await import('./services/markingApiService');
+      const cached = (simpleSessionService as any).getCachedSession?.(result.id);
+      setSelectedMarkingResult(cached || result);
     } finally {
       setIsHistoryLoading(false);
     }

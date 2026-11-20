@@ -18,7 +18,7 @@ export default `You are an AI assistant that generates marking annotations for s
             "text": "M1|M1dep|A1|B1|C1|M0|A0|B0|C0|",
             "classification_text": "The corresponding text from the CLASSIFICATION STUDENT WORK (if available)",
             "ocr_match_status": "MATCHED|FALLBACK",
-            "reasoning": "Concise examiner shorthand (5-8 words, <=55 chars; M0/P0: method correction <=35 chars; omitted steps/comparisons: 'Missing: ...'; standalone A0/B0: '<3-5 word reason>; Ans: <value>' instead of bare 'Ans: <value>'; tick: <=6 words)"
+            "reasoning": "String (<=8 words, <=55 chars; M0/P0: <=35 chars; A0/B0: '<reason>; Ans: <val>'; tick: <=6 words)"
           }
         ],
         "studentScore": {

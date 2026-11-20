@@ -15,6 +15,7 @@ import {
   normalizeFullPaperCode,
   findDistinctFullPaperCodes,
   lookupCatalogedOfficialSchemeIfEligible,
+  rescueMinorityUnsupportedPagesInSupportedBatch,
   type ResolvedPageLimits,
 } from './PreFlightRules.js';
 
@@ -351,9 +352,22 @@ export class PreInspectService {
         let pdfStructuralError: string | undefined;
 
         if (isPdf) {
-          sampledPages = selectStrategicPdfPageIndices(pageCount);
+          // ⚡ Zero-LLM-cost digital Mark Scheme PDF peek (pages 1–2 via Ghostscript in ~15ms):
+          // If the PDF has a digital text layer proving it is an official Mark Scheme, sample ONLY Page 0 (1 page instead of 3)
+          // to extract the paper code/board, cutting Mark Scheme PDF pre-inspect LLM calls by 67%!
+          let isVerifiedDigitalMarkScheme = false;
+          try {
+            const peek = await PdfProcessingService.peekPdfMarkSchemeMetadata(file.buffer);
+            if (peek?.hasTextLayer && peek.isDigitalMarkScheme) {
+              isVerifiedDigitalMarkScheme = true;
+            }
+          } catch {
+            // Non-fatal: fall back to standard strategic page sampling
+          }
+
+          sampledPages = isVerifiedDigitalMarkScheme ? [0] : selectStrategicPdfPageIndices(pageCount);
           console.log(
-            `📄 [PRE-INSPECT] PDF "${file.originalname}" (${pageCount} page(s)) -> sampling page indices [${sampledPages.join(', ')}] at 96 DPI`
+            `📄 [PRE-INSPECT] PDF "${file.originalname}" (${pageCount} page(s)${isVerifiedDigitalMarkScheme ? ', digital Mark Scheme detected' : ''}) -> sampling page indices [${sampledPages.join(', ')}] at 96 DPI`
           );
 
           try {
@@ -376,6 +390,9 @@ export class PreInspectService {
                   usageTracker,
                   'preInspect'
                 );
+                if (isVerifiedDigitalMarkScheme) {
+                  geo.is_marking_scheme = true;
+                }
                 geometryByPageIndex.set(rawPageIdx, geo);
               })
             );
@@ -499,17 +516,46 @@ export class PreInspectService {
     if (entry.userId && userId && entry.userId !== userId) return empty;
 
     const hashToFileIndices = new Map<string, number[]>();
+    const nameToImageFileIndices = new Map<string, number[]>();
     files.forEach((f, idx) => {
-      if (!f?.buffer) return;
-      const h = sha256Hex(f.buffer);
-      const arr = hashToFileIndices.get(h) || [];
-      arr.push(idx);
-      hashToFileIndices.set(h, arr);
+      if (f?.buffer) {
+        const h = sha256Hex(f.buffer);
+        const arr = hashToFileIndices.get(h) || [];
+        arr.push(idx);
+        hashToFileIndices.set(h, arr);
+      }
+      const isPdf = f?.mimetype === 'application/pdf' || /\.pdf$/i.test(f?.originalname || '');
+      if (!isPdf && f?.originalname) {
+        const normName = f.originalname.trim().toLowerCase();
+        const nameArr = nameToImageFileIndices.get(normName) || [];
+        nameArr.push(idx);
+        nameToImageFileIndices.set(normName, nameArr);
+      }
     });
 
     const reusedByFileAndPage = new Map<string, GeometryAnalysisResult>();
-    for (const cachedFile of entry.files) {
-      const matchingIndices = hashToFileIndices.get(cachedFile.sha256);
+    const claimedImageIndices = new Set<number>();
+
+    for (let cachedIdx = 0; cachedIdx < entry.files.length; cachedIdx++) {
+      const cachedFile = entry.files[cachedIdx];
+      let matchingIndices = hashToFileIndices.get(cachedFile.sha256);
+
+      // Tier 2 Fallback for re-compressed images: on Attach, the frontend sends an 800px compressed JPEG
+      // (plus raw SHA-256), whereas on Send it sends a 2000px compressed JPEG whose buffer SHA-256 differs.
+      // Match single-page images by normalized originalFileName (preferring same file index) so Pre-Inspect
+      // LLM calls on images are 100% reused in Pre-Flight!
+      if ((!matchingIndices || matchingIndices.length === 0) && cachedFile.pageCount === 1 && cachedFile.originalName) {
+        const normCachedName = cachedFile.originalName.trim().toLowerCase();
+        const candidateIndices = (nameToImageFileIndices.get(normCachedName) || []).filter(
+          (i) => !claimedImageIndices.has(i)
+        );
+        if (candidateIndices.length > 0) {
+          const preferredIdx = candidateIndices.includes(cachedIdx) ? cachedIdx : candidateIndices[0];
+          matchingIndices = [preferredIdx];
+          claimedImageIndices.add(preferredIdx);
+        }
+      }
+
       if (!matchingIndices || matchingIndices.length === 0) continue;
       for (const fileIdx of matchingIndices) {
         for (const [pageIdx, geo] of cachedFile.geometryByPageIndex.entries()) {
@@ -798,6 +844,9 @@ export class PreInspectService {
     }
 
     // 6. Other academic subject without a mark scheme (shared DRY filter + DB official scheme lookup)
+    if (!hasMarkScheme && nonSchemeGeos.length >= 2) {
+      rescueMinorityUnsupportedPagesInSupportedBatch(nonSchemeGeos);
+    }
     const needsMarkSchemeGeos = filterAcademicUnsupportedPages(nonSchemeGeos);
     const distinctUnsupportedSubjects = extractDistinctUnsupportedSubjects(needsMarkSchemeGeos);
 
@@ -863,7 +912,7 @@ export class PreInspectService {
     // 8. Unofficial / practice paper without a mark scheme
     if (isUnofficialPaper && !hasMarkScheme) {
       return {
-        overallStatus: 'action_needed',
+        overallStatus: hasHandwriting ? 'ready' : 'action_needed',
         docType: 'unofficial_paper',
         isWarning: false,
         examBoard,
@@ -872,7 +921,9 @@ export class PreInspectService {
         hasMarkScheme: false,
         requiresMarkScheme: false,
         hasHandwriting,
-        bannerTitle: `${labelPrefix} · Practice/unofficial paper — attach its mark scheme if available`,
+        bannerTitle: hasHandwriting
+          ? `${labelPrefix} · Practice/unofficial paper · Ready to mark (attach mark scheme if available)`
+          : `${labelPrefix} · Practice/unofficial paper — attach its mark scheme if available`,
         bannerMessage: '',
         suggestions: [
           { id: 'attach-practice-ms', label: 'Attach mark scheme (optional)', action: 'attach_file' },

@@ -229,4 +229,92 @@ describe('PreInspectService: strategic page selection, usage tracking, digest me
     expect(res2.examBoard).toBe('OCR');
     expect(res2.paperCode).toBe('J560/01');
   });
+
+  it('reuses cached image geometry on Send even when the frontend re-compresses the image with a different SHA-256 buffer', async () => {
+    const attachCompressedBuffer = Buffer.from('800px-compressed-image-bytes');
+    const attachFile = {
+      fieldname: 'files',
+      originalname: 'IMG_7592.jpeg',
+      encoding: '7bit',
+      mimetype: 'image/jpeg',
+      buffer: attachCompressedBuffer,
+      size: attachCompressedBuffer.length,
+    } as Express.Multer.File;
+
+    jest.spyOn(ImageGeometryService, 'analyze').mockResolvedValueOnce({
+      is_acceptable_quality: true,
+      needs_rotation: 0,
+      is_two_page_spread: true,
+      is_marking_scheme: false,
+      is_supported_doc: true,
+      detected_subject: 'MATHS',
+      has_handwriting: true,
+      has_printed_questions: true,
+    });
+
+    const preInspectRes = await PreInspectService.inspectFiles({
+      files: [attachFile],
+      userId: 'user-recompress',
+      digestSessionId: 'pre-inspect-recompress-1',
+      originalHashes: ['a'.repeat(64)], // raw file SHA-256 on attach
+      usageTracker: new UsageTracker(),
+    });
+
+    // On Send, frontend sends a 2000px re-encoded JPEG whose buffer SHA-256 differs from both raw and 800px buffers
+    const sendRecompressedBuffer = Buffer.from('2000px-reencoded-image-bytes-different-hash');
+    const sendFile = {
+      fieldname: 'files',
+      originalname: 'IMG_7592.jpeg',
+      encoding: '7bit',
+      mimetype: 'image/jpeg',
+      buffer: sendRecompressedBuffer,
+      size: sendRecompressedBuffer.length,
+    } as Express.Multer.File;
+
+    const reused = PreInspectService.consumeCachedGeometry({
+      preInspectToken: preInspectRes.preInspectToken,
+      userId: 'user-recompress',
+      files: [sendFile],
+    });
+
+    expect(reused.reusedPageCount).toBe(1);
+    expect(reused.reusedByFileAndPage.get('0:0')?.detected_subject).toBe('MATHS');
+    expect(reused.reusedByFileAndPage.get('0:0')?.is_two_page_spread).toBe(true);
+  });
+
+  it('marks unofficial/practice papers with student handwriting as ready (no false-positive alarm)', async () => {
+    const practiceFile = {
+      fieldname: 'files',
+      originalname: '13.1-applied-test.jpg',
+      encoding: '7bit',
+      mimetype: 'image/jpeg',
+      buffer: Buffer.from('applied-test-bytes'),
+      size: 18,
+    } as Express.Multer.File;
+
+    jest.spyOn(ImageGeometryService, 'analyze').mockResolvedValueOnce({
+      is_acceptable_quality: true,
+      needs_rotation: 0,
+      is_two_page_spread: true,
+      is_marking_scheme: false,
+      is_supported_doc: true,
+      detected_subject: 'MATHS',
+      has_handwriting: true,
+      has_printed_questions: true,
+      is_unofficial_or_practice_paper: true,
+      unofficial_reason: '13.1 Applied Test',
+    });
+
+    const res = await PreInspectService.inspectFiles({
+      files: [practiceFile],
+      userId: 'user-practice',
+      digestSessionId: 'pre-inspect-practice-1',
+      usageTracker: new UsageTracker(),
+    });
+
+    expect(res.overallStatus).toBe('ready');
+    expect(res.docType).toBe('unofficial_paper');
+    expect(res.isWarning).toBe(false);
+    expect(res.bannerTitle).toContain('Ready to mark');
+  });
 });

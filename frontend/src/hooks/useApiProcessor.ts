@@ -147,7 +147,10 @@ export const useApiProcessor = () => {
       };
     });
 
-    const currentSession = simpleSessionService.getCurrentSession() as UnifiedSession | null;
+    const currentSession = (
+      (targetSessionId && (simpleSessionService as any).getCachedSession?.(targetSessionId)) ||
+      simpleSessionService.getCurrentSession()
+    ) as UnifiedSession | null;
     if (targetSessionId && currentSession?.id && currentSession.id !== targetSessionId) {
       return;
     }

@@ -303,6 +303,11 @@ export const MarkingPageProvider = ({
   // Load session when selectedMarkingResult prop changes (e.g., from Sidebar history click)
   useEffect(() => {
     if (selectedMarkingResult) {
+      // Do not allow a stale selectedMarkingResult prop from a previously clicked sidebar item
+      // to overwrite an active session when the URL route has already moved to another sessionId!
+      if (routeSessionId && selectedMarkingResult.id && selectedMarkingResult.id !== routeSessionId) {
+        return;
+      }
       if (selectedMarkingResult.id !== lastSyncedSessionId.current) {
         dispatch({ type: 'SET_ACTIVE_QUESTION_ID', payload: null });
         dispatch({ type: 'SET_CONTEXT_FILTER_ACTIVE', payload: false });
@@ -373,8 +378,13 @@ export const MarkingPageProvider = ({
       dispatch({ type: 'SET_CONTEXT_FILTER_ACTIVE', payload: false });
     }
 
-    const liveSession = simpleSessionService.getCurrentSession();
+    const liveSession =
+      simpleSessionService.getCachedSession?.(routeSessionId) ||
+      simpleSessionService.getCurrentSession();
     if (liveSession?.id === routeSessionId && Array.isArray(liveSession.messages) && liveSession.messages.length > 0) {
+      if (simpleSessionService.getCurrentSession()?.id !== routeSessionId) {
+        loadSession(liveSession);
+      }
       dispatch({ type: 'SET_PAGE_MODE', payload: 'chat' });
       const existingJob = getJobForSessionRef.current(routeSessionId);
       if (existingJob?.status === 'processing' && apiProcessor.processingSessionId !== routeSessionId) {

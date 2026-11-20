@@ -1142,20 +1142,20 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       if (attachedFilesList.length === 0) {
         inspectedFileMapRef.current.clear();
         lastPreInspectTokenRef.current = '';
+        setPendingPreInspectContext({ preInspectToken: null, allowGenericSubjectMarking: false });
       }
-      setPendingPreInspectContext({ preInspectToken: null, allowGenericSubjectMarking: false });
       return;
     }
 
     const fileKey = (f: File) => `${f.name}:${f.size}:${f.lastModified}`;
     const cachedSummaries = attachedFilesList.map((f) => inspectedFileMapRef.current.get(fileKey(f)));
-    const allRemainingAlreadyInspected =
+    const allRemainingKnownInCache =
       cachedSummaries.length > 0 &&
-      cachedSummaries.every((s): s is PreInspectFileSummary => Boolean(s && s.inspected));
+      cachedSummaries.every((s): s is PreInspectFileSummary => Boolean(s));
 
-    // ⚡ Instant 0ms local recomputation when every remaining file was already inspected
-    // (e.g. user removed a problematic file — zero network request, zero LLM call, no spinner flash!)
-    if (allRemainingAlreadyInspected && lastPreInspectTokenRef.current) {
+    // ⚡ Instant 0ms local recomputation when every remaining file is already known from the previous batch
+    // (including uninspected images beyond MAX_INSPECTED_IMAGES — zero network request, zero LLM call!)
+    if (allRemainingKnownInCache && lastPreInspectTokenRef.current) {
       const localResult = recomputePreInspectFromSummaries(cachedSummaries, lastPreInspectTokenRef.current);
       setPreInspectDismissed(false);
       setIsPreInspecting(false);
@@ -1184,7 +1184,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
           if (res?.perFileRoles && res.perFileRoles.length === attachedFilesList.length) {
             attachedFilesList.forEach((f, idx) => {
               const summary = res.perFileRoles[idx];
-              if (summary && summary.inspected) {
+              if (summary) {
                 inspectedFileMapRef.current.set(fileKey(f), summary);
               }
             });
@@ -1217,6 +1217,9 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     if (preInspectAbortRef.current) {
       preInspectAbortRef.current.abort();
       preInspectAbortRef.current = null;
+    }
+    if (lastPreInspectTokenRef.current) {
+      setPendingPreInspectContext({ preInspectToken: lastPreInspectTokenRef.current });
     }
     setIsPreInspecting(false);
     const textToSend = typeof overrideText === 'string' ? overrideText : combinedInput;

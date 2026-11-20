@@ -42,6 +42,7 @@ class SimpleSessionService {
     this.MAX_SIDEBAR_SESSIONS = 50;
     this.listeners = new Set();
     this.processingSessions = new Set(); // Track sessions being processed
+    this.inMemorySessionCache = new Map(); // Keep active/processing sessions in memory across sidebar switches
   }
 
   // A method to receive the state controls from the context.
@@ -73,7 +74,19 @@ class SimpleSessionService {
     if (!clientSessionId) return null;
     const existing = this.state.currentSession;
     if (existing && existing.id === clientSessionId) {
+      this.inMemorySessionCache.set(clientSessionId, existing);
       return existing;
+    }
+    const cached = this.inMemorySessionCache.get(clientSessionId);
+    if (cached && Array.isArray(cached.messages) && cached.messages.length > 0) {
+      const restored = {
+        ...cached,
+        title: title && title !== 'Processing...' ? title : (cached.title || title),
+        ...extra
+      };
+      this.inMemorySessionCache.set(clientSessionId, restored);
+      this.setState({ currentSession: restored });
+      return restored;
     }
     const newSession = {
       id: clientSessionId,
@@ -84,8 +97,17 @@ class SimpleSessionService {
       updatedAt: new Date().toISOString(),
       ...extra
     };
+    this.inMemorySessionCache.set(clientSessionId, newSession);
     this.setState({ currentSession: newSession });
     return newSession;
+  }
+
+  getCachedSession = (sessionId) => {
+    if (!sessionId) return null;
+    if (this.state.currentSession?.id === sessionId) {
+      return this.state.currentSession;
+    }
+    return this.inMemorySessionCache.get(sessionId) || null;
   }
 
   setAuthContext = (authContext) => {
@@ -141,9 +163,13 @@ class SimpleSessionService {
    * @param {string | null} [targetSessionId]
    */
   addMessage = async (message, targetSessionId = null) => {
-    const session = this.state.currentSession;
+    const activeSession = this.state.currentSession;
+    const isViewingTarget = !targetSessionId || !activeSession || activeSession.id === targetSessionId;
+    const session = isViewingTarget
+      ? activeSession
+      : (this.inMemorySessionCache.get(targetSessionId) || null);
 
-    if (targetSessionId && session && session.id !== targetSessionId) {
+    if (targetSessionId && !isViewingTarget && !session) {
       return;
     }
 
@@ -161,22 +187,29 @@ class SimpleSessionService {
       newMessages = [...existingMessages, message];
     }
 
-    if (!session) {
-      this.setState({
-        currentSession: {
+    const updatedSession = !session
+      ? {
           id: targetSessionId || `temp-${Date.now()}`,
           title: 'Processing...',
           messages: newMessages,
           sessionStats: {}
         }
-      });
-    } else {
-      this.setState({ currentSession: { ...session, messages: newMessages } });
+      : { ...session, messages: newMessages };
+
+    if (updatedSession.id) {
+      this.inMemorySessionCache.set(updatedSession.id, updatedSession);
+    }
+
+    if (isViewingTarget) {
+      this.setState({ currentSession: updatedSession });
     }
   }
 
   clearSession = () => { this.setState({ currentSession: null }); }
-  clearAllSessions = () => { this.setState({ currentSession: null, sidebarSessions: [], error: null }); }
+  clearAllSessions = () => {
+    this.inMemorySessionCache.clear();
+    this.setState({ currentSession: null, sidebarSessions: [], error: null });
+  }
 
   _setAndMergeCurrentSession = (newSessionData, modelUsed = null) => {
     const localSession = this.state.currentSession;
@@ -228,9 +261,11 @@ class SimpleSessionService {
         const timestampB = new Date(b.timestamp || b.createdAt || 0).getTime();
         return timestampA - timestampB; // Ascending order (oldest first)
       });
-    } else if (localSession?.messages) {
-      // Fallback to local messages if server doesn't provide messages
+    } else if (isSameSession && localSession?.messages) {
+      // Fallback to local messages ONLY when staying within the same session
       mergedSession.messages = localSession.messages;
+    } else if (newSessionData?.id && this.inMemorySessionCache.get(newSessionData.id)?.messages) {
+      mergedSession.messages = this.inMemorySessionCache.get(newSessionData.id).messages;
     } else {
       mergedSession.messages = [];
     }
@@ -273,6 +308,9 @@ class SimpleSessionService {
       }
     }
 
+    if (mergedSession.id) {
+      this.inMemorySessionCache.set(mergedSession.id, mergedSession);
+    }
     this.setState({ currentSession: mergedSession });
     this.updateSidebarSession(mergedSession);
     this.triggerSessionUpdate(mergedSession);
@@ -288,6 +326,9 @@ class SimpleSessionService {
 
   // Update only the current session without affecting sidebar (for unauthenticated users)
   updateCurrentSessionOnly = (session) => {
+    if (session?.id) {
+      this.inMemorySessionCache.set(session.id, session);
+    }
     this.setState({ currentSession: session });
   }
 
@@ -298,20 +339,29 @@ class SimpleSessionService {
    * @param {string | null} [targetSessionId]
    */
   updateMessageInCurrentSession = (messageId, updates, targetSessionId = null) => {
-    const currentSession = this.state.currentSession;
-    if (!currentSession?.messages) return;
-    if (targetSessionId && currentSession.id !== targetSessionId) return;
+    const activeSession = this.state.currentSession;
+    const isViewingTarget = !targetSessionId || activeSession?.id === targetSessionId;
+    const targetSession = isViewingTarget
+      ? activeSession
+      : (this.inMemorySessionCache.get(targetSessionId) || null);
 
-    const updatedMessages = currentSession.messages.map(msg =>
+    if (!targetSession?.messages) return;
+
+    const updatedMessages = targetSession.messages.map(msg =>
       msg.id === messageId ? { ...msg, ...updates } : msg
     );
 
     const updatedSession = {
-      ...currentSession,
+      ...targetSession,
       messages: updatedMessages
     };
 
-    this.setState({ currentSession: updatedSession });
+    if (updatedSession.id) {
+      this.inMemorySessionCache.set(updatedSession.id, updatedSession);
+    }
+    if (isViewingTarget) {
+      this.setState({ currentSession: updatedSession });
+    }
   }
 
   // Architectural Defense: Single Source of Truth for State

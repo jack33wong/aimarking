@@ -1,5 +1,10 @@
 import { jest } from '@jest/globals';
-import { ImageGeometryService, isRecognizedAcademicSubject } from '../services/marking/ImageGeometryService.js';
+import {
+  ImageGeometryService,
+  isRecognizedAcademicSubject,
+  isMathsMechanicsFalsePositivePhysics,
+} from '../services/marking/ImageGeometryService.js';
+import { rescueMinorityUnsupportedPagesInSupportedBatch } from '../services/marking/PreFlightRules.js';
 import { ModelProvider } from '../utils/ModelProvider.js';
 
 describe('Non-academic check & universal academic subject alignment', () => {
@@ -119,6 +124,89 @@ describe('Non-academic check & universal academic subject alignment', () => {
       expect(res.detected_subject).toBe('NON_ACADEMIC');
       expect(res.is_supported_doc).toBe(false);
       expect(res.rejection_reason).toContain('Not educational exam content');
+    });
+
+    it('overrides A-Level / Applied Maths Mechanics pages misclassified as Physics back to MATHS', async () => {
+      mockGeminiJson({
+        visual_observations: '13.1 Applied Test Page 6: block of mass 5 kg on an inclined plane connected by light inextensible strings over smooth pegs B and C',
+        evidence_text_snippet: 'Question 2: A block of mass 5 kg is on a plane which is at an angle of 40° to the horizontal. The block is connected by light, inextensible strings',
+        detected_subject: 'UNSUPPORTED_SUBJECT',
+        unsupported_subject_name: 'Physics',
+        is_supported_doc: false,
+        rejection_reason: 'Unsupported subject (Physics): Marking scheme required for this subject.',
+      });
+
+      const res = await ImageGeometryService.analyze('base64', 2000, 1400);
+      expect(res.detected_subject).toBe('MATHS');
+      expect(res.is_supported_doc).toBe(true);
+      expect(res.unsupported_subject_name).toBeUndefined();
+      expect(res.rejection_reason).toBeUndefined();
+    });
+
+    it('preserves genuine Physics papers (e.g. AQA 8463 / 7408 or non-Mechanics Physics) as UNSUPPORTED_SUBJECT', async () => {
+      mockGeminiJson({
+        visual_observations: 'AQA GCSE Physics 8463/1H exam question on inclined plane and energy transfer',
+        evidence_text_snippet: '01.1 Calculate the gravitational potential energy of the trolley',
+        detected_subject: 'UNSUPPORTED_SUBJECT',
+        unsupported_subject_name: 'Physics',
+        paper_code_hint: '8463/1H',
+        is_supported_doc: false,
+        rejection_reason: 'Unsupported subject (Physics): Marking scheme required for this subject.',
+      });
+
+      const res = await ImageGeometryService.analyze('base64', 1000, 1400);
+      expect(res.detected_subject).toBe('UNSUPPORTED_SUBJECT');
+      expect(res.unsupported_subject_name).toBe('Physics');
+      expect(res.is_supported_doc).toBe(false);
+    });
+  });
+
+  describe('rescueMinorityUnsupportedPagesInSupportedBatch', () => {
+    it('rescues a single false-positive Physics page inside a 5-page Maths upload so Q2 is never silently dropped', () => {
+      const geos: any[] = [
+        { is_acceptable_quality: true, is_supported_doc: true, detected_subject: 'MATHS', is_cover_page: true },
+        { is_acceptable_quality: true, is_supported_doc: true, detected_subject: 'MATHS' },
+        {
+          is_acceptable_quality: true,
+          is_supported_doc: false,
+          detected_subject: 'UNSUPPORTED_SUBJECT',
+          unsupported_subject_name: 'Physics',
+          rejection_reason: 'Unsupported subject (Physics): Marking scheme required for this subject.',
+        },
+        { is_acceptable_quality: true, is_supported_doc: true, detected_subject: 'MATHS' },
+        { is_acceptable_quality: true, is_supported_doc: true, detected_subject: 'MATHS' },
+      ];
+
+      const res = rescueMinorityUnsupportedPagesInSupportedBatch(geos);
+      expect(res.rescuedCount).toBe(1);
+      expect(res.dominantSupportedSubject).toBe('MATHS');
+      expect(geos[2].is_supported_doc).toBe(true);
+      expect(geos[2].detected_subject).toBe('MATHS');
+      expect(geos[2].unsupported_subject_name).toBeUndefined();
+      expect(geos[2].rejection_reason).toBeUndefined();
+    });
+
+    it('does NOT rescue when >= 2 pages or >= 40% of pages are an unsupported subject', () => {
+      const geos: any[] = [
+        {
+          is_acceptable_quality: true,
+          is_supported_doc: false,
+          detected_subject: 'UNSUPPORTED_SUBJECT',
+          unsupported_subject_name: 'Physics',
+        },
+        {
+          is_acceptable_quality: true,
+          is_supported_doc: false,
+          detected_subject: 'UNSUPPORTED_SUBJECT',
+          unsupported_subject_name: 'Physics',
+        },
+        { is_acceptable_quality: true, is_supported_doc: true, detected_subject: 'MATHS' },
+      ];
+
+      const res = rescueMinorityUnsupportedPagesInSupportedBatch(geos);
+      expect(res.rescuedCount).toBe(0);
+      expect(geos[0].is_supported_doc).toBe(false);
+      expect(geos[1].is_supported_doc).toBe(false);
     });
   });
 });

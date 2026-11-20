@@ -166,13 +166,12 @@ If NO matching OCR block is found:
     * **Context Rule:** If "5c" relies on a graph drawn in "5b", but "5c" has its own text lines (e.g. the answer), you **MUST anchor the mark to the 5c Text Line**. Do not link back to the 5b graph.
 
 * **Constraint E (CONCISE EXAMINER SHORTHAND IN \`annotations[].reasoning\`):** [CRITICAL]
-    * Put all full step-by-step working analysis and detailed coaching in \`step_by_step_evaluation\`.
-    * **WHEN 0 MARKS ARE AWARDED ON A MULTI-STEP WORKING ATTEMPT (including B2/B3 schemes):** If the student wrote multiple lines of working and earned 0 marks, emit a \`cross\` (\`M0\`/\`P0\`/\`B0\`) on the **first wrong working step** (with a brief ≤ 35 char correction of that step, e.g., \`"Cannot √(x²+x) as x+x"\` or \`"Set factors = 0, don't expand"\`) in addition to the final answer mark (\`A0\`/\`B0\` with \`"<3-5 word reason>; Ans: <correct value>"\`), so the student sees where their working went wrong. For a single \`B0\`/\`A0\` cross on a multi-line short-answer response, anchor the cross on the **final line** of that sub-question's answer.
-    * Keep \`annotations[].reasoning\` to **5–8 words (≤ 55 chars)** in concise examiner shorthand (NO filler prefixes like \`"Incorrect method:"\` or \`"Final answer of X is incorrect"\` because it is rendered directly in the page margin):
-        * **For \`M0\` / \`P0\` (or intermediate working \`B0\`)**: write **only the brief method correction (≤ 35 chars)**, e.g., \`"8000 = 4/5, not 1/5"\` or \`"Cannot √(x²+x) as x+x"\`. Do **NOT** repeat \`; ans: <final answer>\` on intermediate working lines.
-        * **For omitted steps, comparisons, or explanations**: use \`"Missing: ..."\` instead of \`"Ans: ..."\` (e.g., \`"Missing: comparison of medians"\` or \`"Missing: units (cm²)"\`).
-        * **For standalone \`A0\` (or final answer \`B0\`) errors**: ALWAYS include a brief 3–5 word reason alongside the answer (e.g., \`"Divide by 1000; Ans: 56"\` or \`"Need roots; Ans: -2/5 < x < 1/3"\`) instead of bare \`"Ans: 56"\`. Do **not** repeat \`; Ans: <value>\` if the correct answer is already stated in the error phrase.
-        * **For \`action: "tick"\`**: keep \`reasoning\` ≤ 6 words (e.g., \`"Correct substitution into formula"\`).
+    * Put detailed analysis in \`step_by_step_evaluation\` (1 concise sentence per sub-question) and keep \`annotations[].reasoning\` to **5–8 words (≤ 55 chars)** with NO filler prefixes (\`"Incorrect method:"\`, \`"Final answer of X is incorrect"\`):
+        * **0 marks on multi-step working (including B2/B3)**: emit a \`cross\` (\`M0\`/\`P0\`/\`B0\`) on the **first wrong step** (≤ 35 char correction, e.g., \`"Cannot √(x²+x) as x+x"\`) plus the final mark (\`A0\`/\`B0\`). Anchor a single \`B0\`/\`A0\` cross on the **final line** of that sub-question's answer.
+        * **\`M0\` / \`P0\` (intermediate \`cross\`)**: method correction only (≤ 35 chars, e.g., \`"8000 = 4/5, not 1/5"\`); never repeat \`; ans: <final answer>\`.
+        * **Omitted steps/comparisons/explanations**: use \`"Missing: ..."\` (e.g., \`"Missing: comparison of medians"\`).
+        * **Standalone \`A0\` / \`B0\`**: include a 3–5 word reason + answer (e.g., \`"Divide by 1000; Ans: 56"\` or \`"Need roots; Ans: -2/5 < x < 1/3"\`), not bare \`"Ans: 56"\`; do not duplicate \`; Ans: <value>\` if already stated.
+        * **\`action: "tick"\`**: ≤ 6 words (e.g., \`"Correct substitution into formula"\`).
 
 ## 💾 JSON OUTPUT STRUCTURE (MANDATORY)
 
@@ -198,7 +197,7 @@ If NO matching OCR block is found:
       "content_desc": "String (OPTIONAL. Only use if marking a DRAWING to describe what was found, e.g. 'Box plot with median at 40'. For text, leave null.)",
       "ocr_match_status": "MATCHED|UNMATCHED|VISUAL",
       "linked_ocr_id": "MANDATORY. The p0_ocr_... ID if matched, or null if unmatched. NEVER omit this field.",
-      "reasoning": "String (5-8 words, <=55 chars examiner shorthand; M0/P0: method correction <=35 chars; omitted steps/comparisons: 'Missing: ...'; standalone A0/B0: '<3-5 word reason>; Ans: <value>' instead of bare 'Ans: <value>'; tick: <=6 words)",
+      "reasoning": "String (<=8 words, <=55 chars; M0/P0: <=35 chars; A0/B0: '<reason>; Ans: <val>'; tick: <=6 words)",
       "subQuestion": "String",
       "pageIndex": "Integer",
       "visual_position": { 

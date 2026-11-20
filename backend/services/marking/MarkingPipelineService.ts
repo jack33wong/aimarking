@@ -13,7 +13,8 @@ import {
     resolvePageLimits,
     filterAcademicUnsupportedPages,
     extractDistinctUnsupportedSubjects,
-    lookupCatalogedOfficialSchemeIfEligible
+    lookupCatalogedOfficialSchemeIfEligible,
+    rescueMinorityUnsupportedPagesInSupportedBatch
 } from './PreFlightRules.js';
 import { createProgressData } from '../../utils/sseUtils.js';
 import axios from 'axios';
@@ -540,11 +541,18 @@ export function detectIsFrontCover(params: {
     originalIdx: number;
     isMeta: boolean;
     pageOcrText: string;
+    mapperCategory?: string;
+    geoTextSnippet?: string;
 }): boolean {
-    const { isGeoCover, originalIdx, isMeta, pageOcrText } = params;
-    const hasCoverLandmarks = /candidate\s*surname|centre\s*number|instructions\s*to\s*candidates|paper\s*reference|total\s*mark\s*for\s*this\s*paper|you\s*must\s*have/i.test(pageOcrText)
-        && !/no\s*questions\s*printed|blank\s*page/i.test(pageOcrText);
-    return (isGeoCover && (originalIdx === 0 || hasCoverLandmarks)) || (isMeta && hasCoverLandmarks);
+    const { isGeoCover, originalIdx, isMeta, pageOcrText, mapperCategory, geoTextSnippet } = params;
+    const combinedText = `${pageOcrText || ''} ${geoTextSnippet || ''}`;
+    const isBlankFiller = /no\s*questions\s*printed|blank\s*page/i.test(combinedText);
+    if (isBlankFiller) {
+        return false;
+    }
+    const hasCoverLandmarks = /candidate\s*surname|centre\s*number|instructions\s*to\s*candidates|paper\s*reference|total\s*mark\s*for\s*this\s*paper|you\s*must\s*have/i.test(combinedText);
+    const isMapperFrontPage = isMeta && mapperCategory === 'frontPage';
+    return (isGeoCover && (originalIdx === 0 || isMeta || hasCoverLandmarks)) || (isMeta && hasCoverLandmarks) || isMapperFrontPage;
 }
 
 export function computeIsScrambledPdf(params: {
@@ -2234,10 +2242,20 @@ export class MarkingPipelineService {
                     }
                     if (preInspectReuse.reusedPageCount > 0) {
                         const fileIdx = stdPage?._sourceIndex ?? stdPage?._fileIndex ?? 0;
-                        const rawPageIdx = stdPage?._rawPageIndex ?? stdPage?.pageIndex ?? idx;
-                        const cachedGeo = preInspectReuse.reusedByFileAndPage.get(`${fileIdx}:${rawPageIdx}`);
+                        const isPdfSource = /\.pdf$/i.test(stdPage?.originalFileName || '') && stdPage?._sourceIndex !== undefined;
+                        const localRawPageIdx = isPdfSource
+                            ? (stdPage?.pageIndex ?? idx)
+                            : 0;
+                        const globalRawPageIdx = stdPage?._rawPageIndex ?? stdPage?.pageIndex ?? idx;
+                        const cachedGeo =
+                            preInspectReuse.reusedByFileAndPage.get(`${fileIdx}:${localRawPageIdx}`) ||
+                            preInspectReuse.reusedByFileAndPage.get(`${fileIdx}:${globalRawPageIdx}`);
                         if (cachedGeo) {
-                            return cachedGeo;
+                            const isPhysicallyLandscape = (page.width && page.height) ? (page.width > page.height * 1.05) : true;
+                            return {
+                                ...cachedGeo,
+                                is_two_page_spread: Boolean(cachedGeo.is_two_page_spread) && isPhysicallyLandscape,
+                            };
                         }
                     }
                     return ImageGeometryService.analyze(page.imageData, page.width, page.height, 'fast', usageTracker);
@@ -2278,6 +2296,14 @@ export class MarkingPipelineService {
                 Boolean(options.markingScheme);
 
             const isMultiPageUpload = standardizedPages.length >= 2;
+            const minorityRescue = (!hasUploadedMarkingScheme && !allowGenericSubject && isMultiPageUpload)
+                ? rescueMinorityUnsupportedPagesInSupportedBatch(geometryResults)
+                : { rescuedCount: 0 };
+            if (minorityRescue.rescuedCount > 0) {
+                console.log(
+                    `🛡️ [SUBJECT CONSENSUS RESCUE] Rescued ${minorityRescue.rescuedCount} minority non-Maths/English page(s) to match batch consensus subject "${minorityRescue.dominantSupportedSubject}".`
+                );
+            }
             const unsupportedPageResults = filterAcademicUnsupportedPages(geometryResults);
             const nonSchemePageCount = Math.max(1, geometryResults.filter(g => !g?.is_marking_scheme).length);
             const unsupportedRatio = unsupportedPageResults.length / nonSchemePageCount;
@@ -2362,9 +2388,7 @@ export class MarkingPipelineService {
                 if (!geo.is_acceptable_quality) {
                     lastRejectionReason = geo.rejection_reason || lastRejectionReason;
                     const evidence = geo.evidence_text_snippet ? `\n   📄 Evidence: "${geo.evidence_text_snippet}"` : "";
-                    if (process.env.DEBUG_SEMANTIC_GEOMETRY === 'true') {
-                        console.warn(`⚠️ [GEOMETRY] Dropping Page ${stdPage.pageIndex + 1} (quality check): ${lastRejectionReason}${evidence}`);
-                    }
+                    console.warn(`⚠️ [GEOMETRY] Dropping Page ${stdPage.pageIndex + 1} (quality check): ${lastRejectionReason}${evidence}`);
                     continue;
                 }
 
@@ -2392,9 +2416,7 @@ export class MarkingPipelineService {
                     const rawReason = (geo.rejection_reason || '').trim();
                     lastRejectionReason = rawReason || 'Not educational exam content: Please upload an academic exam question or student homework.';
                     const evidence = geo.evidence_text_snippet ? `\n   📄 Evidence: "${geo.evidence_text_snippet}"` : "";
-                    if (process.env.DEBUG_SEMANTIC_GEOMETRY === 'true') {
-                        console.warn(`⚠️ [GEOMETRY] Dropping Page ${stdPage.pageIndex + 1} (non-academic): ${lastRejectionReason}${evidence}`);
-                    }
+                    console.warn(`⚠️ [GEOMETRY] Dropping Page ${stdPage.pageIndex + 1} (non-academic): ${lastRejectionReason}${evidence}`);
                     continue;
                 }
 
@@ -2405,9 +2427,7 @@ export class MarkingPipelineService {
                     
                     const reason = lastRejectionReason;
                     const evidence = geo.evidence_text_snippet ? `\n   📄 Evidence: "${geo.evidence_text_snippet}"` : "";
-                    if (process.env.DEBUG_SEMANTIC_GEOMETRY === 'true') {
-                        console.warn(`⚠️ [GEOMETRY] Dropping Page ${stdPage.pageIndex + 1} from grading pipeline: ${reason}${evidence}`);
-                    }
+                    console.warn(`⚠️ [GEOMETRY] Dropping Page ${stdPage.pageIndex + 1} from grading pipeline (detected_subject=${geo.detected_subject || 'unknown'}, unsupported_subject=${geo.unsupported_subject_name || 'N/A'}): ${reason}${evidence}`);
                     
                     continue; // Gracefully filter out the page until mark scheme is provided
                 }
@@ -4351,9 +4371,17 @@ export class MarkingPipelineService {
                 // Detect true Exam Front Cover so out-of-order loose image uploads never treat it as an interior blank page
                 const pageOcrBlocks = (allPagesOcrData.find(o => o.pageIndex === page.pageIndex) || allPagesOcrData[originalIdx])?.ocrData?.mathBlocks || [];
                 const pageOcrText = pageOcrBlocks.map((b: any) => b.googleVisionText || b.mathpixLatex || b.text || '').join(' ');
-                const rawGeoIdx = typeof (page as any)._rawPageIndex === 'number' ? (page as any)._rawPageIndex : originalIdx;
-                const isGeoCover = Boolean(geometryResults?.[originalIdx]?.is_cover_page || geometryResults?.[rawGeoIdx]?.is_cover_page);
-                const isFrontCover = detectIsFrontCover({ isGeoCover, originalIdx, isMeta, pageOcrText });
+                const pageGeo = geometryResults?.[originalIdx];
+                const isGeoCover = Boolean(pageGeo?.is_cover_page);
+                const geoTextSnippet = `${pageGeo?.evidence_text_snippet || ''} ${pageGeo?.visual_observations || ''} ${pageGeo?.unofficial_reason || ''}`;
+                const isFrontCover = detectIsFrontCover({
+                    isGeoCover,
+                    originalIdx,
+                    isMeta,
+                    pageOcrText,
+                    mapperCategory: pageRawResult?.category,
+                    geoTextSnippet
+                });
 
                 // Detect printed booklet page number from OCR (header or footer blocks)
                 let bookletPage: number | null = null;
