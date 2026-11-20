@@ -728,21 +728,28 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
                     const validImageSrc = isPdf ? null : src;
                     
                     return (
-                      <div key={idx} className="skeleton-item">
+                      <div key={idx} className="skeleton-item" aria-label={`Analyzing Page ${idx + 1}...`}>
                         {validImageSrc ? (
-                          <img src={validImageSrc} alt={`Processing page ${idx + 1}`} className="skeleton-image-preview" />
+                          <>
+                            <img src={validImageSrc} alt={`Processing page ${idx + 1}`} className="skeleton-image-preview" />
+                            <div className="skeleton-scrim" aria-hidden="true"></div>
+                            <div className="skeleton-viewfinder" aria-hidden="true">
+                              <span className="skeleton-corner skeleton-corner--tl"></span>
+                              <span className="skeleton-corner skeleton-corner--tr"></span>
+                              <span className="skeleton-corner skeleton-corner--bl"></span>
+                              <span className="skeleton-corner skeleton-corner--br"></span>
+                              <div className="skeleton-scan-beam"></div>
+                            </div>
+                          </>
                         ) : (
                           <div className="skeleton-shimmer"></div>
                         )}
                         <div className="skeleton-overlay">
-                          <span className="skeleton-label">Analyzing Page {idx + 1}...</span>
+                          <span className="skeleton-status-dot" aria-hidden="true"></span>
+                          <span className="skeleton-label">
+                            {validImageSrc ? `SCANNING · P${idx + 1}` : `Analyzing Page ${idx + 1}...`}
+                          </span>
                         </div>
-                        {validImageSrc && (
-                          <>
-                            <div className="skeleton-shimmer skeleton-shimmer--over-image"></div>
-                            <div className="skeleton-scan-line"></div>
-                          </>
-                        )}
                       </div>
                     );
                   })}

@@ -704,13 +704,73 @@
   height: 100%;
   object-fit: cover;
   display: block;
-  opacity: 0.55;
-  filter: contrast(1.03);
+  opacity: 1;
 }
 
-html.dark .skeleton-image-preview {
-  opacity: 0.72;
-  filter: brightness(0.95) contrast(1.05);
+.skeleton-scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.25) 0%,
+    var(--fill-black) 60%,
+    var(--background-mask-black) 100%
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+.skeleton-viewfinder {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  right: 10px;
+  bottom: 28px;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.skeleton-corner {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-color: var(--text-brand-light);
+  border-style: solid;
+  border-width: 0;
+  z-index: 4;
+}
+
+.skeleton-corner--tl {
+  top: 0;
+  left: 0;
+  border-top-width: 2.5px;
+  border-left-width: 2.5px;
+  border-top-left-radius: 4px;
+}
+
+.skeleton-corner--tr {
+  top: 0;
+  right: 0;
+  border-top-width: 2.5px;
+  border-right-width: 2.5px;
+  border-top-right-radius: 4px;
+}
+
+.skeleton-corner--bl {
+  bottom: 0;
+  left: 0;
+  border-bottom-width: 2.5px;
+  border-left-width: 2.5px;
+  border-bottom-left-radius: 4px;
+}
+
+.skeleton-corner--br {
+  bottom: 0;
+  right: 0;
+  border-bottom-width: 2.5px;
+  border-right-width: 2.5px;
+  border-bottom-right-radius: 4px;
 }
 
 .skeleton-shimmer {
@@ -745,32 +805,40 @@ html.dark .skeleton-shimmer {
   background-size: 220% 100%;
 }
 
-.skeleton-shimmer--over-image {
-  opacity: 0.9;
-}
-
-.skeleton-scan-line {
+.skeleton-scan-beam {
   position: absolute;
-  left: 0;
-  right: 0;
-  height: 3px;
-  background: linear-gradient(90deg, transparent 4%, #94a3b8 30%, #e2e8f0 50%, #94a3b8 70%, transparent 96%);
-  box-shadow: 0 0 10px 2px rgba(100, 116, 139, 0.65);
-  animation: skeleton-scan-sweep 1.8s ease-in-out infinite;
+  left: 2px;
+  right: 2px;
+  height: 36%;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    var(--text-brand-tsp) 45%,
+    var(--text-brand-border) 94%,
+    var(--text-brand-light) 100%
+  );
+  border-bottom: 2.5px solid var(--text-brand-light);
+  box-shadow: 0 4px 12px var(--text-brand-border);
+  animation: skeleton-scan-sweep 2.4s ease-in-out infinite;
   pointer-events: none;
   z-index: 3;
 }
 
-html.dark .skeleton-scan-line {
-  height: 3.5px;
-  background: linear-gradient(90deg, transparent 2%, #94a3b8 25%, #f8fafc 50%, #94a3b8 75%, transparent 98%);
-  box-shadow: 0 0 12px 2.5px rgba(203, 213, 225, 0.8), 0 0 5px 1px rgba(255, 255, 255, 0.55);
-}
-
 @keyframes skeleton-scan-sweep {
-  0% { top: 4%; opacity: 0.45; }
-  50% { top: 76%; opacity: 1; }
-  100% { top: 4%; opacity: 0.45; }
+  0% {
+    top: -36%;
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  88% {
+    opacity: 1;
+  }
+  100% {
+    top: 100%;
+    opacity: 0;
+  }
 }
 
 .skeleton-overlay {
@@ -782,18 +850,57 @@ html.dark .skeleton-scan-line {
   background: var(--bg-surface-1);
   border-top: 1px solid var(--border-subtle);
   display: flex;
+  align-items: center;
   justify-content: center;
+  gap: 5px;
   z-index: 4;
+}
+
+.skeleton-scrim ~ .skeleton-overlay {
+  background: transparent;
+  border-top: none;
+  padding: 5px 8px 7px;
+}
+
+.skeleton-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-brand);
+  flex-shrink: 0;
+  animation: skeleton-dot-pulse 1.4s ease-in-out infinite;
+}
+
+.skeleton-scrim ~ .skeleton-overlay .skeleton-status-dot {
+  background: var(--text-brand-light);
+}
+
+@keyframes skeleton-dot-pulse {
+  0%, 100% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
 }
 
 .skeleton-label {
   font-size: 9.5px;
   color: var(--text-secondary);
   font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 
 html.dark .skeleton-label {
   color: var(--text-primary);
+}
+
+.skeleton-scrim ~ .skeleton-overlay .skeleton-label {
+  color: var(--text-white);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 
 @keyframes shimmer {
