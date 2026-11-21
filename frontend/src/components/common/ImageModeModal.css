@@ -644,9 +644,9 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
-  background: var(--bg-surface-1);
-  border-top: 1px solid var(--border-main);
+  padding: 8px 12px calc(12px + env(safe-area-inset-bottom));
+  background: var(--bg-canvas);
+  border-top: 1px solid var(--border-subtle);
   z-index: 35;
   flex-shrink: 0;
 }
@@ -743,20 +743,31 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 8px 10px 8px 14px;
+  border-radius: 16px;
+  background: var(--bg-surface-1);
+  border: 1px solid var(--border-main);
+  box-shadow: 0 8px 28px var(--shadow-M);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.viewer-mobile-chat-input-row:focus-within {
+  border-color: var(--border-strong);
 }
 
 .viewer-mobile-chat-input {
   flex: 1;
   min-width: 0;
-  height: 38px;
-  padding: 0 14px;
-  border-radius: 9999px;
-  border: 1px solid var(--border-main);
-  background: var(--bg-surface-2);
+  height: 32px;
+  padding: 2px 0;
+  border-radius: 0;
+  border: none;
+  background: transparent;
   color: var(--text-primary);
   font-size: 16px;
+  font-family: inherit;
+  line-height: 1.35;
   outline: none;
-  transition: border-color 0.16s ease;
 }
 
 .viewer-mobile-chat-input::placeholder {
@@ -764,16 +775,20 @@
 }
 
 .viewer-mobile-chat-input:focus {
-  border-color: var(--border-strong);
+  border: none;
+  box-shadow: none;
 }
 
-/* Standardized Manus Primary Action Send Button (34px Circle) */
+/* Standardized Circular Send Button inside Rounded White Input Card */
 .viewer-mobile-chat-send {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  aspect-ratio: 1 / 1;
   border-radius: 50%;
   border: 1px solid transparent;
   background: var(--text-primary);
@@ -781,6 +796,7 @@
   cursor: pointer;
   transition: all 0.16s ease;
   flex-shrink: 0;
+  padding: 0;
 }
 
 .viewer-mobile-chat-send:hover:not(:disabled) {

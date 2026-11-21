@@ -698,6 +698,10 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
                   (sum, q) => sum + (q.totalMarks || 0),
                   0
                 );
+                const isMarkingCompleted =
+                  !isProcessing &&
+                  !isAIThinking &&
+                  chatMessages.some((m: UnifiedMessage) => m.role === 'assistant' && !m.isProcessing);
 
                 return (
                   <div className="ribbon-thumbnail-stack-wrapper">
@@ -728,9 +732,11 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
                       {extraCount > 0 && (
                         <span className="ribbon-thumbnail-more">+{extraCount}</span>
                       )}
-                      <span className="ribbon-thumbnail-tick-badge" aria-hidden="true">
-                        <Check size={9} strokeWidth={3.2} />
-                      </span>
+                      {isMarkingCompleted && (
+                        <span className="ribbon-thumbnail-tick-badge" aria-hidden="true">
+                          <Check size={9} strokeWidth={3.2} />
+                        </span>
+                      )}
                     </button>
                   </div>
                 );

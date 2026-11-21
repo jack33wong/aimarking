@@ -1648,7 +1648,7 @@
    ============================================================================ */
 
 .context-chip-container {
-  padding: 0 4px 8px 4px;
+  padding: 0px 0px 0px 2px;
   display: flex;
 }
 
@@ -1772,6 +1772,14 @@
     border-radius: 50% !important;
     aspect-ratio: 1 / 1;
     flex-shrink: 0;
+  }
+
+  .followup-chat-input-bar:not(.first-time) .followup-text-input,
+  .follow-up-chat-input-container.follow-up-bottom .followup-text-input {
+    min-height: 28px;
+    height: auto;
+    padding: 4px 4px 2px;
+    line-height: 1.35;
   }
 
   .followup-chat-input-bar .btn-icon {

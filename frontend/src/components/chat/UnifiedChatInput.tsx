@@ -2074,6 +2074,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
               <div className="followup-text-wrapper">
                 <textarea
                   ref={inputRef}
+                  rows={mode === 'follow-up' ? 1 : 2}
                   value={chatInput}
                   onChange={handleInputChange}
                   onKeyPress={handleKeyPress}

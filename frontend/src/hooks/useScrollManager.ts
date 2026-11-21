@@ -36,10 +36,13 @@ export const useScrollManager = (chatMessages: UnifiedMessage[], isAIThinking: b
       if (targetMessage) {
         if (options?.block === 'start') {
           const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768;
-          // On initial submission (first user message + processing bubble), keep the container at top
-          // so the uploaded thumbnails and the thinking header stay cleanly visible below the mobile bar.
+          const targetMsgObj = chatMessages.find(m => String(m.id) === String(messageId));
+          const isTargetingAssistant = targetMsgObj?.role === 'assistant';
+          // On initial turn, only clamp to top: 0 when targeting the user message;
+          // when targeting the AI assistant bubble, scroll directly to the bubble with a small
+          // topOffset so the bottom of the user's thumbnails peeks neatly above the thinking header.
           const isFirstTurn = chatMessages.length <= 2;
-          if (isFirstTurn) {
+          if (isFirstTurn && !isTargetingAssistant) {
             chatContainerElement.scrollTo({
               top: 0,
               behavior: options.behavior || 'smooth'
@@ -49,7 +52,9 @@ export const useScrollManager = (chatMessages: UnifiedMessage[], isAIThinking: b
 
           const containerRect = chatContainerElement.getBoundingClientRect();
           const targetRect = targetMessage.getBoundingClientRect();
-          const topOffset = isMobile ? 116 : 140;
+          const topOffset = isTargetingAssistant
+            ? (isMobile ? 76 : 96)
+            : (isMobile ? 116 : 140);
           const nextTop = Math.max(0, targetRect.top - containerRect.top + chatContainerElement.scrollTop - topOffset);
           chatContainerElement.scrollTo({
             top: nextTop,
@@ -68,7 +73,7 @@ export const useScrollManager = (chatMessages: UnifiedMessage[], isAIThinking: b
       scrollToBottom();
     }
     return false;
-  }, [chatContainerElement, chatMessages.length, scrollToBottom]);
+  }, [chatContainerElement, chatMessages, scrollToBottom]);
 
   const scrollToNewResponse = useCallback(() => {
     if (newResponseMessageId) {
@@ -106,27 +111,25 @@ export const useScrollManager = (chatMessages: UnifiedMessage[], isAIThinking: b
 
     if (chatMessages.length > prevMessagesCountRef.current) {
       const lastMessage = chatMessages[chatMessages.length - 1];
-      const secondLastMessage = chatMessages.length > 1 ? chatMessages[chatMessages.length - 2] : null;
-      const isNewTurnWithProcessing =
-        Boolean(lastMessage && lastMessage.role === 'assistant' && lastMessage.isProcessing && secondLastMessage?.role === 'user');
-      const targetUserMessage =
-        lastMessage?.role === 'user'
+      const isProcessingAssistant = Boolean(lastMessage && lastMessage.role === 'assistant' && lastMessage.isProcessing);
+      const targetFocusMessage =
+        isProcessingAssistant
           ? lastMessage
-          : isNewTurnWithProcessing
-            ? secondLastMessage
+          : lastMessage?.role === 'user'
+            ? lastMessage
             : null;
 
       // Delay to ensure DOM rendering and layout stabilization
       initialTimer = setTimeout(() => {
-        // Priority 1: New user turn (either user message alone or user + assistant processing placeholder added together)
-        // Scroll the user message head into view (top: 0 on turn 1) so both thumbnails and the AI thinking header stay visible.
-        if (targetUserMessage) {
+        // Priority 1: Focus on the newly added AI processing bubble (so its header & scanning cards
+        // sit cleanly in view), or on a newly sent user message.
+        if (targetFocusMessage) {
           // Double-scroll strategy: Immediately start, then refine
-          scrollToMessage(targetUserMessage.id, { behavior: 'smooth', block: 'start' });
+          scrollToMessage(targetFocusMessage.id, { behavior: 'smooth', block: 'start' });
 
           // Refinement scroll after potential image expansion/spacer jump
           refineTimer = setTimeout(() => {
-            scrollToMessage(targetUserMessage.id, { behavior: 'smooth', block: 'start' });
+            scrollToMessage(targetFocusMessage.id, { behavior: 'smooth', block: 'start' });
           }, 450);
         }
         // Priority 2: If we are currently in AI thinking mode or just updated a processing message, 

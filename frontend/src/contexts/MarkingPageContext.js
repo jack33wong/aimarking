@@ -1256,13 +1256,15 @@ export const MarkingPageProvider = ({
       );
 
       const timeoutId = setTimeout(() => {
-        const lastUserMessage = [...(currentSession.messages || [])].reverse().find(m => m.role === 'user');
+        const reversedMsgs = [...(currentSession.messages || [])].reverse();
+        const processingAssistantMessage = reversedMsgs.find(m => m.role === 'assistant' && m.isProcessing);
+        const lastUserMessage = reversedMsgs.find(m => m.role === 'user');
         if (isSessionActivelyProcessing) {
-          // During active marking submission, NEVER call scrollToBottom():
-          // MainLayout renders a 60vh bottom spacer while processing, so scrollToBottom()
-          // pushes the user thumbnails and AI thinking header off the top of the viewport.
-          if (lastUserMessage) {
-            scrollToMessage(lastUserMessage.id, { behavior: 'smooth', block: 'start' });
+          // During active marking submission, focus on the AI assistant processing bubble
+          // (never scrollToBottom into the 60vh spacer, and never stay stuck at top: 0).
+          const targetMsg = processingAssistantMessage || lastUserMessage;
+          if (targetMsg) {
+            scrollToMessage(targetMsg.id, { behavior: 'smooth', block: 'start' });
           }
           return;
         }
