@@ -227,16 +227,17 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
+  padding: 2px 10px 2px 2px;
   background: transparent;
   border: 1px solid var(--border-main);
-  border-radius: 20px;
+  border-radius: 9999px;
   color: var(--text-primary);
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s ease;
-  height: 36px;
+  height: 38px;
+  box-sizing: border-box;
   line-height: 1;
 }
 
@@ -252,6 +253,9 @@
 .profile-avatar {
   width: 32px;
   height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  aspect-ratio: 1 / 1;
   border-radius: 50%;
   overflow: hidden;
   display: flex;
@@ -259,12 +263,15 @@
   justify-content: center;
   background: var(--text-brand);
   flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .profile-avatar img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  display: block;
+  border-radius: 50%;
 }
 
 .profile-avatar svg {
@@ -359,9 +366,10 @@
   }
 
   .profile-button {
-    padding: 8px 12px;
+    padding: 3px 8px 3px 3px;
     height: 40px;
     font-size: 13px;
+    gap: 6px;
   }
 
   .login-button {
@@ -372,10 +380,6 @@
 
   .profile-name {
     display: none;
-  }
-
-  .profile-button {
-    gap: 8px;
   }
 
   .profile-dropdown {
@@ -421,6 +425,8 @@
 .profile-avatar.large {
   width: 48px;
   height: 48px;
+  min-width: 48px;
+  min-height: 48px;
 }
 
 .profile-details {

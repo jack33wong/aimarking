@@ -1765,8 +1765,13 @@
 
   .followup-chat-input-bar .followup-upload-button {
     width: 32px !important;
+    height: 32px !important;
+    min-width: 32px !important;
+    min-height: 32px !important;
     padding: 0 !important;
     border-radius: 50% !important;
+    aspect-ratio: 1 / 1;
+    flex-shrink: 0;
   }
 
   .followup-chat-input-bar .btn-icon {
