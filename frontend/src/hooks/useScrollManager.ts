@@ -101,20 +101,32 @@ export const useScrollManager = (chatMessages: UnifiedMessage[], isAIThinking: b
 
   // Auto-scroll on new messages
   useEffect(() => {
+    let initialTimer: ReturnType<typeof setTimeout> | null = null;
+    let refineTimer: ReturnType<typeof setTimeout> | null = null;
+
     if (chatMessages.length > prevMessagesCountRef.current) {
       const lastMessage = chatMessages[chatMessages.length - 1];
       const secondLastMessage = chatMessages.length > 1 ? chatMessages[chatMessages.length - 2] : null;
+      const isNewTurnWithProcessing =
+        Boolean(lastMessage && lastMessage.role === 'assistant' && lastMessage.isProcessing && secondLastMessage?.role === 'user');
+      const targetUserMessage =
+        lastMessage?.role === 'user'
+          ? lastMessage
+          : isNewTurnWithProcessing
+            ? secondLastMessage
+            : null;
 
       // Delay to ensure DOM rendering and layout stabilization
-      setTimeout(() => {
-        // Priority 1: If the new message is from user, scroll its head to top
-        if (lastMessage && lastMessage.role === 'user') {
+      initialTimer = setTimeout(() => {
+        // Priority 1: New user turn (either user message alone or user + assistant processing placeholder added together)
+        // Scroll the user message head into view (top: 0 on turn 1) so both thumbnails and the AI thinking header stay visible.
+        if (targetUserMessage) {
           // Double-scroll strategy: Immediately start, then refine
-          scrollToMessage(lastMessage.id, { behavior: 'smooth', block: 'start' });
+          scrollToMessage(targetUserMessage.id, { behavior: 'smooth', block: 'start' });
 
           // Refinement scroll after potential image expansion/spacer jump
-          setTimeout(() => {
-            scrollToMessage(lastMessage.id, { behavior: 'smooth', block: 'start' });
+          refineTimer = setTimeout(() => {
+            scrollToMessage(targetUserMessage.id, { behavior: 'smooth', block: 'start' });
           }, 450);
         }
         // Priority 2: If we are currently in AI thinking mode or just updated a processing message, 
@@ -123,14 +135,19 @@ export const useScrollManager = (chatMessages: UnifiedMessage[], isAIThinking: b
         else if (isAIThinking || (lastMessage && lastMessage.role === 'assistant')) {
           // No-op: Maintain user focus position
         }
-        // Priority 3: Otherwise (final response, system message), scroll to bottom.
+        // Priority 3: Otherwise (system message), scroll to bottom.
         else {
           scrollToBottom();
         }
       }, 250); // Increased for better stability
     }
     prevMessagesCountRef.current = chatMessages.length;
-  }, [chatMessages, scrollToBottom, scrollToMessage]);
+
+    return () => {
+      if (initialTimer) clearTimeout(initialTimer);
+      if (refineTimer) clearTimeout(refineTimer);
+    };
+  }, [chatMessages, isAIThinking, scrollToBottom, scrollToMessage]);
 
   useLayoutEffect(() => {
     if (prevIsAIThinkingRef.current === true && isAIThinking === false) {

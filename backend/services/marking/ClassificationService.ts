@@ -753,14 +753,14 @@ ${pageHints}
           const rawMapperCategory = pageMap?.category || 'questionAnswer';
           const safeProcessedQuestions = Array.isArray(processedQuestions) ? processedQuestions : [];
           const effectiveCategory = (safeProcessedQuestions.length === 0 && mapperHints.length === 0)
-            ? 'frontPage'
+            ? (rawMapperCategory === 'frontPage' ? 'frontPage' : 'metadata')
             : rawMapperCategory;
 
           results.push({
             pageIndex: globalPageIndex,
             mapperCategory: effectiveCategory,  // Add mapper category for mode detection
             result: {
-              category: effectiveCategory, // Downgrade to frontPage if both passes confirmed 0 questions/work
+              category: effectiveCategory, // Downgrade to metadata (preserving true frontPage) if both passes confirmed 0 questions/work
               reasoning: pageResult.reasoning || `Question ${questionNumber} extraction`,
               questions: safeProcessedQuestions,
               apiUsed,
@@ -870,7 +870,7 @@ ${pageHints}
             const category: "questionOnly" | "questionAnswer" | "metadata" | "frontPage" =
               (rawCategory === "frontPage" || rawCategory === "metadata")
                 ? rawCategory
-                : "frontPage";
+                : "metadata";
 
             results.push({
               pageIndex: i,
@@ -1234,10 +1234,19 @@ ${pageHints}
       if (item.includes('?') && item.includes(':')) {
         item = item.split(':').pop()!.trim();
       }
-      item = item.replace(/(-?\d+\.?\d*)\s*\/\s*(-?\d+\.?\d*)/g, (mathMatch: string, num1: string, num2: string) => {
-        const denom = parseFloat(num2);
-        if (denom === 0) return mathMatch;
-        const result = parseFloat(num1) / denom;
+      // First evaluate * and /
+      item = item.replace(/(-?\d+\.?\d*)\s*([*/])\s*(-?\d+\.?\d*)/g, (mathMatch: string, num1: string, op: string, num2: string) => {
+        const a = parseFloat(num1);
+        const b = parseFloat(num2);
+        if (op === '/' && b === 0) return mathMatch;
+        const result = op === '*' ? a * b : a / b;
+        return isNaN(result) ? mathMatch : Number(result.toFixed(4)).toString();
+      });
+      // Then evaluate binary + and - (e.g. `65 - 0.2` -> `64.8` in `"p": [8.5, 65 - 0.2, 68.0, 3.4]`)
+      item = item.replace(/(-?\d+\.?\d*)\s+([+-])\s+(-?\d+\.?\d*)/g, (mathMatch: string, num1: string, op: string, num2: string) => {
+        const a = parseFloat(num1);
+        const b = parseFloat(num2);
+        const result = op === '+' ? a + b : a - b;
         return isNaN(result) ? mathMatch : Number(result.toFixed(4)).toString();
       });
       if (/[<>?:]/.test(item)) {
@@ -1247,15 +1256,15 @@ ${pageHints}
       return item;
     };
 
-    // 1. Normalize `"p": [44.6, 260.0 / 10, 13.5, 6.2]` arrays
+    // 1. Normalize `"p": [44.6, 260.0 / 10, 13.5, 6.2]` or `"p": [8.5, 65 - 0.2, 68.0, 3.4]` arrays
     normalized = normalized.replace(/"p"\s*:\s*\[([^\]]+)\]/g, (_match, arrayContents) => {
       const cleanedElements = arrayContents.split(',').map((el: string) => evalNumericExpr(el));
       return `"p": [${cleanedElements.join(', ')}]`;
     });
 
-    // 2. Normalize object coordinate properties like `"x": 204.0 / 10` in `studentDrawingPosition`
+    // 2. Normalize object coordinate properties like `"x": 204.0 / 10` or `"y": 65 - 0.2` in `studentDrawingPosition`
     normalized = normalized.replace(
-      /"(x|y|width|height|rotation|confidence)"\s*:\s*(-?\d+\.?\d*\s*\/\s*-?\d+\.?\d*(?:\s*[<>?:][^\n\r,}]*)?)/g,
+      /"(x|y|width|height|rotation|confidence)"\s*:\s*(-?\d+\.?\d*\s*(?:[*/]|\s+[+-]\s+)\s*-?\d+\.?\d*(?:\s*[<>?:][^\n\r,}]*)?)/g,
       (_match, key, expr) => `"${key}": ${evalNumericExpr(expr)}`
     );
 

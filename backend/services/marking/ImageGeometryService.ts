@@ -142,6 +142,42 @@ interface RawGeometryAnalysisResult {
     unofficial_reason?: string;
 }
 
+/**
+ * Deterministic false-positive guard for `is_marking_scheme`:
+ * Official mark schemes are typeset reference tables, never photographed student answer booklets,
+ * "Question X continued" lined sheets, or teacher-annotated 2-page exam spreads with student handwriting.
+ */
+export function sanitizeIsMarkingScheme(params: {
+    rawIsMarkingScheme: boolean;
+    isTwoPageSpread: boolean;
+    hasHandwriting?: boolean;
+    hasPrintedQuestions?: boolean;
+    visualObservations?: string;
+    evidenceTextSnippet?: string;
+}): boolean {
+    if (!params.rawIsMarkingScheme) return false;
+    const text = `${params.visualObservations || ''} ${params.evidenceTextSnippet || ''}`;
+    const hasExplicitSchemeKeyword = /\b(?:mark(?:ing)?\s*scheme|rubric|mark\s*grid|examiner\s*guidance|level\s*descriptors)\b/i.test(text);
+
+    // 1. A 2-page photographed spread with student handwriting is an open exam booklet, never an official mark scheme
+    if (params.isTwoPageSpread && params.hasHandwriting && !hasExplicitSchemeKeyword) {
+        return false;
+    }
+
+    // 2. Explicit exam answer-booklet landmarks ("Question X continued", "DO NOT WRITE IN THIS AREA", lined answer page, etc.)
+    const hasBookletContinuationLandmark = /\b(?:question\s+\d+\s+continued|do\s+not\s+write\s+in\s+this\s+area|leave\s+blank|total\s+for\s+question\s+\d+|lined\s+(?:answer|page|paper)|blank\s+(?:lined\s+)?page|student\s+(?:handwriting|work|script|answer))\b/i.test(text);
+    if (hasBookletContinuationLandmark && !hasExplicitSchemeKeyword) {
+        return false;
+    }
+
+    // 3. Student handwriting + printed exam questions on the same page (teacher-marked student script)
+    if (params.hasHandwriting && params.hasPrintedQuestions && !hasExplicitSchemeKeyword) {
+        return false;
+    }
+
+    return true;
+}
+
 export class ImageGeometryService {
     
     private static getSystemPrompt(): string {
@@ -152,7 +188,10 @@ Analyze the image and return ONLY valid JSON matching the schema below.
 1. visual_observations (string): Max 15 words noting text clarity, academic subject, and whether a vertical spine divides two full pages side-by-side. Do NOT transcribe the page.
 2. is_acceptable_quality (boolean): false ONLY if extremely blurry, unreadable, extreme skew, or >2 pages squeezed into one photo. Otherwise true.
 3. is_two_page_spread (boolean): true ONLY for a wide/landscape capture showing two FULL pages side-by-side (~50% left, ~50% right divided by a central fold/spine) where BOTH pages are meant to be read. Return false for a single portrait page even if a spine/adjacent margin peeks in.
-4. is_marking_scheme (boolean): true ONLY for an official mark scheme or rubric table containing grading codes (M1, A1, B1, AO1–AO3, Level descriptors), table columns ("Question | Answers | Extra information | Mark"), or examiner guidance ("allow", "ignore", "oe", "cao"). Return false for exam cover pages ("For Examiner's Use" tally grids) and active exam pages with maps, diagrams, reading inserts (Source A/B), or question numbers.
+4. is_marking_scheme (boolean): true ONLY for an official **printed/typeset** mark scheme or rubric table containing printed grading codes (M1, A1, B1, AO1–AO3, Level descriptors), table columns ("Question | Answers | Extra information | Mark"), or examiner guidance ("allow", "ignore", "oe", "cao"). Return **false** for:
+   - exam question/answer booklets (lined answer spaces, "DO NOT WRITE IN THIS AREA", "Question X continued", "Leave blank", "(Total for Question X is Y marks)", or Pearson/AQA/OCR barcode footers)
+   - **teacher-marked / graded student scripts** where red/green/black handwritten marks (e.g. M1, A1, B1, ticks, or scores) are written alongside student handwriting
+   - 2-page photographed exam booklet spreads, exam cover pages ("For Examiner's Use" tally grids), and active exam pages with maps, diagrams, reading inserts (Source A/B), or question numbers.
 5. Subject Classification (\`is_supported_doc\`, \`detected_subject\`, \`unsupported_subject_name\`):
    - **BUILT-IN SUBJECTS (set \`is_supported_doc: true\`, \`unsupported_subject_name: ""\`)**:
      * \`"MATHS"\`: Mathematics, Further Maths, Pure Maths, Statistics, Numeracy, and **Applied Maths: Mechanics** (inclined planes, blocks/particles connected by light inextensible strings over smooth pegs/pulleys, forces, friction, tension, moments, projectiles, kinematics/suvat, momentum/impulse, GPE/KE work-energy calculations, vectors, graphs, geometry) at GCSE/IGCSE/A-Level/IAL/school level.
@@ -317,12 +356,22 @@ Analyze the image and return ONLY valid JSON matching the schema below.
                 resolvedRejectionReason = '';
             }
 
+            const resolvedIsTwoPageSpread = Boolean(parsed.is_two_page_spread) && isPhysicallyLandscape;
+            const resolvedIsMarkingScheme = sanitizeIsMarkingScheme({
+                rawIsMarkingScheme: Boolean(parsed.is_marking_scheme),
+                isTwoPageSpread: resolvedIsTwoPageSpread,
+                hasHandwriting: Boolean(parsed.has_handwriting),
+                hasPrintedQuestions: parsed.has_printed_questions === undefined ? undefined : Boolean(parsed.has_printed_questions),
+                visualObservations: parsed.visual_observations,
+                evidenceTextSnippet: parsed.evidence_text_snippet
+            });
+
             return {
                 is_acceptable_quality: Boolean(parsed.is_acceptable_quality),
                 rejection_reason: resolvedRejectionReason || undefined,
                 needs_rotation: 0, // Rotation is handled by Vision now
-                is_two_page_spread: Boolean(parsed.is_two_page_spread) && isPhysicallyLandscape,
-                is_marking_scheme: Boolean(parsed.is_marking_scheme),
+                is_two_page_spread: resolvedIsTwoPageSpread,
+                is_marking_scheme: resolvedIsMarkingScheme,
                 is_supported_doc: isSupportedDoc,
                 evidence_text_snippet: parsed.evidence_text_snippet || undefined,
                 detected_subject: parsed.detected_subject || undefined,

@@ -278,9 +278,13 @@ function isOpeningQuestionStemOnPage(q: any): string {
         return s === 'null' || s === 'undefined' ? '' : s;
     };
     const mainRaw = cleanField(q?.text) || cleanField(q?.questionText);
-    const firstSubRaw = Array.isArray(q?.subQuestions) && q.subQuestions.length > 0
-        ? (cleanField(q.subQuestions[0]?.text) || cleanField(q.subQuestions[0]?.questionText))
-        : '';
+    const firstSub = Array.isArray(q?.subQuestions) && q.subQuestions.length > 0 ? q.subQuestions[0] : undefined;
+    const firstNestedSub = Array.isArray(firstSub?.subQuestions) && firstSub.subQuestions.length > 0 ? firstSub.subQuestions[0] : undefined;
+    const firstSubRaw =
+        cleanField(firstSub?.text) ||
+        cleanField(firstSub?.questionText) ||
+        cleanField(firstNestedSub?.text) ||
+        cleanField(firstNestedSub?.questionText);
     const combinedRaw = [mainRaw, firstSubRaw].filter(Boolean).join(' ').trim();
     if (!combinedRaw) return '';
 
@@ -535,15 +539,12 @@ export class PaperSplitterService {
                 return;
             }
 
-            // Out-of-order / continuation guard: if a subsequent opening page also has 'b' (rank 2),
-            // require an opening stem (>= 20 chars, non-continuation) on that page before flagging.
-            const validSubsequentOpeningPages = pagesWithOpeningSubPart.slice(1).filter(p => {
-                const secondPageHasB = p.subParts.some(sp => /^b/.test(sp) && getPrimarySubLetterRank(sp) === 2);
-                if (secondPageHasB) {
-                    return p.hasOpeningStem;
-                }
-                return true;
-            });
+            // Out-of-order / continuation guard:
+            // A genuine duplicate-question reset on part (a) / (i) / (1) must have a real printed
+            // opening stem (>= 20 chars, non-continuation) on the subsequent page. Continuation pages
+            // (e.g. "Question 10 continued" carrying student work for 10a) have hasOpeningStem === false
+            // and must NEVER be rejected as a multi-paper upload.
+            const validSubsequentOpeningPages = pagesWithOpeningSubPart.slice(1).filter(p => p.hasOpeningStem);
 
             if (validSubsequentOpeningPages.length >= 1) {
                 subQuestionResetBaseNumbers.add(baseQ);

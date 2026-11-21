@@ -145,10 +145,11 @@ export class ClassificationMapper {
                 });
 
                 // If Mapper found 0 questions and classified the page as 'questionOnly' (no student work),
-                // normalize it to 'frontPage' (blank/additional lined page or metadata page)
-                // so empty booklet pages are not scheduled as question tasks or forced into OCR.
+                // normalize it to 'metadata' (blank/additional lined page or continuation filler)
+                // so empty booklet pages are not scheduled as question tasks, forced into OCR,
+                // or mistaken for an exam front cover and sorted before Q1.
                 const normalizedCategory = (flatQuestions.length === 0 && p.category === 'questionOnly')
-                    ? 'frontPage'
+                    ? 'metadata'
                     : p.category;
 
                 const result: PageMap = {

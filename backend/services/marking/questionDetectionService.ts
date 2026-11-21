@@ -11,6 +11,7 @@ import { getFirestore } from '../../config/firebase.js';
 import { normalizeTextForComparison, normalizeSubQuestionPart, generateGenericTitleFromText, getBaseQuestionNumber } from '../../utils/TextNormalizationUtils.js';
 import { getShortSubjectName, getShortExamBoard } from './MarkingHelpers.js';
 import * as stringSimilarity from 'string-similarity';
+import { isPaperAllowedBySubjectGate, type GateableSubjectKey } from '../../config/subjectProfiles.js';
 
 import { SimilarityService } from './SimilarityService.js';
 
@@ -35,6 +36,8 @@ export interface ExamPaperMatch {
   subQuestionTexts?: { [key: string]: string };
   isRescued?: boolean;
   isGeneric?: boolean;
+  /** Raw text similarity (0..1) of the winning candidate, used by consensus guards. */
+  textSimilarity?: number;
 }
 
 export interface MarkingSchemeMatch {
@@ -164,7 +167,7 @@ export class QuestionDetectionService {
     extractedQuestionText: string,
     questionNumberHint?: string | null,
     examPaperHint?: string | null,
-    detectionOptions?: { allowCroppedQ1Exemption?: boolean }
+    detectionOptions?: { allowCroppedQ1Exemption?: boolean; subjectGateKey?: GateableSubjectKey | null }
   ): Promise<QuestionDetectionResult> {
     try {
       console.log('🚨 [HINT CHECK] Received Hint:', examPaperHint);
@@ -183,7 +186,14 @@ export class QuestionDetectionService {
       }
 
       // 2. Paper Retrieval & Filtering (Cached)
-      const allExamPapers = await this.getAllExamPapers();
+      // 🛡️ [SUBJECT GATE]: When upstream page votes confidently identify the subject, exclude DB papers
+      // of a different subject (e.g. never match a Maths upload against an English Language paper).
+      // Papers whose subject cannot be determined are kept.
+      const subjectGateKey = detectionOptions?.subjectGateKey || null;
+      const unfilteredPapers = await this.getAllExamPapers();
+      const allExamPapers = subjectGateKey
+        ? unfilteredPapers.filter(p => isPaperAllowedBySubjectGate(p?.metadata, subjectGateKey))
+        : unfilteredPapers;
       const primaryPapers = cleanPaperHint
         ? this.filterPapersByHint(allExamPapers, cleanPaperHint)
         : [];
@@ -237,6 +247,8 @@ export class QuestionDetectionService {
                 scoreDetails: { text: 0, numeric: 0, structure: 1.0, semanticCheck: true }
               };
               const matchResult = this.constructMatchResult(directCandidate, true);
+              // Direct number lookup (blank stub) has no text evidence; don't expose a misleading 0 text score.
+              delete matchResult.textSimilarity;
               const markingScheme = await this.findCorrespondingMarkingScheme(matchResult);
               if (markingScheme) {
                 matchResult.markingScheme = markingScheme;
@@ -609,7 +621,8 @@ export class QuestionDetectionService {
       databaseQuestionText: databaseText,
       subQuestionMaxScores: Object.keys(subQuestionMaxScores).length > 0 ? subQuestionMaxScores : undefined,
       subQuestionTexts: Object.keys(subQuestionTexts).length > 0 ? subQuestionTexts : undefined,
-      isRescued: isRescueMode && score < 0.8
+      isRescued: isRescueMode && score < 0.8,
+      textSimilarity: candidate.scoreDetails?.text
     };
   }
 

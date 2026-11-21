@@ -1249,10 +1249,25 @@ export const MarkingPageProvider = ({
       }
       lastHandledSessionIdRef.current = currentSession.id;
 
+      const isSessionActivelyProcessing = Boolean(
+        isCurrentSessionProcessing ||
+        isCurrentSessionThinking ||
+        (currentSession.messages || []).some(m => m.isProcessing)
+      );
+
       const timeoutId = setTimeout(() => {
         const lastUserMessage = [...(currentSession.messages || [])].reverse().find(m => m.role === 'user');
+        if (isSessionActivelyProcessing) {
+          // During active marking submission, NEVER call scrollToBottom():
+          // MainLayout renders a 60vh bottom spacer while processing, so scrollToBottom()
+          // pushes the user thumbnails and AI thinking header off the top of the viewport.
+          if (lastUserMessage) {
+            scrollToMessage(lastUserMessage.id, { behavior: 'smooth', block: 'start' });
+          }
+          return;
+        }
         if (lastUserMessage) {
-          // Revert: Simply scroll to bottom to show the latest result, as students expect.
+          // Completed historical session: scroll to bottom to show the latest result.
           scrollToBottom();
         } else {
           scrollToBottom();

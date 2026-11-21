@@ -3,11 +3,19 @@ import {
     resolvePageMinSortWeight,
     computeIsScrambledPdf,
     detectIsFrontCover,
+    hasVerifiedFrontCoverEvidence,
+    demoteSpuriousFrontCovers,
+    isContinuationHeaderOnly,
+    extractBookletPageNumber,
+    comparePageSortEntries,
     getInstanceMinWeight,
     getAnnotationMarkVal,
     applyPointBasedGuillotine
 } from '../services/marking/MarkingPipelineService.js';
 import { ScoreAuditor } from '../services/marking/core/ScoreAuditor.js';
+import { sanitizeIsMarkingScheme } from '../services/marking/ImageGeometryService.js';
+import { PaperSplitterService } from '../services/marking/PaperSplitterService.js';
+import { ClassificationService } from '../services/marking/ClassificationService.js';
 
 describe('MarkingPipelineService V2 5-Fix Suite', () => {
     describe('Fix 1: resolvePageMinSortWeight (decimal sub-parts & intro stems)', () => {
@@ -358,6 +366,177 @@ describe('MarkingPipelineService V2 5-Fix Suite', () => {
                 mapperCategory: 'metadata',
                 geoTextSnippet: 'There are no questions printed on this page'
             })).toBe(false);
+        });
+    });
+
+    describe('Fix 7: Spurious frontPage demotion & intra-question continuation ordering', () => {
+        it('demotes multiple unverified mapper frontPage candidates so blank Q13 continued (page 37) never sorts before Q1', () => {
+            const entries = [
+                { id: 'p37_q13_blank', originalIdx: 10, minQ: 999999, isFrontCover: true, hasVerifiedCoverEvidence: false, bookletPage: null, hasPrintedStem: false },
+                { id: 'p41_q14_blank', originalIdx: 14, minQ: 999999, isFrontCover: true, hasVerifiedCoverEvidence: false, bookletPage: null, hasPrintedStem: false },
+                { id: 'p2_q1', originalIdx: 40, minQ: 1.01, isFrontCover: false, hasVerifiedCoverEvidence: false, bookletPage: 2, hasPrintedStem: true },
+                { id: 'p4_q2', originalIdx: 42, minQ: 2.01, isFrontCover: false, hasVerifiedCoverEvidence: false, bookletPage: 4, hasPrintedStem: true }
+            ];
+
+            demoteSpuriousFrontCovers(entries);
+            entries.sort(comparePageSortEntries);
+
+            expect(entries.map(e => e.id)).toEqual(['p2_q1', 'p4_q2', 'p37_q13_blank', 'p41_q14_blank']);
+        });
+
+        it('keeps a single displaced cover or a verified cover before Q1 even when spurious frontPage pages exist', () => {
+            const singleCover = [
+                { id: 'cover', originalIdx: 8, minQ: 999999, isFrontCover: true, hasVerifiedCoverEvidence: false, bookletPage: null, hasPrintedStem: false },
+                { id: 'q1', originalIdx: 0, minQ: 1.01, isFrontCover: false, hasVerifiedCoverEvidence: false, bookletPage: 2, hasPrintedStem: true }
+            ];
+            demoteSpuriousFrontCovers(singleCover);
+            singleCover.sort(comparePageSortEntries);
+            expect(singleCover.map(e => e.id)).toEqual(['cover', 'q1']);
+
+            const verifiedPlusSpurious = [
+                { id: 'spurious_blank', originalIdx: 2, minQ: 999999, isFrontCover: true, hasVerifiedCoverEvidence: false, bookletPage: null, hasPrintedStem: false },
+                { id: 'real_cover', originalIdx: 9, minQ: 999999, isFrontCover: true, hasVerifiedCoverEvidence: hasVerifiedFrontCoverEvidence({ isGeoCover: false, pageOcrText: 'Candidate surname Centre Number' }), bookletPage: null, hasPrintedStem: false },
+                { id: 'q1', originalIdx: 0, minQ: 1.01, isFrontCover: false, hasVerifiedCoverEvidence: false, bookletPage: 2, hasPrintedStem: true }
+            ];
+            demoteSpuriousFrontCovers(verifiedPlusSpurious);
+            verifiedPlusSpurious.sort(comparePageSortEntries);
+            expect(verifiedPlusSpurious.map(e => e.id)).toEqual(['real_cover', 'q1', 'spurious_blank']);
+        });
+
+        it('recognizes 2-digit "Question 10 continued" (21 chars) as continuation header, not printed stem', () => {
+            expect(isContinuationHeaderOnly('Question 9 continued')).toBe(true);
+            expect(isContinuationHeaderOnly('Question 10 continued')).toBe(true);
+            expect(isContinuationHeaderOnly('Question 15 continued')).toBe(true);
+            expect(isContinuationHeaderOnly('Q13 (continued)')).toBe(true);
+            expect(isContinuationHeaderOnly('Figure 3 shows a sketch of part of the curve C with equation')).toBe(false);
+        });
+
+        it('extracts booklet page numbers > 40, reads Edexcel barcodes, and ignores top question numbers and trailing total-marks boxes', () => {
+            // Q15 page 44 with Edexcel barcode
+            expect(extractBookletPageNumber([
+                { text: 'Question 15 continued' },
+                { text: 'TOTAL FOR PAPER IS 100 MARKS' },
+                { text: '44' },
+                { text: 'P 86176 A 04444' }
+            ], 15)).toBe(44);
+
+            // Q15 page 43 with trailing total-marks box "4"
+            expect(extractBookletPageNumber([
+                { text: 'Question 15 continued' },
+                { text: 'some working' },
+                { text: 'more working' },
+                { text: '43' },
+                { text: '4' },
+                { text: 'P86176A0434' }
+            ], 15)).toBe(43);
+
+            // Q5 page 10 where top block is question number "5" and footer is "10"
+            expect(extractBookletPageNumber([
+                { text: '5' },
+                { text: 'Figure 1' },
+                { text: 'some working' },
+                { text: '10' }
+            ], 5)).toBe(10);
+        });
+
+        it('orders multiple "Question 9 continued" and Q10/Q15 pages strictly by bookletPage within the same base question', () => {
+            const q9Pages = [
+                { id: 'q9_cont_p22', originalIdx: 0, minQ: 9.02, isFrontCover: false, bookletPage: 22, hasPrintedStem: false },
+                { id: 'q9_cont_p21', originalIdx: 1, minQ: 9.9, isFrontCover: false, bookletPage: 21, hasPrintedStem: false },
+                { id: 'q9_stem_p20', originalIdx: 2, minQ: 9.01, isFrontCover: false, bookletPage: 20, hasPrintedStem: true }
+            ];
+            q9Pages.sort(comparePageSortEntries);
+            expect(q9Pages.map(p => p.id)).toEqual(['q9_stem_p20', 'q9_cont_p21', 'q9_cont_p22']);
+
+            const q10Pages = [
+                { id: 'q10_p25', originalIdx: 0, minQ: 10.9, isFrontCover: false, bookletPage: 25, hasPrintedStem: false },
+                { id: 'q10_p27', originalIdx: 1, minQ: 10.9, isFrontCover: false, bookletPage: 27, hasPrintedStem: false },
+                { id: 'q10_p24', originalIdx: 2, minQ: 10.01, isFrontCover: false, bookletPage: 24, hasPrintedStem: true },
+                { id: 'q10_p26', originalIdx: 3, minQ: 10.02, isFrontCover: false, bookletPage: 26, hasPrintedStem: false }
+            ];
+            q10Pages.sort(comparePageSortEntries);
+            expect(q10Pages.map(p => p.id)).toEqual(['q10_p24', 'q10_p25', 'q10_p26', 'q10_p27']);
+        });
+    });
+
+    describe('Fix 8: Production stability guards (mark scheme false-positives, Q10a continuation reset, JSON math coords)', () => {
+        it('sanitizeIsMarkingScheme rejects Question continued / lined booklet / teacher-marked student spreads while keeping real mark schemes', () => {
+            // Blank "Question 3 continued" page with "(Total for Question 3 is 5 marks)"
+            expect(sanitizeIsMarkingScheme({
+                rawIsMarkingScheme: true,
+                isTwoPageSpread: false,
+                hasHandwriting: false,
+                hasPrintedQuestions: false,
+                visualObservations: 'Clear lined page with Question 3 continued and Total for Question 3 is 5 marks'
+            })).toBe(false);
+
+            // Teacher-marked 2-page spread with student handwriting and red M1/A1 marks
+            expect(sanitizeIsMarkingScheme({
+                rawIsMarkingScheme: true,
+                isTwoPageSpread: true,
+                hasHandwriting: true,
+                hasPrintedQuestions: true,
+                visualObservations: 'Two-page maths exam spread with handwritten work and red M1 A1 marks'
+            })).toBe(false);
+
+            // Real printed official mark scheme table
+            expect(sanitizeIsMarkingScheme({
+                rawIsMarkingScheme: true,
+                isTwoPageSpread: false,
+                hasHandwriting: false,
+                hasPrintedQuestions: false,
+                visualObservations: 'Official Pearson Edexcel mark scheme table with M1 A1 guidance columns'
+            })).toBe(true);
+        });
+
+        it('assertSinglePaperClassification does NOT reject Q10 when Page 25 ("Question 10 continued") continues student work for 10a', () => {
+            const q10ProductionCase = [
+                {
+                    pageIndex: 21,
+                    result: {
+                        category: 'questionAnswer',
+                        questions: [
+                            {
+                                questionNumber: '10',
+                                text: 'Figure 3 shows a sketch of part of the curve C with equation y = 7x / sqrt(3x^2 + 4).',
+                                subQuestions: [
+                                    { part: 'a', text: 'Use calculus to find an equation for l.' },
+                                    { part: 'b', text: 'Write down the exact y coordinate of Q.' },
+                                    { part: 'c', text: 'Use algebraic integration to find the exact area of R.' }
+                                ]
+                            }
+                        ]
+                    }
+                },
+                {
+                    pageIndex: 22,
+                    result: {
+                        category: 'questionAnswer',
+                        questions: [
+                            {
+                                questionNumber: '10',
+                                text: 'Question 10 continued',
+                                subQuestions: [
+                                    { part: 'a', text: '', studentWorkLines: [{ t: '32x + 14y - 113 = 0' }] }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            ];
+
+            expect(() =>
+                PaperSplitterService.assertSinglePaperClassification(q10ProductionCase, {
+                    isPdf: false,
+                    pageCount: 42
+                })
+            ).not.toThrow();
+        });
+
+        it('ClassificationService.parseJsonWithSanitization evaluates arithmetic subtraction/addition inside "p" coordinate arrays', () => {
+            const rawWithSub = '{"pages":[{"questions":[{"studentWorkLines":[{"t":"f(x)","p":[8.5, 65 - 0.2, 68.0, 3.4]}]}]}]}';
+            const parsed = (ClassificationService as any).parseJsonWithSanitization(rawWithSub);
+            expect(parsed.pages[0].questions[0].studentWorkLines[0].p).toEqual([8.5, 64.8, 68, 3.4]);
         });
     });
 });

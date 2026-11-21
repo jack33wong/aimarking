@@ -709,6 +709,7 @@ html.dark .follow-up-chat-input-container.follow-up-bottom::before {
 }
 
 .ribbon-thumbnail-stack-btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -719,6 +720,24 @@ html.dark .follow-up-chat-input-container.follow-up-bottom::before {
   cursor: pointer;
   transition: all 0.16s ease;
   box-shadow: 0 2px 6px var(--shadow-XS);
+}
+
+.ribbon-thumbnail-tick-badge {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  z-index: 5;
+  width: 18px;
+  height: 18px;
+  border-radius: 9999px;
+  background-color: var(--function-success);
+  color: #ffffff;
+  border: 1.5px solid var(--bg-surface-1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
 .ribbon-thumbnail-stack-btn:hover {

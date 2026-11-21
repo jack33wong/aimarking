@@ -127,7 +127,13 @@ export class SimilarityService {
             const setInput = new Set(inputNums);
             const setDb = new Set(dbNums);
             const uniqueIntersection = Array.from(setInput).filter(n => setDb.has(n));
-            numericScore = uniqueIntersection.length / setDb.size;
+            // Symmetric (Dice) overlap: dividing by the DB set alone let a DB question with only a couple of
+            // numbers (e.g. "lines 5 to 15") score a perfect 1.0 against any numeric-heavy upload containing 5 and 15.
+            numericScore = (2 * uniqueIntersection.length) / (setInput.size + setDb.size);
+            // Too few reference numbers to be a distinguishing signal: cap at neutral.
+            if (setDb.size <= 2) {
+                numericScore = Math.min(numericScore, 0.5);
+            }
         } else if (dbNums.length === 0 && inputNums.length === 0) {
             numericScore = 0.5;
         } else if (dbNums.length === 0) {

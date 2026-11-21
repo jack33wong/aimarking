@@ -13,10 +13,14 @@ import { getBaseQuestionNumber, normalizeSubQuestionPart, combineQuestionAndPart
 import {
   resolveSubjectProfile,
   buildUniversalEnglishRubricFallback,
-  type SubjectProfile
+  resolvePaperSubjectKey,
+  type SubjectProfile,
+  type SubjectGate
 } from '../../config/subjectProfiles.js';
 
 // --- CONFIGURATION ---
+/** Minimum raw text similarity for a lone matched question to set the dominant paper on 1–2 question uploads. */
+export const SINGLE_MATCH_MIN_TEXT_SIMILARITY = 0.75;
 const GENERIC_EXAMINER_INSTRUCTION = `
 ⚠️ NO OFFICIAL MARKING SCHEME AVAILABLE (GENERIC MODE).
 1. You are the CHIEF EXAMINER. Determine the marking criteria based on the question text.
@@ -129,9 +133,17 @@ export class MarkingSchemeOrchestrationService {
     examPaperHint?: string | null,
     inputMarkingScheme?: any,
     guardContaminatedStems?: boolean,
-    subjectProfile?: SubjectProfile
+    subjectProfile?: SubjectProfile,
+    subjectGate?: SubjectGate | null
   ): Promise<MarkingSchemeOrchestrationResult> {
     const markingSchemesMap: Map<string, any> = new Map();
+    // Only enforce the subject gate when upstream page evidence is confident.
+    const subjectGateKey = (subjectGate?.confident && subjectGate.key) ? subjectGate.key : null;
+    if (subjectGateKey) {
+      console.log(`🛡️ [SUBJECT-GATE] DB detection restricted to ${subjectGateKey} papers (${subjectGate!.reason})`);
+    } else if (subjectGate && !subjectGate.confident) {
+      console.log(`🛡️ [SUBJECT-GATE] Not enforced: ${subjectGate.reason}`);
+    }
 
 
 
@@ -379,7 +391,7 @@ export class MarkingSchemeOrchestrationService {
             combinedAnchor,
             baseNum,
             examPaperHint,
-            { allowCroppedQ1Exemption: individualQuestions.length <= 1 }
+            { allowCroppedQ1Exemption: individualQuestions.length <= 1, subjectGateKey }
           );
         }
       }
@@ -434,6 +446,31 @@ export class MarkingSchemeOrchestrationService {
 
       if (groupDetectionResult.hintMetadata && !detectionStats.hintInfo) {
         detectionStats.hintInfo = { ...groupDetectionResult.hintMetadata, rescuedQuestions: [] };
+      }
+    }
+
+    // --- STEP 2.4: SUBJECT GATE SAFETY NET ---
+    // Strip any DB match whose paper subject conflicts with the confidently-detected upload subject
+    // BEFORE it can become the dominant paper, drive rescue hints, or supply a marking scheme.
+    if (subjectGateKey && !inputMarkingScheme) {
+      for (const dr of detectionResults) {
+        const match = dr.detectionResult?.match;
+        if (!dr.detectionResult?.found || !match || match.isGeneric) continue;
+        const paperMeta = match.examPaper?.metadata || {
+          subject: match.subject,
+          qualification: match.qualification,
+          exam_code: match.paperCode
+        };
+        const paperKey = resolvePaperSubjectKey(paperMeta);
+        if (paperKey && paperKey !== subjectGateKey) {
+          console.log(`🛡️ [SUBJECT-GATE] Dropped Q${dr.question.questionNumber} match "${match.paperTitle || match.paperCode}" (paper subject ${paperKey} ≠ upload ${subjectGateKey})`);
+          dr.detectionResult = {
+            ...dr.detectionResult,
+            found: false,
+            match: null,
+            message: `Match stripped: paper subject ${paperKey} conflicts with upload subject ${subjectGateKey}`
+          };
+        }
       }
     }
 
@@ -495,6 +532,7 @@ export class MarkingSchemeOrchestrationService {
     // (e.g. 10a, 10bi, 10bii) neither penalize single-question uploads nor inflate vote counts.
     const paperUniqueQuestions = new Map<string, Set<string>>();
     const paperMaxConfidence = new Map<string, number>();
+    const paperMaxTextSimilarity = new Map<string, number>();
     const paperToMatch = new Map<string, any>();
     
     detectionResults.forEach(dr => {
@@ -506,6 +544,10 @@ export class MarkingSchemeOrchestrationService {
         const conf = dr.detectionResult.match.confidence || 0;
         if (conf > (paperMaxConfidence.get(title) || 0)) {
           paperMaxConfidence.set(title, conf);
+        }
+        const textSim = dr.detectionResult.match.textSimilarity;
+        if (typeof textSim === 'number' && textSim > (paperMaxTextSimilarity.get(title) ?? -1)) {
+          paperMaxTextSimilarity.set(title, textSim);
         }
         if (!paperToMatch.has(title)) paperToMatch.set(title, dr.detectionResult.match);
       }
@@ -528,8 +570,12 @@ export class MarkingSchemeOrchestrationService {
 
       // The Dynamic Threshold Logic (measured in parent questions, with strict confidence guard for single matches)
       if (totalParentQuestionsUploaded <= 2) {
-        // For 1-2 question uploads, a single matched question must also have high confidence (>= 0.75) to prevent false positives
-        meetsDynamicGate = (distinctCount >= 2) || (distinctCount === 1 && maxConf >= 0.75);
+        // For 1-2 question uploads, a single matched question must also have high confidence (>= 0.75) to prevent false positives.
+        // It must ALSO have strong raw text similarity: structure (question number) + numeric overlap can inflate the
+        // combined confidence of an unrelated question (e.g. Maths mechanics Q2 vs English Language Q2 scored 0.848 on text 0.69).
+        const maxText = paperMaxTextSimilarity.get(title);
+        const hasStrongText = maxText === undefined || maxText >= SINGLE_MATCH_MIN_TEXT_SIMILARITY;
+        meetsDynamicGate = (distinctCount >= 2) || (distinctCount === 1 && maxConf >= 0.75 && hasStrongText);
       } else if (totalParentQuestionsUploaded <= 10) {
         meetsDynamicGate = distinctCount >= 2;
       } else {
@@ -587,7 +633,8 @@ export class MarkingSchemeOrchestrationService {
           null,
           inputMarkingScheme,
           guardContaminatedStems,
-          subjectProfile
+          subjectProfile,
+          subjectGate
         );
       }
     }
@@ -627,7 +674,7 @@ export class MarkingSchemeOrchestrationService {
             rescueAnchorText,
             baseNum || dr.question.questionNumber,
             forcedHint,
-            { allowCroppedQ1Exemption: false }
+            { allowCroppedQ1Exemption: false, subjectGateKey }
           );
 
           if (process.env.LOG_QUESTION_DETECTION === 'true') {

@@ -288,6 +288,133 @@ export function resolveSubjectProfile(hints: SubjectResolutionHints = {}): Subje
   return SUBJECT_PROFILES.MATHS;
 }
 
+// ─── SUBJECT GATE (DB question detection pool filter) ───────────────────────────────────────
+
+/** Subject keys that the DB-detection subject gate is allowed to enforce. */
+export type GateableSubjectKey = 'MATHS' | 'ENGLISH_LANGUAGE' | 'ENGLISH_LITERATURE';
+
+/** Coarse subject family of a DB exam paper ('OTHER' = a known non-Maths/non-English subject). */
+export type PaperSubjectKey = GateableSubjectKey | 'OTHER';
+
+export interface SubjectGate {
+  /** Subject the upload is confidently identified as (only set when `confident` is true). */
+  key: GateableSubjectKey | null;
+  confident: boolean;
+  /** Pages that EXPLICITLY reported a subject (pages with no detected_subject are NOT counted as Maths). */
+  explicitVotes: number;
+  /** Explicit votes for the winning subject. */
+  topVotes: number;
+  reason: string;
+}
+
+const PAPER_MATHS_CODE_REGEX = /(?:^|[^a-z0-9])(1MA1|8300|9MA0|8MA0|9FM0|8FM0|J560|H240|H230|H245|H640|Y5\d{2}|7357|7356|7367|7366|9709|9231|0580|0606|4MA1|4MB1|4PM1|WMA1[1-4]|WMA0[1-3]|WME0[1-3]|WST0[1-3]|WFM0[1-3]|WDM11|WDM01)(?:[^a-z0-9]|$)/i;
+const PAPER_ENGLISH_LIT_CODE_REGEX = /(?:^|[^a-z0-9])(8702|1ET0|J352|C720)(?:[^a-z0-9]|$)/i;
+const PAPER_ENGLISH_LANG_CODE_REGEX = /(?:^|[^a-z0-9])(8700|1EN0|J351|C700)(?:[^a-z0-9]|$)/i;
+const PAPER_OTHER_CODE_REGEX = /(?:^|[^a-z0-9])(8461|8462|8463|8464|8465|7402|7405|7407|7408|1BI0|1CH0|1PH0|1SC0|J247|J248|J249|J250|H556|H557|H156|0625|9702|WPH1\d|WBI1\d|WCH1\d)(?:[^a-z0-9]|$)/i;
+const PAPER_OTHER_SUBJECT_REGEX = /\b(combined\s+science|trilogy|synergy|biology|chemistry|physics|science|history|geography|computer\s+science|economics|business|psychology|sociology|religious\s+studies|accounting|engineering)\b/i;
+
+/**
+ * Maps DB exam paper metadata (subject / qualification / exam_code / paper_title) to a coarse subject family.
+ * Returns null when the paper's subject cannot be determined (such papers are never filtered out).
+ */
+export function resolvePaperSubjectKey(meta: {
+  subject?: string | null;
+  qualification?: string | null;
+  exam_code?: string | null;
+  code?: string | null;
+  paperCode?: string | null;
+  paper_title?: string | null;
+  paperTitle?: string | null;
+} | null | undefined): PaperSubjectKey | null {
+  if (!meta) return null;
+  const subjectText = `${meta.subject || ''} ${meta.qualification || ''}`.toLowerCase();
+  const titleText = `${meta.paper_title || ''} ${meta.paperTitle || ''}`.toLowerCase();
+  const code = String(meta.exam_code || meta.code || meta.paperCode || '');
+
+  if (/english\s*lit/.test(subjectText) || PAPER_ENGLISH_LIT_CODE_REGEX.test(code)) return 'ENGLISH_LITERATURE';
+  if (/english/.test(subjectText) || PAPER_ENGLISH_LANG_CODE_REGEX.test(code)) return 'ENGLISH_LANGUAGE';
+  if (/\b(math|maths|mathematics|statistics|mechanics|further\s+pure)\b/.test(subjectText) || PAPER_MATHS_CODE_REGEX.test(code)) return 'MATHS';
+  if (PAPER_OTHER_CODE_REGEX.test(code)) return 'OTHER';
+
+  const cleanSubject = String(meta.subject || '').trim();
+  if (cleanSubject && !/^(general|unknown|n\/a|custom|generic question)$/i.test(cleanSubject)) return 'OTHER';
+
+  // Fallback to paper_title when metadata.subject and exam_code are missing/generic
+  if (/english\s*lit/.test(titleText)) return 'ENGLISH_LITERATURE';
+  if (/english\s*lang/.test(titleText)) return 'ENGLISH_LANGUAGE';
+  if (/\b(math|maths|mathematics|further\s+pure)\b/.test(titleText)) return 'MATHS';
+  if (PAPER_OTHER_SUBJECT_REGEX.test(titleText)) return 'OTHER';
+
+  return null;
+}
+
+/** True when a DB paper is allowed through the gate (unknown-subject papers always pass). */
+export function isPaperAllowedBySubjectGate(paperMeta: any, gateKey: GateableSubjectKey | null | undefined): boolean {
+  if (!gateKey) return true;
+  const paperKey = resolvePaperSubjectKey(paperMeta);
+  return paperKey === null || paperKey === gateKey;
+}
+
+/**
+ * Builds a subject gate from per-page geometry votes.
+ * Confident ONLY when:
+ *  - at least one non-scheme page explicitly reported a gateable subject (no implicit MATHS default), and
+ *  - the winning subject has >= 80% of explicit academic votes, and
+ *  - the resolved routing profile agrees, and
+ *  - no printed paper code points to a different subject.
+ */
+export function computeSubjectGate(params: {
+  geometryResults: Array<{ is_marking_scheme?: boolean; detected_subject?: string } | null | undefined>;
+  resolvedProfileKey?: SubjectKey;
+  paperCodeHint?: string | null;
+  hasUploadedMarkingScheme?: boolean;
+}): SubjectGate {
+  const notConfident = (reason: string, explicitVotes = 0, topVotes = 0): SubjectGate =>
+    ({ key: null, confident: false, explicitVotes, topVotes, reason });
+
+  if (params.hasUploadedMarkingScheme) return notConfident('uploaded marking scheme supplied');
+
+  const counts = new Map<string, number>();
+  let explicitVotes = 0;
+  for (const g of params.geometryResults || []) {
+    if (!g || g.is_marking_scheme) continue;
+    const s = String(g.detected_subject || '').trim().toUpperCase();
+    if (!s || s === 'NON_ACADEMIC') continue;
+    explicitVotes++;
+    counts.set(s, (counts.get(s) || 0) + 1);
+  }
+  if (explicitVotes === 0) return notConfident('no explicit page subject votes');
+
+  let topSubject = '';
+  let topVotes = 0;
+  counts.forEach((cnt, subj) => {
+    if (cnt > topVotes) { topVotes = cnt; topSubject = subj; }
+  });
+
+  const gateable: GateableSubjectKey[] = ['MATHS', 'ENGLISH_LANGUAGE', 'ENGLISH_LITERATURE'];
+  if (!gateable.includes(topSubject as GateableSubjectKey)) {
+    return notConfident(`top subject ${topSubject} is not gateable`, explicitVotes, topVotes);
+  }
+  if (topVotes / explicitVotes < 0.8) {
+    return notConfident(`split vote ${topSubject} ${topVotes}/${explicitVotes}`, explicitVotes, topVotes);
+  }
+  if (params.resolvedProfileKey && params.resolvedProfileKey !== topSubject) {
+    return notConfident(`router profile ${params.resolvedProfileKey} disagrees with page vote ${topSubject}`, explicitVotes, topVotes);
+  }
+  const codeKey = params.paperCodeHint ? resolvePaperSubjectKey({ exam_code: params.paperCodeHint }) : null;
+  if (codeKey && codeKey !== topSubject) {
+    return notConfident(`printed paper code "${params.paperCodeHint}" suggests ${codeKey}`, explicitVotes, topVotes);
+  }
+
+  return {
+    key: topSubject as GateableSubjectKey,
+    confident: true,
+    explicitVotes,
+    topVotes,
+    reason: `${topVotes}/${explicitVotes} explicit page votes`
+  };
+}
+
 /**
  * Determines whether a specific question result / scheme uses Level-of-Response (LoR) grading
  * rather than additive point-summing.

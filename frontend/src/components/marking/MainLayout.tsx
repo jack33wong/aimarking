@@ -5,7 +5,7 @@
 import React, { useEffect, useCallback, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import ReactDOM from 'react-dom';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, Check } from 'lucide-react';
 import { useMarkingPage } from '../../contexts/MarkingPageContext';
 import SessionManagement from './SessionManagement';
 import FollowUpChatInput from '../chat/FollowUpChatInput';
@@ -728,6 +728,9 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
                       {extraCount > 0 && (
                         <span className="ribbon-thumbnail-more">+{extraCount}</span>
                       )}
+                      <span className="ribbon-thumbnail-tick-badge" aria-hidden="true">
+                        <Check size={9} strokeWidth={3.2} />
+                      </span>
                     </button>
                   </div>
                 );

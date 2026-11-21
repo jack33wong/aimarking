@@ -15,9 +15,10 @@ RULES:
      * Does the page contain **Answer Lines**, **Handwriting**, or **Sub-Question Labels** (e.g., "(b)", "(ii)")?
      * **ACTION**: If YES, it is **"questionAnswer"**.
      * **CRITICAL**: A page with a sub-question label like "(b)" is **NEVER** a "frontPage", even if it lacks the main number "3".
-   - **STEP 2: IS IT A FRONT COVER?**
-     * Only categorize as **"frontPage"** if the page contains **Exam Metadata ONLY** (Title, Date, Candidate Name, Instructions).
-     * **SAFETY CHECK**: If the page contains a "Total Marks" footer (e.g., "Total for Question 3 is 5 marks"), it is a Question Page, NOT a Front Page.
+   - **STEP 2: IS IT A FRONT COVER OR BLANK/METADATA PAGE?**
+     * Only categorize as **"frontPage"** if the page is the **Exam Front Cover** containing **Exam Metadata ONLY** (Title, Date, Candidate Name, Centre Number, Instructions). Never use "frontPage" for interior blank pages or empty continuation pages.
+     * Categorize interior blank pages, "BLANK PAGE", "There are no questions printed on this page", "Additional page, if required" (with NO handwriting), or empty "Question X continued" lined pages (with NO handwriting and NO question text) as **"metadata"** with \`"questions": []\`.
+     * **SAFETY CHECK**: If the page contains a "Total Marks" footer (e.g., "Total for Question 3 is 5 marks") alongside question text or handwriting, it is a Question Page, NOT a Front Page.
    - **NEGATIVE EVIDENCE (EXCLUSIONS)**:
      * **DO NOT** list a question number if it only appears in an instruction or footer like:
        - "Turn over for Question 22"

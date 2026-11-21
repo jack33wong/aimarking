@@ -78,7 +78,9 @@ import { createUserMessage, createAIMessage } from '../../utils/messageUtils.js'
 import {
     resolveSubjectProfile,
     isLevelOfResponseQuestion,
+    computeSubjectGate,
     type SubjectProfile,
+    type SubjectGate,
     SUBJECT_PROFILES
 } from '../../config/subjectProfiles.js';
 
@@ -553,6 +555,128 @@ export function detectIsFrontCover(params: {
     const hasCoverLandmarks = /candidate\s*surname|centre\s*number|instructions\s*to\s*candidates|paper\s*reference|total\s*mark\s*for\s*this\s*paper|you\s*must\s*have/i.test(combinedText);
     const isMapperFrontPage = isMeta && mapperCategory === 'frontPage';
     return (isGeoCover && (originalIdx === 0 || isMeta || hasCoverLandmarks)) || (isMeta && hasCoverLandmarks) || isMapperFrontPage;
+}
+
+export function hasVerifiedFrontCoverEvidence(params: {
+    isGeoCover: boolean;
+    pageOcrText: string;
+    geoTextSnippet?: string;
+}): boolean {
+    const combinedText = `${params.pageOcrText || ''} ${params.geoTextSnippet || ''}`;
+    if (/no\s*questions\s*printed|blank\s*page/i.test(combinedText)) return false;
+    const hasCoverLandmarks = /candidate\s*surname|centre\s*number|instructions\s*to\s*candidates|paper\s*reference|total\s*mark\s*for\s*this\s*paper|you\s*must\s*have/i.test(combinedText);
+    return Boolean(params.isGeoCover || hasCoverLandmarks);
+}
+
+export function demoteSpuriousFrontCovers<T extends { isFrontCover: boolean; minQ: number; hasVerifiedCoverEvidence?: boolean }>(
+    pageSortMap: T[]
+): void {
+    const frontCoverCandidates = pageSortMap.filter(p => p.isFrontCover && p.minQ === 999999);
+    if (frontCoverCandidates.length <= 1) return;
+    // A single exam booklet cannot have multiple unverified front covers.
+    // Demote any candidate that was only flagged via Mapper's 'frontPage' category without cover landmarks or geometry confirmation.
+    frontCoverCandidates.forEach(p => {
+        if (!p.hasVerifiedCoverEvidence) {
+            p.isFrontCover = false;
+        }
+    });
+}
+
+export function isContinuationHeaderOnly(text: string): boolean {
+    const t = (text || '').trim();
+    if (!t) return true;
+    return /^(?:question|q\.?)\s*\d+[a-z]?(?:\s*\([a-z0-9]+\))*\s*(?:continued|\(continued\))\.?$/i.test(t) ||
+        /^continued\.?$/i.test(t) ||
+        /^leave\s+blank$/i.test(t) ||
+        /^do\s+not\s+write\s+in\s+this\s+area$/i.test(t);
+}
+
+export function extractBookletPageNumber(pageOcrBlocks: any[], baseQuestionNumber?: number): number | null {
+    if (!Array.isArray(pageOcrBlocks) || pageOcrBlocks.length === 0) return null;
+
+    // 1. Highest confidence: Pearson Edexcel footer barcode (e.g. "P 86176 A 0244" -> page 2 of 44, "P86176A03044" -> page 30 of 44)
+    const footerStart = Math.max(0, pageOcrBlocks.length - 4);
+    for (let i = footerStart; i < pageOcrBlocks.length; i++) {
+        const raw = (pageOcrBlocks[i]?.googleVisionText || pageOcrBlocks[i]?.mathpixLatex || pageOcrBlocks[i]?.text || '').trim();
+        const barcodeMatch = raw.match(/P\s*\d{5}\s*[A-Z]\s*0(\d{2})(\d{2})\b/i);
+        if (barcodeMatch) {
+            const pageNum = parseInt(barcodeMatch[1], 10);
+            const totalNum = parseInt(barcodeMatch[2], 10);
+            if (pageNum >= 1 && pageNum <= 100 && totalNum >= pageNum && totalNum <= 100) {
+                return pageNum;
+            }
+        }
+    }
+
+    // 2. Footer standalone page number (scan forward in last 4 blocks, excluding top header index 0,
+    // so page number precedes trailing total-marks box, e.g. "43" before "4")
+    if (pageOcrBlocks.length > 3) {
+        const footerNumStart = Math.max(1, pageOcrBlocks.length - 4);
+        for (let i = footerNumStart; i < pageOcrBlocks.length; i++) {
+            const raw = (pageOcrBlocks[i]?.googleVisionText || pageOcrBlocks[i]?.text || '').trim();
+            const txt = raw.replace(/\s+/g, '');
+            if (/^\d{1,2}$/.test(txt)) {
+                const num = parseInt(txt, 10);
+                if (num >= 1 && num <= 100 && !(i < 2 && num === baseQuestionNumber)) {
+                    return num;
+                }
+            }
+        }
+    }
+
+    // 3. Header standalone page number (first 4 blocks, skipping standalone numbers equal to the page's base question number)
+    for (let i = 0; i < Math.min(4, pageOcrBlocks.length); i++) {
+        const txt = (pageOcrBlocks[i]?.googleVisionText || pageOcrBlocks[i]?.text || '').trim();
+        if (/^\d{1,2}$/.test(txt)) {
+            const num = parseInt(txt, 10);
+            if (num >= 1 && num <= 100 && num !== baseQuestionNumber) {
+                return num;
+            }
+        }
+    }
+
+    return null;
+}
+
+export function comparePageSortEntries(
+    a: { isFrontCover: boolean; minQ: number; bookletPage: number | null; hasPrintedStem: boolean; originalIdx: number },
+    b: { isFrontCover: boolean; minQ: number; bookletPage: number | null; hasPrintedStem: boolean; originalIdx: number }
+): number {
+    // Rule 1: ONLY true Exam Front Covers (isFrontCover === true) go before Q1.
+    // Unattempted/unresolved metadata pages (isMeta && minQ === 999999 && !isFrontCover) go to the END!
+    const aIsTrueCover = a.isFrontCover && a.minQ === 999999;
+    const bIsTrueCover = b.isFrontCover && b.minQ === 999999;
+    if (aIsTrueCover && !bIsTrueCover) return -1;
+    if (!aIsTrueCover && bIsTrueCover) return 1;
+
+    // Push non-cover unresolved metadata pages (minQ === 999999) to the end of the upload
+    if (a.minQ === 999999 && b.minQ !== 999999) return 1;
+    if (a.minQ !== 999999 && b.minQ === 999999) return -1;
+
+    // Rule 2: Logical Base Question Order (Q1..Q15)
+    const aBaseQ = Math.floor(a.minQ);
+    const bBaseQ = Math.floor(b.minQ);
+    if (aBaseQ !== bBaseQ) {
+        return aBaseQ - bBaseQ;
+    }
+
+    // Rule 2.1: Intra-Question Ordering by Printed Booklet Page Number (takes precedence over sub-part weights
+    // when two pages belong to the same base question, e.g. two "Question 9 continued" pages)
+    if (a.bookletPage !== null && b.bookletPage !== null && a.bookletPage !== b.bookletPage) {
+        return a.bookletPage - b.bookletPage;
+    }
+
+    // Rule 2.2: Sub-Question Weight Order when bookletPage is unavailable
+    if (Math.abs(a.minQ - b.minQ) > 0.00001) {
+        return a.minQ - b.minQ;
+    }
+
+    // Rule 2.3: Printed Question Stem Precedes Continuation Pages
+    if (a.hasPrintedStem && !b.hasPrintedStem) return -1;
+    if (!a.hasPrintedStem && b.hasPrintedStem) return 1;
+
+    // Rule 3: Physical Tie-breaker (Original Upload Order)
+    return a.originalIdx - b.originalIdx;
 }
 
 export function computeIsScrambledPdf(params: {
@@ -2373,6 +2497,33 @@ export class MarkingPipelineService {
             const isMajoritySpreadBatch =
                 nonSchemeIndices.length >= 3 && (spreadCount / nonSchemeIndices.length) >= 0.5;
 
+            // 🛡️ [MARK-SCHEME FALSE-POSITIVE GUARD]:
+            // In a multi-spread photographed exam booklet (e.g. 23 loose spreads of a teacher-marked script),
+            // preFlight can occasionally misclassify 1 isolated spread as `is_marking_scheme: true` due to red
+            // teacher annotations (M1/A1/B1) or "Question X continued" footers. If the flagged page is itself
+            // a landscape spread (matching the student booklet) and no explicit mark-scheme PDF was uploaded,
+            // rescue it so the question isn't silently dropped and BYOMS mode isn't falsely triggered.
+            if (isMajoritySpreadBatch && deferredSchemePdfFiles.length === 0) {
+                const flaggedSchemeIndices = standardizedPages
+                    .map((_, idx) => idx)
+                    .filter(idx => geometryResults[idx]?.is_marking_scheme === true);
+                const isSmallIsolatedFraction =
+                    flaggedSchemeIndices.length > 0 &&
+                    flaggedSchemeIndices.length <= Math.max(1, Math.floor(standardizedPages.length * 0.1));
+                if (isSmallIsolatedFraction) {
+                    flaggedSchemeIndices.forEach(idx => {
+                        const geo = geometryResults[idx];
+                        const page = standardizedPages[idx];
+                        const text = `${geo?.visual_observations || ''} ${geo?.evidence_text_snippet || ''}`;
+                        const hasExplicitSchemeKeyword = /\b(?:mark(?:ing)?\s*scheme|rubric|mark\s*grid|examiner\s*guidance|level\s*descriptors)\b/i.test(text);
+                        if (geo && !hasExplicitSchemeKeyword && (isPageLandscape(page) || geo.is_two_page_spread || geo.has_handwriting)) {
+                            console.log(`🛡️ [MARK-SCHEME FALSE-POSITIVE GUARD] Rescued Page ${idx} from false-positive is_marking_scheme inside a ${standardizedPages.length}-page student booklet spread batch.`);
+                            geo.is_marking_scheme = false;
+                        }
+                    });
+                }
+            }
+
             // 🛡️ [BYOMS DETECTION & DOCUMENT-LEVEL SUBJECT CONSENSUS]:
             // Check if any uploaded page in the batch is a Marking Scheme (or if a custom marking scheme was provided).
             // When a Marking Scheme is present, Universal BYOMS mode is enabled for any academic subject!
@@ -3159,6 +3310,19 @@ export class MarkingPipelineService {
                 `🧭 [SUBJECT-ROUTER] Paper="${geoPaperCodeHint || uploadedFileNames[0] || 'Upload'}" -> Profile="${subjectProfile.key}" | Paradigm="${subjectProfile.paradigm}" | OCR="${subjectProfile.ocrStrategy}"`
             );
 
+            // 🛡️ [SUBJECT GATE]: Confidence-aware subject verdict from explicit per-page votes.
+            // Used to restrict DB question detection to papers of the same subject and to stop a single
+            // DB match from overriding the routed subject.
+            const subjectGate: SubjectGate = computeSubjectGate({
+                geometryResults,
+                resolvedProfileKey: subjectProfile.key,
+                paperCodeHint: geoPaperCodeHint,
+                hasUploadedMarkingScheme: Boolean((inputMarkingScheme as any)?.questions)
+            });
+            console.log(
+                `🛡️ [SUBJECT-GATE] ${subjectGate.confident ? `Confident=${subjectGate.key}` : 'Not confident'} | ${subjectGate.reason}`
+            );
+
             // --- 🛡️ BLANK CONTINUATION / OVERFLOW PAGE FILTER ---
             // 1. Collect all base question numbers (e.g. "15" from "15a") that have actual student work
             const answeredBaseQuestions = new Set<string>();
@@ -3471,7 +3635,7 @@ export class MarkingPipelineService {
                 console.log(`🚀 [OVERRIDE] 90% Rule Triggered: ${studentWorkPages.length}/${nonMetadataPages.length} pages have student work. Overriding questionOnly pages with questions to questionAnswer for consistency.`);
                 allClassificationResults.forEach(r => {
                     if (r.result?.category === 'questionOnly') {
-                        r.result.category = hasPageQuestions(r) ? 'questionAnswer' : 'frontPage';
+                        r.result.category = hasPageQuestions(r) ? 'questionAnswer' : 'metadata';
                     }
                 });
             } else if (nonMetadataPages.length > 2 && (studentWorkPages.length / nonMetadataPages.length) > 0.5) {
@@ -3479,7 +3643,7 @@ export class MarkingPipelineService {
                 console.log(`🚀 [OVERRIDE] 50% Rule Triggered: ${studentWorkPages.length}/${nonMetadataPages.length} pages have student work. Overriding questionOnly pages with questions to questionAnswer for consistency.`);
                 allClassificationResults.forEach(r => {
                     if (r.result?.category === 'questionOnly') {
-                        r.result.category = hasPageQuestions(r) ? 'questionAnswer' : 'frontPage';
+                        r.result.category = hasPageQuestions(r) ? 'questionAnswer' : 'metadata';
                     }
                 });
             }
@@ -4356,7 +4520,8 @@ export class MarkingPipelineService {
                 effectiveExamPaperHint,
                 inputMarkingScheme,
                 subjectProfile?.ocrStrategy === 'VISION_VERBATIM',
-                subjectProfile
+                subjectProfile,
+                subjectGate
             );
 
             const markingSchemesMap = orchestrationResult.markingSchemesMap;
@@ -4374,7 +4539,12 @@ export class MarkingPipelineService {
                     paperCode: firstMatch.paperCode || firstMatch.examCode,
                     paperTitle: firstMatch.paperTitle
                 });
-                if (dbResolvedProfile.key !== subjectProfile.key) {
+                if (dbResolvedProfile.key !== subjectProfile.key && subjectGate.confident && subjectGate.key === subjectProfile.key) {
+                    // A single DB match must not override a confident page-vote subject.
+                    console.log(
+                        `🛡️ [SUBJECT-GATE] Ignored DB-match subject refinement "${firstMatch.paperCode || firstMatch.paperTitle}" -> ${dbResolvedProfile.key}; keeping confident ${subjectProfile.key}`
+                    );
+                } else if (dbResolvedProfile.key !== subjectProfile.key) {
                     subjectProfile = dbResolvedProfile;
                     console.log(
                         `🧭 [SUBJECT-ROUTER] Refined from DB Match "${firstMatch.paperCode || firstMatch.paperTitle}" -> Profile="${subjectProfile.key}" | Paradigm="${subjectProfile.paradigm}"`
@@ -4477,7 +4647,7 @@ export class MarkingPipelineService {
                 const hasPrintedStem = Boolean(
                     pageRawResult?.questions?.some((q: any) => {
                         const t = (q.text || '').trim();
-                        return t.length > 20 && !isContaminatedStemLocal(q);
+                        return t.length > 20 && !isContinuationHeaderOnly(t) && !isContaminatedStemLocal(q);
                     })
                 );
 
@@ -4507,34 +4677,15 @@ export class MarkingPipelineService {
                     mapperCategory: pageRawResult?.category,
                     geoTextSnippet
                 });
+                const hasVerifiedCoverEvidence = hasVerifiedFrontCoverEvidence({
+                    isGeoCover,
+                    pageOcrText,
+                    geoTextSnippet
+                });
 
-                // Detect printed booklet page number from OCR (header or footer blocks)
-                let bookletPage: number | null = null;
-                if (pageOcrBlocks.length > 0) {
-                    for (let i = 0; i < Math.min(4, pageOcrBlocks.length); i++) {
-                        const txt = (pageOcrBlocks[i].googleVisionText || pageOcrBlocks[i].text || '').trim();
-                        if (/^\d{1,2}$/.test(txt)) {
-                            const num = parseInt(txt, 10);
-                            if (num >= 1 && num <= 40) {
-                                bookletPage = num;
-                                break;
-                            }
-                        }
-                    }
-                    if (bookletPage === null && pageOcrBlocks.length > 3) {
-                        for (let i = pageOcrBlocks.length - 1; i >= Math.max(0, pageOcrBlocks.length - 4); i--) {
-                            const raw = (pageOcrBlocks[i].googleVisionText || pageOcrBlocks[i].text || '').trim();
-                            const txt = raw.replace(/\s+/g, '');
-                            if (/^\d{1,2}$/.test(txt)) {
-                                const num = parseInt(txt, 10);
-                                if (num >= 1 && num <= 40) {
-                                    bookletPage = num;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
+                // Detect printed booklet page number from OCR (barcode, footer, or header blocks; supports up to 100-page booklets)
+                const baseQForBooklet = minSortWeight !== Infinity ? Math.floor(minSortWeight) : undefined;
+                const bookletPage = extractBookletPageNumber(pageOcrBlocks, baseQForBooklet);
 
                 return {
                     originalIdx,
@@ -4545,9 +4696,15 @@ export class MarkingPipelineService {
                     bookletPage,
                     isMeta,
                     isFrontCover,
+                    hasVerifiedCoverEvidence,
                     debugQ: [...new Set(debugQList)].join(', ')
                 };
             });
+
+            // Guard against Mapper labeling multiple interior blank/continuation pages as 'frontPage':
+            // if >1 page claims to be a front cover, demote unverified mapper-only candidates so they
+            // can be rescued into their booklet position (or pushed to the end) instead of jumping before Q1.
+            demoteSpuriousFrontCovers(pageSortMap);
 
             const isPastPaper = Array.from(markingSchemesMap.values()).some(m => !m.isGeneric);
             // 🛡️ [ORPHAN & INTERIOR BOOKLET PAGE RESCUE]: 
@@ -4634,35 +4791,7 @@ export class MarkingPipelineService {
                         `🔄 [PDF STRAIGHTENER] Detected out-of-order pages inside PDF (inversions=${majorQuestionInversions}, displacedCover=${hasDisplacedFrontCover}). Straightening into logical question order...`
                     );
                 }
-                pageSortMap.sort((a, b) => {
-                    // Rule 1: ONLY true Exam Front Covers (isFrontCover === true) go before Q1.
-                    // Unattempted/unresolved metadata pages (isMeta && minQ === 999999 && !isFrontCover) go to the END!
-                    const aIsTrueCover = a.isFrontCover && a.minQ === 999999;
-                    const bIsTrueCover = b.isFrontCover && b.minQ === 999999;
-                    if (aIsTrueCover && !bIsTrueCover) return -1;
-                    if (!aIsTrueCover && bIsTrueCover) return 1;
-
-                    // Push non-cover unresolved metadata pages (minQ === 999999) to the end of the upload
-                    if (a.minQ === 999999 && b.minQ !== 999999) return 1;
-                    if (a.minQ !== 999999 && b.minQ === 999999) return -1;
-
-                    // Rule 2: Logical Question Order (Now Q1..Q14 -> Pages 0..13, and Q15..Q17 -> Pages 14..16!)
-                    if (Math.abs(a.minQ - b.minQ) > 0.00001) {
-                        return a.minQ - b.minQ;
-                    }
-
-                    // Rule 2.1: Intra-Question Ordering by Printed Booklet Page Number
-                    if (a.bookletPage !== null && b.bookletPage !== null && a.bookletPage !== b.bookletPage) {
-                        return a.bookletPage - b.bookletPage;
-                    }
-
-                    // Rule 2.2: Printed Question Stem Precedes Continuation Pages
-                    if (a.hasPrintedStem && !b.hasPrintedStem) return -1;
-                    if (!a.hasPrintedStem && b.hasPrintedStem) return 1;
-
-                    // Rule 3: Physical Tie-breaker (Original Upload Order)
-                    return a.originalIdx - b.originalIdx;
-                });
+                pageSortMap.sort(comparePageSortEntries);
             } else {
                 console.log('🛡️ [PDF INTEGRITY] Straightener bypassed. Maintaining exact physical sequence of the PDF.');
             }
