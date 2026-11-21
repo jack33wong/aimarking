@@ -126,7 +126,28 @@ export const markAuthWallShown = ({
   }, null);
 };
 
-export const markAuthWallDismissed = (dismissMethod = 'close_button') => {
+export const hasActiveMarkingAuthWall = () => {
+  const state = readAuthWallState();
+  return Boolean(state && state.trigger === 'marking_submit' && !state.outcomeFired);
+};
+
+export const markAuthWallCtaClicked = (step, button, preInspectSessionId = null) => {
+  const state = readAuthWallState();
+  if (!state || state.trigger !== 'marking_submit' || state.outcomeFired) {
+    return;
+  }
+  const resolvedPreInspectSessionId =
+    preInspectSessionId || state.preInspectSessionId || getLatestPreInspectSessionId() || null;
+
+  trackFunnelEvent('auth_wall_cta_clicked', {
+    type: 'funnel',
+    step,
+    button,
+    preInspectSessionId: resolvedPreInspectSessionId
+  }, null);
+};
+
+export const markAuthWallDismissed = (dismissMethod = 'close_button', step = 'interstitial') => {
   const state = readAuthWallState();
   if (!state || state.trigger !== 'marking_submit' || state.outcomeFired) {
     return;
@@ -136,6 +157,7 @@ export const markAuthWallDismissed = (dismissMethod = 'close_button') => {
 
   trackFunnelEvent('auth_wall_dismissed', {
     type: 'funnel',
+    step,
     trigger: 'marking_submit',
     timeOpenMs,
     dismissMethod,

@@ -8,6 +8,7 @@ import {
     isContinuationHeaderOnly,
     extractBookletPageNumber,
     comparePageSortEntries,
+    anchorUnresolvedMetaPagesByBooklet,
     getInstanceMinWeight,
     getAnnotationMarkVal,
     applyPointBasedGuillotine
@@ -537,6 +538,31 @@ describe('MarkingPipelineService V2 5-Fix Suite', () => {
             const rawWithSub = '{"pages":[{"questions":[{"studentWorkLines":[{"t":"f(x)","p":[8.5, 65 - 0.2, 68.0, 3.4]}]}]}]}';
             const parsed = (ClassificationService as any).parseJsonWithSanitization(rawWithSub);
             expect(parsed.pages[0].questions[0].studentWorkLines[0].p).toEqual([8.5, 64.8, 68, 3.4]);
+        });
+
+        it('anchorUnresolvedMetaPagesByBooklet places blank "Question 13 continued" (p36-37) between Q13 and Q14 even when shuffled', () => {
+            const pages = [
+                { id: 'q13_blank_p36', originalIdx: 0, minQ: 999999, isMeta: true, isFrontCover: false, bookletPage: 36, geoFirstQuestionNumber: null, hasPrintedStem: false },
+                { id: 'q13_blank_p37', originalIdx: 1, minQ: 999999, isMeta: true, isFrontCover: false, bookletPage: 37, geoFirstQuestionNumber: null, hasPrintedStem: false },
+                { id: 'q15_p44', originalIdx: 2, minQ: 15.9, isMeta: false, isFrontCover: false, bookletPage: 44, geoFirstQuestionNumber: 15, hasPrintedStem: false },
+                { id: 'q14_p38', originalIdx: 3, minQ: 14.01, isMeta: false, isFrontCover: false, bookletPage: 38, geoFirstQuestionNumber: 14, hasPrintedStem: true },
+                { id: 'q13_p35', originalIdx: 4, minQ: 13.02, isMeta: false, isFrontCover: false, bookletPage: 35, geoFirstQuestionNumber: 13, hasPrintedStem: false },
+                { id: 'q13_p34', originalIdx: 5, minQ: 13.01, isMeta: false, isFrontCover: false, bookletPage: 34, geoFirstQuestionNumber: 13, hasPrintedStem: true },
+                { id: 'front_cover', originalIdx: 6, minQ: 999999, isMeta: true, isFrontCover: true, bookletPage: 1, geoFirstQuestionNumber: null, hasPrintedStem: false }
+            ];
+
+            anchorUnresolvedMetaPagesByBooklet(pages);
+            pages.sort(comparePageSortEntries);
+
+            expect(pages.map(p => p.id)).toEqual([
+                'front_cover',
+                'q13_p34',
+                'q13_p35',
+                'q13_blank_p36',
+                'q13_blank_p37',
+                'q14_p38',
+                'q15_p44'
+            ]);
         });
     });
 });

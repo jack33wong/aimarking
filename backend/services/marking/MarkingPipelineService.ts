@@ -679,6 +679,56 @@ export function comparePageSortEntries(
     return a.originalIdx - b.originalIdx;
 }
 
+/**
+ * Option A (Safe Hybrid): Anchor unresolved interior blank/continuation pages (`minQ === 999999 && !isFrontCover`)
+ * into their exact physical booklet slot using:
+ *   1. `bookletPage` interpolation against known question pages (works even when loose photos are uploaded shuffled!)
+ *   2. `geoFirstQuestionNumber` fallback (e.g. pre-flight read "Question 13 continued" -> 13)
+ */
+export function anchorUnresolvedMetaPagesByBooklet<T extends {
+    minQ: number;
+    isMeta: boolean;
+    isFrontCover: boolean;
+    bookletPage: number | null;
+    geoFirstQuestionNumber?: number | null;
+}>(pageSortMap: T[]): void {
+    const anchoredByBooklet = pageSortMap
+        .filter(p => p.minQ < 999999 && p.bookletPage !== null)
+        .sort((a, b) => (a.bookletPage as number) - (b.bookletPage as number));
+
+    for (const current of pageSortMap) {
+        if (current.minQ !== 999999 || current.isFrontCover) continue;
+
+        // 1. Interpolate using printed bookletPage relative to the closest preceding anchored question page
+        if (current.bookletPage !== null && anchoredByBooklet.length > 0) {
+            let prevAnchor: T | null = null;
+            for (const anchor of anchoredByBooklet) {
+                if ((anchor.bookletPage as number) < current.bookletPage) {
+                    prevAnchor = anchor;
+                } else {
+                    break;
+                }
+            }
+            if (prevAnchor) {
+                const pageDelta = current.bookletPage - (prevAnchor.bookletPage as number);
+                const baseQ = Math.floor(prevAnchor.minQ);
+                current.minQ = baseQ + 0.99 + Math.min(0.0099, pageDelta * 0.0001);
+                continue;
+            }
+        }
+
+        // 2. Pre-flight first_question_number fallback (e.g. "Question 13 continued" -> 13.995)
+        if (
+            typeof current.geoFirstQuestionNumber === 'number' &&
+            Number.isInteger(current.geoFirstQuestionNumber) &&
+            current.geoFirstQuestionNumber >= 1 &&
+            current.geoFirstQuestionNumber <= 100
+        ) {
+            current.minQ = current.geoFirstQuestionNumber + 0.995;
+        }
+    }
+}
+
 export function computeIsScrambledPdf(params: {
     pageSortMap: Array<{ minQ: number; isFrontCover: boolean; bookletPage?: number | null }>;
     isPdf: boolean;
@@ -2699,8 +2749,31 @@ export class MarkingPipelineService {
                     newLightweightPages.push({ ...lightPage, imageData: splitLightImages[0], width: Math.round((lightPage.width || 0) / 2) }); // Left (Lightweight 800px)
                     newLightweightPages.push({ ...lightPage, imageData: splitLightImages[1], width: Math.round((lightPage.width || 0) / 2) }); // Right (Lightweight 800px)
 
-                    newGeometryResults.push(geo);
-                    newGeometryResults.push({ ...geo, is_cover_page: false });
+                    const rawSpreadBookletPage =
+                        typeof geo?.booklet_page_number === 'number' &&
+                        geo.booklet_page_number >= 1 &&
+                        geo.booklet_page_number <= 100
+                            ? geo.booklet_page_number
+                            : undefined;
+                    let leftBookletPage = rawSpreadBookletPage;
+                    let rightBookletPage = rawSpreadBookletPage;
+                    if (rawSpreadBookletPage !== undefined) {
+                        if (rawSpreadBookletPage === 1) {
+                            leftBookletPage = 1;
+                            rightBookletPage = 2;
+                        } else if (rawSpreadBookletPage % 2 === 0) {
+                            // Standard UK exam spread: even page on left (e.g. 36), odd page on right (e.g. 37)
+                            leftBookletPage = rawSpreadBookletPage;
+                            rightBookletPage = Math.min(100, rawSpreadBookletPage + 1);
+                        } else {
+                            // Pre-flight read the right-hand odd page (e.g. 37) -> left half is 36
+                            leftBookletPage = rawSpreadBookletPage - 1;
+                            rightBookletPage = rawSpreadBookletPage;
+                        }
+                    }
+
+                    newGeometryResults.push({ ...geo, booklet_page_number: leftBookletPage });
+                    newGeometryResults.push({ ...geo, is_cover_page: false, booklet_page_number: rightBookletPage });
                 } else {
                     newStandardizedPages.push(stdPage);
                     newLightweightPages.push(lightPage);
@@ -4683,9 +4756,22 @@ export class MarkingPipelineService {
                     geoTextSnippet
                 });
 
-                // Detect printed booklet page number from OCR (barcode, footer, or header blocks; supports up to 100-page booklets)
+                // Detect printed booklet page number from OCR first, falling back to preFlight geometry (essential for blank/meta pages skipped by Surgical OCR)
                 const baseQForBooklet = minSortWeight !== Infinity ? Math.floor(minSortWeight) : undefined;
-                const bookletPage = extractBookletPageNumber(pageOcrBlocks, baseQForBooklet);
+                const ocrBookletPage = extractBookletPageNumber(pageOcrBlocks, baseQForBooklet);
+                const geoBookletPage =
+                    typeof pageGeo?.booklet_page_number === 'number' &&
+                    pageGeo.booklet_page_number >= 1 &&
+                    pageGeo.booklet_page_number <= 100
+                        ? pageGeo.booklet_page_number
+                        : null;
+                const bookletPage = ocrBookletPage ?? geoBookletPage;
+                const geoFirstQuestionNumber =
+                    typeof pageGeo?.first_question_number === 'number' &&
+                    pageGeo.first_question_number >= 1 &&
+                    pageGeo.first_question_number <= 100
+                        ? pageGeo.first_question_number
+                        : null;
 
                 return {
                     originalIdx,
@@ -4694,6 +4780,7 @@ export class MarkingPipelineService {
                     minQ: minSortWeight === Infinity ? 999999 : minSortWeight,
                     hasPrintedStem,
                     bookletPage,
+                    geoFirstQuestionNumber,
                     isMeta,
                     isFrontCover,
                     hasVerifiedCoverEvidence,
@@ -4706,6 +4793,17 @@ export class MarkingPipelineService {
             // can be rescued into their booklet position (or pushed to the end) instead of jumping before Q1.
             demoteSpuriousFrontCovers(pageSortMap);
 
+            // Option A (Safe Hybrid): Anchor unresolved interior blank/continuation pages (e.g. blank "Question 13 continued"
+            // spreads skipped by Surgical OCR) using printed bookletPage interpolation and preFlight first_question_number.
+            anchorUnresolvedMetaPagesByBooklet(pageSortMap);
+
+            const { majorQuestionInversions: preBackfillInversions } = computeIsScrambledPdf({
+                pageSortMap,
+                isPdf: false,
+                isMultiplePdfs: false
+            });
+            const isSequentialLooseUpload = !isPdf && !isMultiplePdfs && preBackfillInversions === 0;
+
             const isPastPaper = Array.from(markingSchemesMap.values()).some(m => !m.isGeneric);
             // 🛡️ [ORPHAN & INTERIOR BOOKLET PAGE RESCUE]: 
             // Both GCSE and A-Level papers have unnumbered overflow/working pages, blank lined pages, or
@@ -4713,7 +4811,7 @@ export class MarkingPipelineService {
             // Rescue any page (including interior/trailing isMeta booklet pages) that follows a known question page
             // by inheriting `prev.minQ + 0.0001` so it stays in its physical booklet position instead of jumping to Page 0!
             // Leading cover pages (before any question appears, where prev.minQ === 999999) keep minQ = 999999 and stay at Page 0.
-            // CRITICAL: Never backfill a true Front Cover (or a loose image meta page from a different file, or the left-half of a Q1 spread).
+            // CRITICAL: Never backfill a true Front Cover (or an out-of-order loose image meta page from a different file, or the left-half of a Q1 spread).
             for (let i = 1; i < pageSortMap.length; i++) {
                 const current = pageSortMap[i];
                 const prev = pageSortMap[i - 1];
@@ -4728,6 +4826,7 @@ export class MarkingPipelineService {
                     current.isMeta &&
                     !isPdf &&
                     !isMultiplePdfs &&
+                    !isSequentialLooseUpload &&
                     current.filename !== prev.filename
                 );
                 if (

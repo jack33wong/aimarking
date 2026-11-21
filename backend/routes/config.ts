@@ -256,6 +256,7 @@ router.get('/paper-questions', async (req, res) => {
 const FUNNEL_EVENTS = new Set([
   'marking_submit_clicked',
   'auth_wall_shown',
+  'auth_wall_cta_clicked',
   'auth_wall_dismissed',
   'auth_wall_converted'
 ]);
@@ -270,8 +271,10 @@ router.post('/telemetry', express.json({ type: ['application/json', 'text/plain'
     if (body?.type === 'funnel' && FUNNEL_EVENTS.has(event)) {
       const userIP = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'unknown';
       const actor = typeof userId === 'string' && userId.trim() ? userId.trim() : `guest:${userIP}`;
-      const { trigger, isGuest, fileCount, hasMarkScheme, timeOpenMs, dismissMethod, method, preInspectSessionId } = body;
+      const { trigger, step, button, isGuest, fileCount, hasMarkScheme, timeOpenMs, dismissMethod, method, preInspectSessionId } = body;
       const details = [
+        step ? `step=${step}` : null,
+        button ? `button=${button}` : null,
         trigger ? `trigger=${trigger}` : null,
         typeof isGuest === 'boolean' ? `isGuest=${isGuest}` : null,
         typeof fileCount === 'number' ? `files=${fileCount}` : null,

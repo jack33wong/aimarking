@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { User, Lock, Sparkles, ArrowRight, X } from 'lucide-react';
 import {
     markAuthWallShown,
+    markAuthWallCtaClicked,
     markAuthWallDismissed,
     getLatestPreInspectSessionId
 } from '../../utils/funnelTracker';
@@ -134,7 +135,7 @@ const GuestLimitModal: React.FC<GuestLimitModalProps> = ({
     const handleDismiss = useCallback((dismissMethod: 'close_button' | 'backdrop' | 'escape') => {
         if (isMarkingTrigger && !outcomeFiredRef.current) {
             outcomeFiredRef.current = true;
-            markAuthWallDismissed(dismissMethod);
+            markAuthWallDismissed(dismissMethod, 'interstitial');
         }
         onClose();
     }, [isMarkingTrigger, onClose]);
@@ -159,6 +160,13 @@ const GuestLimitModal: React.FC<GuestLimitModalProps> = ({
     const handleAuthAction = async (mode: 'signup' | 'login') => {
         // User is proceeding to sign-up/sign-in; prevent dismissal event from firing
         outcomeFiredRef.current = true;
+        if (isMarkingTrigger) {
+            markAuthWallCtaClicked(
+                'interstitial',
+                mode === 'signup' ? 'continue_free_to_see_results' : 'already_have_account_sign_in',
+                preInspectSessionId || getLatestPreInspectSessionId() || null
+            );
+        }
         if (onSignup) {
             await onSignup(mode);
         } else {

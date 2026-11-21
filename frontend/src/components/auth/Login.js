@@ -2,7 +2,7 @@
  * Login Component
  * Handles user authentication with Firebase
  */
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { AlertCircle, Chrome, Facebook, Mail, Lock, Eye, EyeOff, X } from 'lucide-react';
@@ -14,7 +14,11 @@ import '../common/LoadingSpinner.css';
 import API_CONFIG from '../../config/api';
 import { analyticsService } from '../../services/AnalyticsService';
 import { fireAdsSignupConversion } from '../../utils/analytics';
-import { markAuthWallConverted } from '../../utils/funnelTracker';
+import {
+  markAuthWallCtaClicked,
+  markAuthWallDismissed,
+  markAuthWallConverted
+} from '../../utils/funnelTracker';
 import SEO from '../common/SEO';
 
 const Login = () => {
@@ -75,7 +79,13 @@ const Login = () => {
     }
   }, [currentPage]);
 
-  const handleSocialLogin = async (provider) => {
+  const handleSocialLogin = async (provider, { skipCtaTracking = false } = {}) => {
+    if (!skipCtaTracking) {
+      markAuthWallCtaClicked(
+        'auth_modal',
+        provider === 'google' ? 'continue_with_google' : 'continue_with_facebook'
+      );
+    }
     if (!auth || !googleProvider || !facebookProvider) {
       setFirebaseError('Firebase not available. Please refresh and try again.');
       return;
@@ -173,10 +183,11 @@ const Login = () => {
       setFirebaseError('Please enter your email address');
       return;
     }
+    markAuthWallCtaClicked('auth_modal', 'email_continue');
     setFirebaseError(null);
 
     if (formData.email.toLowerCase().endsWith('@gmail.com')) {
-      await handleSocialLogin('google');
+      await handleSocialLogin('google', { skipCtaTracking: true });
       return;
     }
 
@@ -190,13 +201,25 @@ const Login = () => {
     setFirebaseError(null);
   };
 
+  const handleClose = useCallback((dismissMethod = 'close_button') => {
+    markAuthWallDismissed(dismissMethod, 'auth_modal');
+    navigate(-1);
+  }, [navigate]);
+
+  useEffect(() => {
+    if (user) return;
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        handleClose('escape');
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [user, handleClose]);
+
   if (user) {
     return null;
   }
-
-  const handleClose = () => {
-    navigate(-1);
-  };
 
   const renderMainPage = () => (
     <div className="auth-card">
@@ -270,13 +293,20 @@ const Login = () => {
   );
 
   return (
-    <div className="auth-container">
+    <div
+      className="auth-container"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          handleClose('backdrop');
+        }
+      }}
+    >
       <SEO
         title={currentPage === 'email-signup' ? "Sign Up" : "Login"}
         description="Access your AI marking account to grade GCSE Maths papers and view performance reports."
       />
       <div className="auth-card-container">
-        <button className="auth-close-button" onClick={handleClose} aria-label="Close">
+        <button className="auth-close-button" onClick={() => handleClose('close_button')} aria-label="Close">
           <X size={20} />
         </button>
         {

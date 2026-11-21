@@ -9,7 +9,7 @@ Choose an array of 6 to 8 short topic/AO axis names (max 2-3 words each) that be
 3. If the exam is a Science, Humanity, Social Science, or Computing subject (e.g. Biology, Chemistry, Physics, Geography, History, Computer Science, Business, Economics, Psychology, Religious Studies):
    - Choose 6 to 8 authentic syllabus topic axes for that subject and paper (e.g. for Biology Paper 1: ["Cell Biology", "Transport & Enzymes", "Organisation", "Infection & Response", "Bioenergetics", "Data & Calculations", "Practical Skills"]), ensuring every uploaded question maps cleanly to one of the axes.
 4. Otherwise (Mathematics):
-   - If the student uploaded 5 or more distinct question subtopics, use 6 to 8 actual subtopics tested in this paper as "radarAxes".
+   - If the student uploaded 5 or more questions, choose 5 to 7 actual subtopics tested in this paper as "radarAxes" and ensure EVERY axis in "radarAxes" has at least one question mapped to it in "questionTopics" (NEVER include an untested axis with 0 questions).
    - If the student uploaded fewer than 5 questions (e.g. a single question), choose 6 to 8 axes that match the specific Exam Paper's syllabus:
      * A-Level Statistics & Mechanics (e.g. Paper 3 / 9MA0/03 / 9MA0/31 / 9MA0/32 / 7357/3): ["Probability", "Statistical Distributions", "Hypothesis Testing", "Regression & Correlation", "Kinematics", "Forces & Newton's Laws", "Moments & Vectors"]
      * A-Level Pure Mathematics (e.g. Paper 1 or 2 / 9MA0/01 / 9MA0/02 / 7357/1 / 7357/2): ["Algebra & Functions", "Coordinate Geometry", "Sequences & Series", "Trigonometry", "Exponentials & Logs", "Differentiation", "Integration", "Proof & Vectors"]

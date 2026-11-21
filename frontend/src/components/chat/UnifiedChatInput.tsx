@@ -978,6 +978,21 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     setShowAutocomplete(false);
   }, [imageFiles, imageFile, isMultiImage, isProcessing]);
 
+  // Restore stashed files when a guest cancels /login and returns to /app
+  useEffect(() => {
+    const handleRestoreStashedFiles = (e: Event) => {
+      const detail = (e as CustomEvent<{ files?: File[]; customText?: string }>).detail;
+      if (detail?.files && detail.files.length > 0) {
+        processFiles(detail.files);
+      }
+      if (detail?.customText) {
+        setChatInput(detail.customText);
+      }
+    };
+    window.addEventListener('restoreStashedFiles', handleRestoreStashedFiles);
+    return () => window.removeEventListener('restoreStashedFiles', handleRestoreStashedFiles);
+  }, [processFiles]);
+
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     if (isNegative) return;
     const newFiles = Array.from(e.target.files || []);

@@ -1464,10 +1464,10 @@ export class SessionManagementService {
       const awardedMarks = studentScore?.awardedMarks ?? allQuestionResults.reduce((s, q) => s + Number(q.score?.awardedMarks ?? 0), 0);
       const totalMarks = studentScore?.totalMarks ?? allQuestionResults.reduce((s, q) => s + Number(q.score?.totalMarks ?? 0), 0);
       const overallPct = totalMarks > 0 ? Math.round((awardedMarks / totalMarks) * 100) : 0;
-      // Provisional baseline for unassessed topics (clamped 40-75% so radar polygon looks balanced like TMUA)
+      // Provisional baseline for unassessed topics (clamped 40-75% so radar polygon looks balanced on single/partial uploads)
       const provisionalPct = Math.min(75, Math.max(40, overallPct || 50));
 
-      const radarData = axesList.map(axis => {
+      const rawRadarData = axesList.map(axis => {
         const stat = axisTotals.get(axis)!;
         const assessed = stat.total > 0;
         const scorePct = assessed ? Math.round((stat.awarded / stat.total) * 100) : provisionalPct;
@@ -1479,6 +1479,14 @@ export class SessionManagementService {
           assessed
         };
       });
+
+      // Deterministic guard: On multi-topic / full-paper uploads where >= 4 axes are already assessed,
+      // drop stray unassessed (0-question) axes so a 100/100 paper never gets a false "Provisional" dent
+      // from an unused syllabus axis (e.g. "Coordinate Geometry" with 0 mapped questions).
+      const assessedAxesOnly = rawRadarData.filter(d => d.assessed);
+      const radarData = (!isStrictEnglishLoR && assessedAxesOnly.length >= 4)
+        ? assessedAxesOnly
+        : rawRadarData;
 
       const hasTooDenseWarning = allQuestionResults.some((qr: any) => qr.isError && qr.errorMessage === 'Too Dense');
       let resolvedBoundaries: Record<string, number> | undefined =

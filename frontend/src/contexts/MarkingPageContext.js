@@ -381,13 +381,19 @@ export const MarkingPageProvider = ({
     const liveSession =
       simpleSessionService.getCachedSession?.(routeSessionId) ||
       simpleSessionService.getCurrentSession();
-    if (liveSession?.id === routeSessionId && Array.isArray(liveSession.messages) && liveSession.messages.length > 0) {
-      if (simpleSessionService.getCurrentSession()?.id !== routeSessionId) {
+    const isInFlightClientSession =
+      apiProcessor.processingSessionId === routeSessionId ||
+      getJobForSessionRef.current(routeSessionId)?.status === 'processing';
+    if (
+      isInFlightClientSession ||
+      (liveSession?.id === routeSessionId && Array.isArray(liveSession.messages) && liveSession.messages.length > 0)
+    ) {
+      if (liveSession?.id === routeSessionId && simpleSessionService.getCurrentSession()?.id !== routeSessionId) {
         loadSession(liveSession);
       }
       dispatch({ type: 'SET_PAGE_MODE', payload: 'chat' });
       const existingJob = getJobForSessionRef.current(routeSessionId);
-      const hasInFlightLocalMsg = liveSession.messages.some(m => m.role === 'assistant' && m.isProcessing);
+      const hasInFlightLocalMsg = Boolean(liveSession?.messages?.some(m => m.role === 'assistant' && m.isProcessing));
       if (existingJob?.status === 'processing' && apiProcessor.processingSessionId !== routeSessionId && !hasInFlightLocalMsg) {
         startPollingJob(routeSessionId);
       }
@@ -490,11 +496,14 @@ export const MarkingPageProvider = ({
       } catch (err) {
         if (cancelled) return;
         const status = err?.response?.status;
-        if (status === 404 || status === 403) {
+        const isStillInFlight =
+          apiProcessor.processingSessionId === routeSessionId ||
+          getJobForSessionRef.current(routeSessionId)?.status === 'processing';
+        if ((status === 404 || status === 403) && !isStillInFlight) {
           clearSession();
           dispatch({ type: 'SET_PAGE_MODE', payload: 'upload' });
           navigate('/app', { replace: true });
-        } else {
+        } else if (!isStillInFlight) {
           console.error('Failed to hydrate session from URL:', err);
         }
       }
@@ -1325,10 +1334,10 @@ export const MarkingPageProvider = ({
       if (!existingStableSessionId && initializedSession && !clientSubmissionId.startsWith('temp-')) {
         simpleSessionService.updateSidebarSession(initializedSession);
       }
+      startProcessing(clientSubmissionId);
       if (!existingStableSessionId || routeSessionId !== clientSubmissionId) {
         navigate(`/app/${clientSubmissionId}`, { replace: true });
       }
-      startProcessing(clientSubmissionId);
       const imageData = await processImage(targetFile);
       const optimisticMessage = {
         id: `user-${Date.now()}`,
@@ -1510,10 +1519,10 @@ export const MarkingPageProvider = ({
       if (!existingStableSessionId && initializedSession && !clientSubmissionId.startsWith('temp-')) {
         simpleSessionService.updateSidebarSession(initializedSession);
       }
+      startProcessing(clientSubmissionId);
       if (!existingStableSessionId || routeSessionId !== clientSubmissionId) {
         navigate(`/app/${clientSubmissionId}`, { replace: true });
       }
-      startProcessing(clientSubmissionId);
 
       // Separate PDFs and Images so mixed uploads display properly
       const isPdfFile = (file) => file?.type === 'application/pdf' || (file?.name || '').toLowerCase().endsWith('.pdf');
@@ -2223,43 +2232,44 @@ export const MarkingPageProvider = ({
     };
   }, [handleMultiImageAnalysis, handleImageAnalysis, onGenerateModelAnswer, onExplainMarkingScheme]);
 
-  // --- Auto-Resume after login (Chrome, Desktop Safari, iOS Safari safe) ---
+  // --- Auto-Resume after login OR restore attached files if guest closed /login ---
   useEffect(() => {
+    if (authLoading) return;
+
+    const restoreStashedFile = (item, filename, mimeType) => {
+      const resolvedName = filename || item?.name || 'upload';
+      const fallbackMime = resolvedName.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg';
+
+      if (item?.buffer instanceof ArrayBuffer || ArrayBuffer.isView(item?.buffer)) {
+        return new File([item.buffer], resolvedName, { type: mimeType || item.type || fallbackMime });
+      }
+
+      const base64 = typeof item === 'string' ? item : item?.base64;
+      if (!base64) return null;
+      const parts = base64.split(',');
+      const rawBase64 = parts.length > 1 ? parts[1] : parts[0];
+      const detectedMime = mimeType || item?.type || (parts[0].match(/:(.*?);/)?.[1]) || fallbackMime;
+      const bstr = atob(rawBase64);
+      let n = bstr.length;
+      const u8arr = new Uint8Array(n);
+      while (n--) {
+        u8arr[n] = bstr.charCodeAt(n);
+      }
+      return new File([u8arr], resolvedName, { type: detectedMime });
+    };
+
     if (user?.uid) {
       retrieveAndClearStash().then((stashedData) => {
         trackFunnelEvent('post_login_stash_check', {
           hasStashedData: Boolean(stashedData),
           stashType: stashedData?.type || null,
-          fileCount: stashedData?.files?.length || (stashedData?.base64 ? 1 : 0),
+          fileCount: stashedData?.files?.length || (stashedData?.buffer || stashedData?.base64 ? 1 : 0),
           paper: stashedData?.paper || null,
           navType: getNavigationType()
         }, user.uid);
 
         if (stashedData) {
           console.log("Recovered stashed data after login, auto-resuming...");
-
-          // Helper to convert stashed ArrayBuffer or legacy base64 back to File object (falls back if iOS leaves MIME blank)
-          const restoreStashedFile = (item, filename, mimeType) => {
-            const resolvedName = filename || item?.name || 'upload';
-            const fallbackMime = resolvedName.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg';
-
-            if (item?.buffer instanceof ArrayBuffer || ArrayBuffer.isView(item?.buffer)) {
-              return new File([item.buffer], resolvedName, { type: mimeType || item.type || fallbackMime });
-            }
-
-            const base64 = typeof item === 'string' ? item : item?.base64;
-            if (!base64) return null;
-            const parts = base64.split(',');
-            const rawBase64 = parts.length > 1 ? parts[1] : parts[0];
-            const detectedMime = mimeType || item?.type || (parts[0].match(/:(.*?);/)?.[1]) || fallbackMime;
-            const bstr = atob(rawBase64);
-            let n = bstr.length;
-            const u8arr = new Uint8Array(n);
-            while (n--) {
-              u8arr[n] = bstr.charCodeAt(n);
-            }
-            return new File([u8arr], resolvedName, { type: detectedMime });
-          };
 
           setTimeout(() => {
             if ((stashedData.type === 'multi_buffer' || stashedData.type === 'multi_base64') && Array.isArray(stashedData.files)) {
@@ -2280,8 +2290,31 @@ export const MarkingPageProvider = ({
           }, 500);
         }
       }).catch(console.error);
+    } else {
+      // Guest returned from /login without signing in (e.g. clicked Close/X):
+      // restore their stashed attached file(s) back into the composer instead of losing them!
+      retrieveAndClearStash().then((stashedData) => {
+        if (!stashedData) return;
+        let restoredFiles = [];
+        if ((stashedData.type === 'multi_buffer' || stashedData.type === 'multi_base64') && Array.isArray(stashedData.files)) {
+          restoredFiles = stashedData.files.map(f => restoreStashedFile(f, f.name, f.type)).filter(Boolean);
+        } else if ((stashedData.type === 'single_buffer' || stashedData.type === 'single_base64') && (stashedData.buffer || stashedData.base64)) {
+          const single = restoreStashedFile(stashedData, stashedData.fileName, stashedData.mimeType);
+          if (single) restoredFiles = [single];
+        }
+        if (restoredFiles.length > 0) {
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('restoreStashedFiles', {
+              detail: {
+                files: restoredFiles,
+                customText: stashedData.customText || ''
+              }
+            }));
+          }, 100);
+        }
+      }).catch(console.error);
     }
-  }, [user?.uid]);
+  }, [user?.uid, authLoading]);
 
   return (
     <MarkingPageContext.Provider value={value}>
