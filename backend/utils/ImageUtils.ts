@@ -121,16 +121,20 @@ export class ImageUtils {
   }
 
   /**
-   * Splits a wide image exactly down the middle vertically into two separate images (Left and Right).
-   * @param imageData Base64 image data (Data URL or raw base64)
-   * @returns Array of two Base64 Data URLs [LeftHalf, RightHalf]
+   * Splits an image into a symmetric grid (1x2, 2x1, or 2x2) in reading order
+   * (row-major: left-to-right, top-to-bottom), refining internal cut lines within
+   * ±8% of the midpoint to land on the whitest gutter rather than slicing through text.
    */
-  static async splitImageVertically(imageData: string): Promise<string[]> {
+  static async splitImageGrid(
+    imageData: string,
+    rows: 1 | 2,
+    cols: 1 | 2
+  ): Promise<Array<{ imageData: string; width: number; height: number }>> {
     try {
-      let imageBuffer: Buffer;
       const isDataUrl = imageData.startsWith('data:');
       const mimeType = isDataUrl ? imageData.split(';')[0].split(':')[1] || 'image/jpeg' : 'image/jpeg';
-      
+      let imageBuffer: Buffer;
+
       if (isDataUrl) {
         const base64Data = imageData.split(',')[1];
         if (!base64Data) throw new Error('Invalid data URL format');
@@ -139,33 +143,192 @@ export class ImageUtils {
         imageBuffer = Buffer.from(imageData, 'base64');
       }
 
-      const image = sharp(imageBuffer);
-      const metadata = await image.metadata();
-
+      const metadata = await sharp(imageBuffer).metadata();
       if (!metadata.width || !metadata.height) {
-        throw new Error('Unable to extract dimensions for splitting.');
+        throw new Error('Unable to extract dimensions for grid splitting.');
       }
 
-      const halfWidth = Math.floor(metadata.width / 2);
+      const origW = metadata.width;
+      const origH = metadata.height;
 
-      // Extract left half
-      const leftBuffer = await sharp(imageBuffer)
-        .extract({ left: 0, top: 0, width: halfWidth, height: metadata.height })
-        .toBuffer();
+      if (rows === 1 && cols === 1) {
+        return [{ imageData, width: origW, height: origH }];
+      }
 
-      // Extract right half
-      const rightBuffer = await sharp(imageBuffer)
-        .extract({ left: halfWidth, top: 0, width: metadata.width - halfWidth, height: metadata.height })
-        .toBuffer();
+      // Compute refined cut coordinates using a fast downscaled grayscale buffer
+      let splitX = Math.floor(origW / 2);
+      let splitY = Math.floor(origH / 2);
 
-      return [
-        `data:${mimeType};base64,${leftBuffer.toString('base64')}`,
-        `data:${mimeType};base64,${rightBuffer.toString('base64')}`
-      ];
+      try {
+        const sampleW = Math.min(origW, 240);
+        const sampleH = Math.max(1, Math.round((origH / origW) * sampleW));
+        const { data: gray, info } = await sharp(imageBuffer)
+          .resize({ width: sampleW, height: sampleH, fit: 'fill' })
+          .grayscale()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+
+        const sW = info.width;
+        const sH = info.height;
+
+        if (cols === 2 && sW >= 20) {
+          const midX = Math.floor(sW / 2);
+          const band = Math.max(2, Math.floor(sW * 0.08));
+          let bestX = midX;
+          let bestScore = -1;
+          for (let x = Math.max(1, midX - band); x <= Math.min(sW - 2, midX + band); x++) {
+            let sum = 0;
+            for (let y = 0; y < sH; y++) {
+              sum += gray[y * sW + x];
+            }
+            const mean = sum / sH;
+            // Tiny center bias (0.05 brightness units per pixel away) so uniform white picks exact midpoint
+            const score = mean - Math.abs(x - midX) * 0.05;
+            if (score > bestScore) {
+              bestScore = score;
+              bestX = x;
+            }
+          }
+          splitX = Math.max(1, Math.min(origW - 1, Math.round((bestX / sW) * origW)));
+        }
+
+        if (rows === 2 && sH >= 20) {
+          const midY = Math.floor(sH / 2);
+          const band = Math.max(2, Math.floor(sH * 0.08));
+          let bestY = midY;
+          let bestScore = -1;
+          for (let y = Math.max(1, midY - band); y <= Math.min(sH - 2, midY + band); y++) {
+            let sum = 0;
+            const rowOffset = y * sW;
+            for (let x = 0; x < sW; x++) {
+              sum += gray[rowOffset + x];
+            }
+            const mean = sum / sW;
+            const score = mean - Math.abs(y - midY) * 0.05;
+            if (score > bestScore) {
+              bestScore = score;
+              bestY = y;
+            }
+          }
+          splitY = Math.max(1, Math.min(origH - 1, Math.round((bestY / sH) * origH)));
+        }
+      } catch {
+        // Fallback safely to exact geometric midpoint
+      }
+
+      const xRanges: Array<{ left: number; width: number }> =
+        cols === 2
+          ? [
+              { left: 0, width: splitX },
+              { left: splitX, width: origW - splitX }
+            ]
+          : [{ left: 0, width: origW }];
+
+      const yRanges: Array<{ top: number; height: number }> =
+        rows === 2
+          ? [
+              { top: 0, height: splitY },
+              { top: splitY, height: origH - splitY }
+            ]
+          : [{ top: 0, height: origH }];
+
+      const tiles: Array<{ imageData: string; width: number; height: number }> = [];
+      for (const yr of yRanges) {
+        for (const xr of xRanges) {
+          const tileBuf = await sharp(imageBuffer)
+            .extract({ left: xr.left, top: yr.top, width: xr.width, height: yr.height })
+            .toBuffer();
+          tiles.push({
+            imageData: `data:${mimeType};base64,${tileBuf.toString('base64')}`,
+            width: xr.width,
+            height: yr.height
+          });
+        }
+      }
+
+      return tiles;
     } catch (error) {
-      console.error(`❌ [IMAGE UTILS] Error splitting image vertically:`, error);
+      console.error(`❌ [IMAGE UTILS] Error splitting image grid (${rows}x${cols}):`, error);
       throw error;
     }
+  }
+
+  /**
+   * Fast grayscale check for OneNote-style infinite-canvas exports where real exam content
+   * sits in one horizontal half (~45%) while the opposite half is overwhelmingly empty white.
+   */
+  static async detectAsymmetricCanvasWhitespace(imageData: string): Promise<{
+    isAsymmetricCanvas: boolean;
+    leftInkRatio: number;
+    rightInkRatio: number;
+  }> {
+    try {
+      const isDataUrl = imageData.startsWith('data:');
+      const base64Data = isDataUrl ? imageData.split(',')[1] : imageData;
+      if (!base64Data) {
+        return { isAsymmetricCanvas: false, leftInkRatio: 0, rightInkRatio: 0 };
+      }
+      const imageBuffer = Buffer.from(base64Data, 'base64');
+      const { data: gray, info } = await sharp(imageBuffer)
+        .resize({ width: 200, withoutEnlargement: true })
+        .grayscale()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+
+      const w = info.width;
+      const h = info.height;
+      if (w < 20 || h < 20) {
+        return { isAsymmetricCanvas: false, leftInkRatio: 0, rightInkRatio: 0 };
+      }
+
+      const leftEnd = Math.floor(w * 0.45);
+      const rightStart = Math.floor(w * 0.55);
+      let leftInk = 0;
+      let leftTotal = 0;
+      let rightInk = 0;
+      let rightTotal = 0;
+
+      for (let y = 0; y < h; y++) {
+        const row = y * w;
+        for (let x = 0; x < leftEnd; x++) {
+          leftTotal++;
+          if (gray[row + x] < 235) leftInk++;
+        }
+        for (let x = rightStart; x < w; x++) {
+          rightTotal++;
+          if (gray[row + x] < 235) rightInk++;
+        }
+      }
+
+      const leftInkRatio = leftTotal > 0 ? leftInk / leftTotal : 0;
+      const rightInkRatio = rightTotal > 0 ? rightInk / rightTotal : 0;
+
+      // One side has substantial printed/handwritten exam content (>= 2.5% dark pixels)
+      // while the opposite 45% of the sheet is almost completely blank (<= 0.5% dark pixels, i.e. >= 99.5% white,
+      // or <= 1.2% with >= 6x contrast ratio to allow minor stray rough scribbles in OneNote whitespace).
+      const leftHeavyRightBlank =
+        leftInkRatio >= 0.025 && rightInkRatio <= 0.012 && leftInkRatio / Math.max(rightInkRatio, 0.0001) >= 6;
+      const rightHeavyLeftBlank =
+        rightInkRatio >= 0.025 && leftInkRatio <= 0.012 && rightInkRatio / Math.max(leftInkRatio, 0.0001) >= 6;
+
+      return {
+        isAsymmetricCanvas: leftHeavyRightBlank || rightHeavyLeftBlank,
+        leftInkRatio,
+        rightInkRatio
+      };
+    } catch {
+      return { isAsymmetricCanvas: false, leftInkRatio: 0, rightInkRatio: 0 };
+    }
+  }
+
+  /**
+   * Splits a wide image down the middle vertically into two separate images (Left and Right).
+   * @param imageData Base64 image data (Data URL or raw base64)
+   * @returns Array of two Base64 Data URLs [LeftHalf, RightHalf]
+   */
+  static async splitImageVertically(imageData: string): Promise<string[]> {
+    const tiles = await this.splitImageGrid(imageData, 1, 2);
+    return tiles.map(t => t.imageData);
   }
 
   /**

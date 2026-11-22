@@ -281,13 +281,6 @@ const SessionHeader: React.FC = () => {
 
     const detectedQuestion = getDetectedQuestion();
 
-    // Get score and grade from messages
-    const messageWithScore = currentSession?.messages?.find((m: any) => m.studentScore);
-    const studentScore = messageWithScore?.studentScore;
-    const messageWithGradeData = currentSession?.messages?.find((m: any) => m.grade !== undefined || m.predictedGrade !== undefined);
-    const gradeValue = messageWithGradeData?.grade || grade;
-    const predictedGradeValue = messageWithGradeData?.predictedGrade;
-
     if (detectedQuestion && detectedQuestion.found) {
       let examBoard: any, subject: any, examCode: any, examSeries: any, tier: any;
 
@@ -349,26 +342,6 @@ const SessionHeader: React.FC = () => {
             <>
               <span className="title-separator"> • </span>
               <span className="title-secondary">{subtitleParts.join(' • ')}</span>
-            </>
-          )}
-
-          {/* Grade badge inline with title */}
-          {gradeValue && (
-            <>
-              <span className="title-separator"> • </span>
-              <span className="title-badge grade-badge">
-                <span className="badge-label">Grade:</span>
-                <span className="badge-value">{gradeValue}</span>
-              </span>
-            </>
-          )}
-          {!gradeValue && predictedGradeValue && (
-            <>
-              <span className="title-separator"> • </span>
-              <span className="title-badge grade-badge predicted-grade">
-                <span className="badge-label">Predicted Grade:</span>
-                <span className="badge-value">{predictedGradeValue}</span>
-              </span>
             </>
           )}
         </>

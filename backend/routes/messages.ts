@@ -279,6 +279,8 @@ router.post('/chat', optionalAuth, async (req, res) => {
       paperCodeHint?: string;
       uploadedPageCount?: number;
       handwrittenPageCount?: number;
+      hasCustomUserInstructions?: boolean;
+      customUserInstructions?: string;
     } | undefined = undefined;
     const startTime = Date.now();
 
@@ -400,6 +402,7 @@ router.post('/chat', optionalAuth, async (req, res) => {
                     Boolean((msg as any).errorCode) ||
                     Boolean((msg as any).canMarkAnyway) ||
                     Boolean((msg as any).canRetryUpload) ||
+                    Boolean((msg as any).canUploadCorrectedFile) ||
                     (Array.isArray((msg as any).pdfContexts) && (msg as any).pdfContexts.length > 0) ||
                     Boolean((msg as any).originalFileName);
                   return targetContextQuestionIds.includes(String((msg as any).contextQuestionId)) || isUploadOrSystemEvent;
@@ -422,7 +425,7 @@ router.post('/chat', optionalAuth, async (req, res) => {
                 detectedSubjectHint,
                 paperCodeHint,
                 pendingPreMarkingState: detectedPendingState
-              } = ChatContextBuilder.formatSessionUploadInventory(existingSession.messages);
+              } = ChatContextBuilder.formatSessionUploadInventory(existingSession.messages, message);
               pendingPreMarkingState = detectedPendingState;
 
               if (lastMarkingMessage && (lastMarkingMessage as any).markingContext) {
@@ -440,7 +443,8 @@ router.post('/chat', optionalAuth, async (req, res) => {
                       Boolean((msgs[i + 1] as any).requiresMarkingScheme) ||
                       Boolean((msgs[i + 1] as any).errorCode) ||
                       Boolean((msgs[i + 1] as any).canMarkAnyway) ||
-                      Boolean((msgs[i + 1] as any).canRetryUpload);
+                      Boolean((msgs[i + 1] as any).canRetryUpload) ||
+                      Boolean((msgs[i + 1] as any).canUploadCorrectedFile);
                     if (
                       targetContextQuestionIds.length === 0 ||
                       targetContextQuestionIds.includes(String((msgs[i] as any).contextQuestionId)) ||
@@ -685,6 +689,16 @@ router.post('/chat', optionalAuth, async (req, res) => {
       }
       if (pendingPreMarkingState.handwrittenPageCount !== undefined) {
         aiMessage.handwrittenPageCount = pendingPreMarkingState.handwrittenPageCount;
+      }
+      if (pendingPreMarkingState.hasCustomUserInstructions) {
+        aiMessage.hasCustomUserInstructions = true;
+        // Prefer the AI's own concise "Noted Instructions:" summary if present and non-empty, else raw collected instructions
+        const notedMatch = String(contextualResult?.response || '').match(/\*\*Noted Instructions:\*\*\s*([^\n]+)/i);
+        const notedSummary = notedMatch?.[1]?.trim();
+        const isEmptySummary = !notedSummary || /^none(?:\s+yet)?\.?$/i.test(notedSummary);
+        aiMessage.customUserInstructions = !isEmptySummary
+          ? notedSummary
+          : pendingPreMarkingState.customUserInstructions;
       }
     }
 

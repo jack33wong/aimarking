@@ -17,6 +17,9 @@ import {
   findDistinctFullPaperCodes,
   lookupCatalogedOfficialSchemeIfEligible,
   rescueMinorityUnsupportedPagesInSupportedBatch,
+  resolveDocumentLayoutPolicy,
+  hasOneNotePrintoutSignature,
+  formatPreInspectUnsupportedLayoutBanner,
   type ResolvedPageLimits,
 } from './PreFlightRules.js';
 
@@ -33,6 +36,7 @@ export type PreInspectDocType =
   | 'multi_paper_not_supported'
   | 'page_limit_exceeded'
   | 'pdf_structural_error'
+  | 'unsupported_layout'
   | 'unofficial_paper'
   | 'non_academic'
   | 'unreadable';
@@ -107,6 +111,8 @@ interface CachedPreInspectFileEntry {
   pageCount: number;
   sampledPages: number[];
   geometryByPageIndex: Map<number, GeometryAnalysisResult>;
+  asymmetricCanvasByPageIndex?: Map<number, boolean>;
+  pageDimensionsByPageIndex?: Map<number, { width?: number; height?: number }>;
   expiresAt: number;
 }
 
@@ -337,17 +343,22 @@ export class PreInspectService {
         const cachedFile = this.fileCache.get(fileCacheKey);
         if (cachedFile && cachedFile.expiresAt > Date.now() && cachedFile.geometryByPageIndex.size > 0) {
           console.log(`⚡ [PRE-INSPECT CACHE HIT] Reusing recent pre-inspect for "${file.originalname}" (0ms, 0 LLM calls)`);
-          const geos = Array.from(cachedFile.geometryByPageIndex.values());
+          const entries = Array.from(cachedFile.geometryByPageIndex.entries());
+          const geos = entries.map(([, g]) => g);
+          const asymmetricFlags = entries.map(([pIdx]) => Boolean(cachedFile.asymmetricCanvasByPageIndex?.get(pIdx)));
+          const pageDims = entries.map(([pIdx]) => cachedFile.pageDimensionsByPageIndex?.get(pIdx) || {});
           const summary = this.summarizeSingleFile(
             file.originalname || cachedFile.originalName,
             cachedFile.pageCount,
             cachedFile.sampledPages,
             geos
           );
-          return { cachedEntry: cachedFile, summary, geos };
+          return { cachedEntry: cachedFile, summary, geos, asymmetricFlags, pageDims };
         }
 
         const geometryByPageIndex = new Map<number, GeometryAnalysisResult>();
+        const sampledImagesByPageIndex = new Map<number, string>();
+        const pageDimensionsByPageIndex = new Map<number, { width?: number; height?: number }>();
         let pageCount = preScannedPageCounts[fileIdx] || 1;
         let sampledPages: number[] = [];
         let pdfStructuralError: string | undefined;
@@ -395,6 +406,8 @@ export class PreInspectService {
                   geo.is_marking_scheme = true;
                 }
                 geometryByPageIndex.set(rawPageIdx, geo);
+                sampledImagesByPageIndex.set(rawPageIdx, lightImg);
+                pageDimensionsByPageIndex.set(rawPageIdx, { width: page.width, height: page.height });
               })
             );
           } catch (pdfErr: any) {
@@ -423,9 +436,42 @@ export class PreInspectService {
             'preInspect'
           );
           geometryByPageIndex.set(0, geo);
+          sampledImagesByPageIndex.set(0, lightImg);
+          pageDimensionsByPageIndex.set(0, {});
         }
 
-        const geos = Array.from(geometryByPageIndex.values());
+        const entries = Array.from(geometryByPageIndex.entries());
+        const geos = entries.map(([, g]) => g);
+        const pageDims = entries.map(([pIdx]) => pageDimensionsByPageIndex.get(pIdx) || {});
+
+        // Run fast (~3ms) pixel-level asymmetric whitespace check on sampled pages when:
+        // - unsupported_canvas or 2x1 layout was flagged, OR
+        // - OneNote Printout signature was seen on any page, OR
+        // - multi-page PDF (to catch OneNote infinite-canvas exports even if flash-lite misses page_layout).
+        const shouldCheckAsymmetricCanvas =
+          isPdf ||
+          geos.some(
+            (g) =>
+              g.page_layout === 'unsupported_canvas' ||
+              g.page_layout === '2x1' ||
+              hasOneNotePrintoutSignature(`${g.evidence_text_snippet || ''} ${g.unsupported_layout_reason || ''} ${g.rejection_reason || ''}`)
+          );
+        const asymmetricCanvasByPageIndex = new Map<number, boolean>();
+        const asymmetricFlags: boolean[] = shouldCheckAsymmetricCanvas
+          ? await Promise.all(
+              entries.map(async ([pIdx, g]) => {
+                const img = sampledImagesByPageIndex.get(pIdx);
+                if (!img || g.is_marking_scheme || g.detected_subject === 'NON_ACADEMIC') {
+                  asymmetricCanvasByPageIndex.set(pIdx, false);
+                  return false;
+                }
+                const res = await ImageUtils.detectAsymmetricCanvasWhitespace(img);
+                asymmetricCanvasByPageIndex.set(pIdx, res.isAsymmetricCanvas);
+                return res.isAsymmetricCanvas;
+              })
+            )
+          : entries.map(() => false);
+
         const summary = this.summarizeSingleFile(file.originalname || `file-${fileIdx + 1}`, pageCount, sampledPages, geos);
         const cachedEntry: CachedPreInspectFileEntry = {
           sha256: fileHash,
@@ -433,21 +479,32 @@ export class PreInspectService {
           pageCount,
           sampledPages,
           geometryByPageIndex,
+          asymmetricCanvasByPageIndex,
+          pageDimensionsByPageIndex,
           expiresAt: Date.now() + CACHE_TTL_MS,
         };
         if (geometryByPageIndex.size > 0) {
           this.fileCache.set(fileCacheKey, cachedEntry);
         }
-        return { cachedEntry, summary, geos, pdfStructuralError };
+        return { cachedEntry, summary, geos, asymmetricFlags, pageDims, pdfStructuralError };
       })
     );
 
     const cachedFileEntries = perFileResults.map((r) => r.cachedEntry);
     const perFileRoles = perFileResults.map((r) => r.summary);
     const allGeometries = perFileResults.flatMap((r) => r.geos);
+    const allAsymmetricFlags = perFileResults.flatMap((r) => r.asymmetricFlags || r.geos.map(() => false));
+    const allPageDims = perFileResults.flatMap((r) => r.pageDims || r.geos.map(() => ({})));
     const firstPdfStructuralError = perFileResults.find((r) => (r as any).pdfStructuralError)?.pdfStructuralError;
 
-    const combined = await this.buildCombinedDecision(perFileRoles, allGeometries, pageLimits, firstPdfStructuralError);
+    const combined = await this.buildCombinedDecision(
+      perFileRoles,
+      allGeometries,
+      pageLimits,
+      firstPdfStructuralError,
+      allAsymmetricFlags,
+      allPageDims
+    );
     const token = `pi-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
     const breakdown = usageTracker.getBreakdown().preInspect;
     const costUsd = usageTracker.calculateCost('fast').preInspect;
@@ -654,7 +711,9 @@ export class PreInspectService {
     perFileRoles: PreInspectFileSummary[],
     allGeometries: GeometryAnalysisResult[],
     pageLimits: ResolvedPageLimits,
-    pdfStructuralError?: string
+    pdfStructuralError?: string,
+    allAsymmetricFlags: boolean[] = [],
+    allPageDims: Array<{ width?: number; height?: number }> = []
   ): Promise<Omit<PreInspectResponse, 'preInspectToken' | 'perFileRoles' | 'usage' | 'durationMs'>> {
     if (pdfStructuralError) {
       return {
@@ -668,6 +727,30 @@ export class PreInspectService {
         bannerMessage: '',
         suggestions: [{ id: 'replace-file', label: 'Replace file', action: 'replace_file' }],
       };
+    }
+
+    // 0. Unsupported OneNote / asymmetric-whitespace / drifting-gutter canvas check (shared PreFlightRules policy)
+    if (allGeometries.length > 0) {
+      const layoutPolicy = resolveDocumentLayoutPolicy({
+        pages: allPageDims.length === allGeometries.length ? allPageDims : allGeometries.map(() => ({})),
+        geometryResults: allGeometries,
+        asymmetricCanvasFlags: allAsymmetricFlags,
+      });
+      if (layoutPolicy.shouldRejectUnsupportedLayout) {
+        console.warn(`⚠️ [PRE-INSPECT LAYOUT GUARD] ${layoutPolicy.rejectionReason}`);
+        const { bannerTitle, bannerMessage } = formatPreInspectUnsupportedLayoutBanner(layoutPolicy.isOneNoteDetected);
+        return {
+          overallStatus: 'invalid',
+          docType: 'unsupported_layout',
+          isWarning: true,
+          hasMarkScheme: false,
+          requiresMarkScheme: false,
+          hasHandwriting: false,
+          bannerTitle,
+          bannerMessage,
+          suggestions: [{ id: 'replace-file', label: 'Replace file', action: 'replace_file' }],
+        };
+      }
     }
 
     const schemeFiles = perFileRoles.filter((f) => f.role === 'mark_scheme');

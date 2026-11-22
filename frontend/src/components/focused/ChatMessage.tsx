@@ -6,7 +6,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom';
 import './ChatMessage.css';
 import YourWorkSection from './YourWorkSection';
-import { Brain, ChevronDown, ChevronUp, FileText, Lock, Paperclip, RefreshCw, Sparkles, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { Brain, ChevronDown, ChevronUp, FileText, Lock, Paperclip, RefreshCw, Sparkles, ThumbsUp, ThumbsDown, Upload } from 'lucide-react';
 import MarkingFeedbackModal from '../modals/MarkingFeedbackModal';
 import EventManager, { EVENT_TYPES } from '../../utils/eventManager';
 import { useAuth } from '../../contexts/AuthContext';
@@ -1015,12 +1015,32 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
                         )}
                       </div>
                     )}
-                    {!isUser && (Boolean((message as any).canMarkAnyway) || Boolean((message as any).canRetryUpload) || Boolean((message as any).canStartMarkingFromPreCheck)) && (
+                    {!isUser && (Boolean((message as any).canMarkAnyway) || Boolean((message as any).canRetryUpload) || Boolean((message as any).canUploadCorrectedFile) || Boolean((message as any).canStartMarkingFromPreCheck)) && (
                       <div className="limit-actions-row">
                         {Boolean((message as any).canStartMarkingFromPreCheck) && (() => {
                           const totalPages = Number((message as any).uploadedPageCount || 1);
                           const hwPages = Number((message as any).handwrittenPageCount || 0);
                           const hasPartialUnattemptedPages = totalPages > 1 && hwPages > 0 && hwPages < totalPages;
+                          const hasCustomInstructions = Boolean((message as any).hasCustomUserInstructions);
+                          const customInstructions = String((message as any).customUserInstructions || '').trim();
+
+                          if (hasCustomInstructions) {
+                            return (
+                              <button
+                                type="button"
+                                className="detected-paper-grade-btn"
+                                disabled={isAnyMessageProcessing}
+                                onClick={() => {
+                                  logEvent('telemetry_events', { event: 'precheck_mark_with_instructions_clicked' });
+                                  startMarkingFromPreCheck?.('custom_instructions', customInstructions);
+                                }}
+                              >
+                                <Sparkles size={15} />
+                                <span>Start Marking with My Instructions</span>
+                              </button>
+                            );
+                          }
+
                           return (
                             <>
                               {hasPartialUnattemptedPages && (
@@ -1078,6 +1098,24 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
                           >
                             <RefreshCw size={15} />
                             <span>Retry</span>
+                          </button>
+                        )}
+                        {Boolean((message as any).canUploadCorrectedFile) && (
+                          <button
+                            type="button"
+                            className="detected-paper-grade-btn"
+                            disabled={isAnyMessageProcessing}
+                            onClick={() => {
+                              logEvent('telemetry_events', { event: 'upload_corrected_file_clicked' });
+                              const fileInput = document.getElementById('unified-file-input') as HTMLInputElement | null;
+                              if (fileInput) {
+                                fileInput.value = '';
+                                fileInput.click();
+                              }
+                            }}
+                          >
+                            <Upload size={15} />
+                            <span>Upload Corrected File</span>
                           </button>
                         )}
                       </div>

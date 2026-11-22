@@ -774,6 +774,10 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
                   (sum, q) => sum + (q.totalMarks || 0),
                   0
                 );
+                const messageWithGrade = (currentSession?.messages || chatMessages || []).find(
+                  (m: any) => m.grade && m.grade !== 'N/A' && m.grade !== 'Partial Paper'
+                );
+                const ribbonGrade = (messageWithGrade as any)?.grade as string | undefined;
                 const isMarkingCompleted =
                   !isProcessing &&
                   !isAIThinking &&
@@ -787,6 +791,13 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
                       <span className="ribbon-thumbnail-total-score">
                         <span className="ribbon-thumbnail-total-label">Total:</span>
                         <span className="ribbon-thumbnail-total-value">{totalAwarded}/{totalMax}</span>
+                        {ribbonGrade && (
+                          <>
+                            <span className="ribbon-thumbnail-total-sep">·</span>
+                            <span className="ribbon-thumbnail-total-label">Grade</span>
+                            <span className="ribbon-thumbnail-total-value">{ribbonGrade}</span>
+                          </>
+                        )}
                       </span>
                     )}
                     <button

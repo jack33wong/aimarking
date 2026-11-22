@@ -652,7 +652,7 @@ export class ChatContextBuilder {
      * 2. Whether a file is already marked, awaiting a mark scheme (with handwriting visibility confirmation), or hit an upload validation error
      * 3. The overall marking summary (if marked)
      */
-    static formatSessionUploadInventory(messages: any[]): {
+    static formatSessionUploadInventory(messages: any[], currentUserMessage?: string): {
         inventoryPrompt: string;
         detectedSubjectHint?: string;
         paperCodeHint?: string;
@@ -663,6 +663,8 @@ export class ChatContextBuilder {
             paperCodeHint?: string;
             uploadedPageCount?: number;
             handwrittenPageCount?: number;
+            hasCustomUserInstructions?: boolean;
+            customUserInstructions?: string;
         };
     } {
         if (!Array.isArray(messages) || messages.length === 0) {
@@ -679,12 +681,31 @@ export class ChatContextBuilder {
             paperCodeHint?: string;
             uploadedPageCount?: number;
             handwrittenPageCount?: number;
+            hasCustomUserInstructions?: boolean;
+            customUserInstructions?: string;
         } | undefined;
         let hasCompletedMarking = false;
+        const userInstructionFragments: string[] = [];
+
+        const isSubstantiveMarkingInstruction = (raw?: string): boolean => {
+            const text = String(raw || '').trim();
+            if (text.length < 10) return false;
+            if (/^(?:uploaded document for analysis|file check|mark full paper|only mark attempted questions|retrying upload\.?|hi+|hello+|hey+|ok(?:ay)?|thanks?(?: you)?|yes|no|sure|ready|please|go ahead)[.!?]*$/i.test(text)) {
+                return false;
+            }
+            // Must look like an actual grading preference, constraint, or focus instruction (not just a pure question like "did you get my file?")
+            if (/^(?:did you|can you see|is my|was my|have you received)\b/i.test(text) && !/\b(?:mark|check|grade|skip|focus|handwrit|only|question|mistake|blue|strict|explain|break down)\b/i.test(text)) {
+                return false;
+            }
+            return /\b(?:mark|check|grade|skip|skipped|focus|handwrit|only|question|q\d+|mistake|error|blue|red|strict|lenient|explain|break down|ignore|part|chapter|attempt|work|answer|scheme|detail|thorough)\b/i.test(text);
+        };
 
         for (let i = 0; i < messages.length; i++) {
             const msg = messages[i];
             if (!msg || msg.role !== 'user') continue;
+            if (isSubstantiveMarkingInstruction(msg.content)) {
+                userInstructionFragments.push(String(msg.content).trim());
+            }
 
             const fileNames: string[] = [];
             if (Array.isArray(msg.pdfContexts) && msg.pdfContexts.length > 0) {
@@ -779,6 +800,7 @@ export class ChatContextBuilder {
                     pairedAi.errorCode ||
                     pairedAi.canMarkAnyway ||
                     pairedAi.canRetryUpload ||
+                    pairedAi.canUploadCorrectedFile ||
                     /duplicate question numbers|temporary technical issue|temporary error|couldn't complete marking|exceeds the maximum limit|limited to grading/i.test(aiContent)
                 ) {
                     const cleanErr = aiContent.replace(/\s+/g, ' ').slice(0, 320);
@@ -793,16 +815,37 @@ export class ChatContextBuilder {
             return { inventoryPrompt: '' };
         }
 
-        const pendingPreMarkingState = !hasCompletedMarking ? latestPendingState : undefined;
+        if (isSubstantiveMarkingInstruction(currentUserMessage)) {
+            const trimmedCurrent = String(currentUserMessage).trim();
+            if (!userInstructionFragments.includes(trimmedCurrent)) {
+                userInstructionFragments.push(trimmedCurrent);
+            }
+        }
+
+        const pendingPreMarkingState = !hasCompletedMarking && latestPendingState
+            ? {
+                ...latestPendingState,
+                hasCustomUserInstructions: userInstructionFragments.length > 0,
+                customUserInstructions: userInstructionFragments.length > 0
+                    ? userInstructionFragments.join(' | ').slice(0, 450)
+                    : undefined
+            }
+            : undefined;
         let preMarkingDirective = '';
         if (pendingPreMarkingState) {
+            const nextStepCtaGuidance = pendingPreMarkingState.requiresMarkingScheme
+                ? 'use **Attach Marking Scheme** below to upload the mark scheme PDF/images, or click **Mark with AI (General Mark Scheme)** to start now'
+                : pendingPreMarkingState.hasCustomUserInstructions
+                    ? 'click **Start Marking with My Instructions** below whenever you are ready to start grading'
+                    : 'click **Mark Full Paper** or **Mark Attempted Questions Only** below whenever you are ready to start grading';
+
             preMarkingDirective =
                 `\n## PRE-MARKING STATUS RESPONSE FORMAT (MANDATORY)\n` +
                 `Marking has NOT started yet for the uploaded paper above. Action buttons will be rendered directly below your message.\n` +
                 `After briefly and warmly answering the student's message, ALWAYS end your reply with a clean, scannable status summary using these exact 3 bullet points:\n` +
                 `- **Paper Received:** State the uploaded subject/paper code & page/handwriting count already on file.\n` +
                 `- **Noted Instructions:** Concisely recap any grading preferences or constraints the student mentioned so far (e.g. skipped questions, specific focus areas, or "None yet").\n` +
-                `- **Next Step:** State clearly what you are waiting for (${pendingPreMarkingState.requiresMarkingScheme ? 'use **Attach Marking Scheme** below to upload the mark scheme PDF/images, or click **Mark with AI (General Mark Scheme)** to start now' : 'click **Mark Full Paper** or **Mark Attempted Questions Only** below whenever you are ready to start grading'}).\n\n`;
+                `- **Next Step:** State clearly what you are waiting for (${nextStepCtaGuidance}).\n\n`;
         }
 
         const inventoryPrompt =

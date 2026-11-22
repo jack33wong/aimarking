@@ -525,12 +525,6 @@
   color: var(--function-success);
 }
 
-/* Grade badge - blue border */
-.session-title .grade-badge {
-  border-color: var(--function-warning);
-  color: var(--function-warning);
-}
-
 
 
 

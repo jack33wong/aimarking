@@ -140,7 +140,8 @@ export class SVGOverlayService {
     hasDensityError?: boolean,
     rubricStamps?: RubricStampItem[],
     printedFooterRects?: Array<{ x: number; y: number; w: number; h: number }>,
-    allPageStudentRects?: Array<{ x: number; y: number; w: number; h: number }>
+    allPageStudentRects?: Array<{ x: number; y: number; w: number; h: number }>,
+    gradeText?: string
   ): Promise<string> {
     try {
       const hasScores = (Array.isArray(scoreToDraw) ? scoreToDraw.length > 0 : !!scoreToDraw);
@@ -179,7 +180,7 @@ export class SVGOverlayService {
         console.warn('[SVGOverlayService] Could not build ink integral map, falling back to bbox-only placement:', inkErr);
       }
 
-      const svgOverlay = this.createSVGOverlay(annotations, burnWidth, burnHeight, { width: burnWidth, height: burnHeight }, scoreToDraw, totalScoreText, hasMetaPage, semanticZones, hasDensityError, inkMap, rubricStamps, printedFooterRects, allPageStudentRects);
+      const svgOverlay = this.createSVGOverlay(annotations, burnWidth, burnHeight, { width: burnWidth, height: burnHeight }, scoreToDraw, totalScoreText, hasMetaPage, semanticZones, hasDensityError, inkMap, rubricStamps, printedFooterRects, allPageStudentRects, gradeText);
       const svgBuffer = Buffer.from(svgOverlay);
 
       const burnedImageBuffer = await sharp(uprightImageBuffer)
@@ -198,7 +199,7 @@ export class SVGOverlayService {
   // SVG GENERATION LOGIC
   // =========================================================================
 
-  private static createSVGOverlay(annotations: Annotation[], actualWidth: number, actualHeight: number, originalDimensions: ImageDimensions, scoreToDraw?: any, totalScoreText?: string, hasMetaPage?: boolean, semanticZones?: any[], hasDensityError?: boolean, inkMap?: InkDensityMap, rubricStamps?: RubricStampItem[], printedFooterRects?: Array<{ x: number; y: number; w: number; h: number }>, allPageStudentRects?: Array<{ x: number; y: number; w: number; h: number }>): string {
+  private static createSVGOverlay(annotations: Annotation[], actualWidth: number, actualHeight: number, originalDimensions: ImageDimensions, scoreToDraw?: any, totalScoreText?: string, hasMetaPage?: boolean, semanticZones?: any[], hasDensityError?: boolean, inkMap?: InkDensityMap, rubricStamps?: RubricStampItem[], printedFooterRects?: Array<{ x: number; y: number; w: number; h: number }>, allPageStudentRects?: Array<{ x: number; y: number; w: number; h: number }>, gradeText?: string): string {
     const hasScores = (Array.isArray(scoreToDraw) ? scoreToDraw.length > 0 : !!scoreToDraw);
     const hasStamps = Array.isArray(rubricStamps) && rubricStamps.length > 0;
     if ((!annotations || annotations.length === 0) && !hasScores && !totalScoreText && (!semanticZones || semanticZones.length === 0) && !hasDensityError && !hasStamps) {
@@ -412,7 +413,7 @@ export class SVGOverlayService {
     );
 
     if (totalScoreText && !isSingleScoreDuplicate) {
-      svg += this.createTotalScoreWithDoubleUnderline(totalScoreText, actualWidth, actualHeight, hasMetaPage, inkMap, occupiedRects);
+      svg += this.createTotalScoreWithDoubleUnderline(totalScoreText, actualWidth, actualHeight, hasMetaPage, inkMap, occupiedRects, gradeText);
     }
 
     // --- DENSITY ERROR WARNING ---
@@ -1538,7 +1539,8 @@ export class SVGOverlayService {
     imageHeight: number,
     hasMetaPage?: boolean,
     inkMap?: InkDensityMap,
-    occupiedRects?: Rect2D[]
+    occupiedRects?: Rect2D[],
+    gradeText?: string
   ): string {
     const scaleFactor = Math.min(
       imageHeight / this.CONFIG.baseReferenceHeight,
@@ -1646,23 +1648,43 @@ export class SVGOverlayService {
     const underlineY1 = textY + underlineOffset;
     const underlineY2 = textY + underlineOffset + underlineSpacing;
 
+    // Optional teacher-style red handwritten grade stamp on Meta / Front Cover page for past papers
+    const cleanGrade = typeof gradeText === 'string' ? gradeText.trim() : '';
+    const shouldDrawGrade = Boolean(!isTopLeft && hasMetaPage && cleanGrade && cleanGrade !== 'N/A' && cleanGrade !== 'Partial Paper');
+    let gradeSvg = '';
+    let groupLeftX = underlineStartX;
+
+    if (shouldDrawGrade) {
+      const isNumericGrade = /^\d+(\.\d+)?$/.test(cleanGrade);
+      const gradeDisplay = isNumericGrade ? `Grade ${cleanGrade}` : cleanGrade;
+      const gradeFontSize = isNumericGrade
+        ? fontSize
+        : Math.max(fontSize, Math.round(fontSize * 1.18));
+      const gradeGap = Math.max(16, Math.round(fontSize * 0.55));
+      const gradeX = underlineStartX - gradeGap;
+      const estimatedGradeWidth = this.estimateTextWidth(gradeDisplay, gradeFontSize);
+      groupLeftX = Math.max(8, gradeX - estimatedGradeWidth);
+
+      gradeSvg = `<text x="${gradeX}" y="${textY}" text-anchor="end" dominant-baseline="baseline" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${gradeFontSize}" font-weight="bold">${this.escapeXml(gradeDisplay)}</text>`;
+    }
+
     if (occupiedRects) {
       occupiedRects.push({
-        x: underlineStartX,
+        x: groupLeftX,
         y: marginTop,
-        w: estimatedTextWidth,
+        w: underlineEndX - groupLeftX,
         h: fontSize + underlineOffset + underlineSpacing + strokeWidth
       });
     }
 
-    const pivotX = Math.round((underlineStartX + underlineEndX) / 2);
+    const pivotX = Math.round((groupLeftX + underlineEndX) / 2);
     const pivotY = Math.round(marginTop + fontSize * 0.5);
 
     const text = `<text x="${textX}" y="${textY}" text-anchor="${textAnchor}" dominant-baseline="baseline" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${fontSize}" font-weight="bold">${this.escapeXml(totalScoreText)}</text>`;
     const underline1 = `<line x1="${underlineStartX}" y1="${underlineY1}" x2="${underlineEndX}" y2="${underlineY1}" stroke="#ff0000" stroke-width="${strokeWidth}" opacity="0.9"/>`;
     const underline2 = `<line x1="${underlineStartX}" y1="${underlineY2}" x2="${underlineEndX}" y2="${underlineY2}" stroke="#ff0000" stroke-width="${strokeWidth}" opacity="0.9"/>`;
 
-    return `<g transform="rotate(-2.5, ${pivotX}, ${pivotY})">${text}${underline1}${underline2}</g>`;
+    return `<g transform="rotate(-2.5, ${pivotX}, ${pivotY})">${gradeSvg}${text}${underline1}${underline2}</g>`;
   }
 
   private static createRubricStampsSVG(

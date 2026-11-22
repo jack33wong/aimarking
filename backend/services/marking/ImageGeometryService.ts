@@ -2,11 +2,17 @@ import { ModelProvider, type ModelPhase } from '../../utils/ModelProvider.js';
 import { ModelType } from '../../types/index.js';
 import { cleanSubjectAndQualification, sanitizeUnofficialPaperFlag } from './MarkingHelpers.js';
 
+export type PageLayoutType = '1x1' | '1x2' | '2x1' | '2x2' | 'unsupported_canvas';
+
 export interface GeometryAnalysisResult {
     is_acceptable_quality: boolean;
     rejection_reason?: string;
     needs_rotation: number;
     is_two_page_spread: boolean;
+    /** Detected page grid/canvas layout: '1x1' (normal), '1x2' (side-by-side landscape), '2x1' (two stacked vertically), '2x2' (4-up grid), or 'unsupported_canvas' (OneNote Printout / asymmetric whitespace with shrunk or drifting sub-pages). */
+    page_layout?: PageLayoutType;
+    /** Short reason when page_layout === 'unsupported_canvas'. */
+    unsupported_layout_reason?: string;
     is_marking_scheme: boolean;
     is_supported_doc?: boolean;
     evidence_text_snippet?: string;
@@ -125,6 +131,8 @@ interface RawGeometryAnalysisResult {
     is_acceptable_quality: boolean;
     rejection_reason: string;
     is_two_page_spread: boolean;
+    page_layout?: string;
+    unsupported_layout_reason?: string;
     is_marking_scheme: boolean;
     is_supported_doc: boolean;
     evidence_text_snippet: string;
@@ -178,6 +186,34 @@ export function sanitizeIsMarkingScheme(params: {
     return true;
 }
 
+/**
+ * Deterministic sanitizer for `page_layout` and `is_two_page_spread`.
+ * Guarantees:
+ * - `'1x2'` requires a physically landscape image (preserving existing portrait spread guard).
+ * - Unknown / omitted values fall back to `'1x2'` if `is_two_page_spread && isPhysicallyLandscape`, else `'1x1'`.
+ */
+export function sanitizePageLayout(params: {
+    rawPageLayout?: string;
+    rawIsTwoPageSpread?: boolean;
+    isPhysicallyLandscape: boolean;
+}): { pageLayout: PageLayoutType; isTwoPageSpread: boolean } {
+    const raw = String(params.rawPageLayout || '').trim().toLowerCase();
+    let pageLayout: PageLayoutType;
+
+    if (raw === '1x2') {
+        pageLayout = params.isPhysicallyLandscape ? '1x2' : '1x1';
+    } else if (raw === '2x1' || raw === '2x2' || raw === 'unsupported_canvas' || raw === '1x1') {
+        pageLayout = raw as PageLayoutType;
+    } else {
+        pageLayout = params.rawIsTwoPageSpread && params.isPhysicallyLandscape ? '1x2' : '1x1';
+    }
+
+    return {
+        pageLayout,
+        isTwoPageSpread: pageLayout === '1x2' && params.isPhysicallyLandscape
+    };
+}
+
 export class ImageGeometryService {
     
     private static getSystemPrompt(): string {
@@ -186,8 +222,15 @@ Analyze the image and return ONLY valid JSON matching the schema below.
 
 # Field Rules
 1. visual_observations (string): Max 15 words noting text clarity, academic subject, and whether a vertical spine divides two full pages side-by-side. Do NOT transcribe the page.
-2. is_acceptable_quality (boolean): false ONLY if extremely blurry, unreadable, extreme skew, or >2 pages squeezed into one photo. Otherwise true.
+2. is_acceptable_quality (boolean): false ONLY if extremely blurry, unreadable, extreme skew, or >4 pages squeezed into one photo. Otherwise true.
 3. is_two_page_spread (boolean): true ONLY for a wide/landscape capture showing two FULL pages side-by-side (~50% left, ~50% right divided by a central fold/spine) where BOTH pages are meant to be read. Return false for a single portrait page even if a spine/adjacent margin peeks in.
+3b. page_layout ("1x1" | "1x2" | "2x1" | "2x2" | "unsupported_canvas"):
+   - "1x1": Default for any normal single exam page or answer sheet — INCLUDING a single page containing 2 or 3 questions (e.g. Q1 and Q2 on one sheet).
+   - "1x2": Wide/landscape capture showing two FULL separate pages side-by-side (~50% left, ~50% right).
+   - "2x1": Two FULL separate exam pages cleanly stacked vertically (~50% top, ~50% bottom), filling the sheet width, each with its own distinct page border/footer/barcode. NEVER use "2x1" for a single exam page that just has multiple questions.
+   - "2x2": Four FULL separate exam pages cleanly tiled in a symmetric 2×2 grid (4-up print-to-PDF), each quadrant with its own distinct page border/footer/barcode.
+   - "unsupported_canvas": Asymmetric infinite-canvas / OneNote Printout export where shrunk exam pages sit in one column (e.g. left ~40–55% with huge blank/scribbled whitespace on the right) OR >2 stacked/sliced exam pages with drifting/cut-off page breaks (e.g. OneNote "New Section ... Page N" footer).
+3c. unsupported_layout_reason (string): Short reason ONLY if \`page_layout\` is "unsupported_canvas"; else "".
 4. is_marking_scheme (boolean): true ONLY for an official **printed/typeset** mark scheme or rubric table containing printed grading codes (M1, A1, B1, AO1–AO3, Level descriptors), table columns ("Question | Answers | Extra information | Mark"), or examiner guidance ("allow", "ignore", "oe", "cao"). Return **false** for:
    - exam question/answer booklets (lined answer spaces, "DO NOT WRITE IN THIS AREA", "Question X continued", "Leave blank", "(Total for Question X is Y marks)", or Pearson/AQA/OCR barcode footers)
    - **teacher-marked / graded student scripts** where red/green/black handwritten marks (e.g. M1, A1, B1, ticks, or scores) are written alongside student handwriting
@@ -218,7 +261,7 @@ Analyze the image and return ONLY valid JSON matching the schema below.
 17. evidence_text_snippet (string): First 15 words of text ONLY if \`is_supported_doc\` is false; otherwise return "".
 
 # Output Schema
-{"visual_observations":string,"is_acceptable_quality":boolean,"rejection_reason":string,"is_two_page_spread":boolean,"is_marking_scheme":boolean,"is_supported_doc":boolean,"detected_subject":"MATHS"|"ENGLISH_LANGUAGE"|"ENGLISH_LITERATURE"|"UNSUPPORTED_SUBJECT"|"NON_ACADEMIC","unsupported_subject_name":string,"exam_board":string,"paper_code_hint":string,"paper_total_marks_hint":number|null,"is_cover_page":boolean,"has_handwriting":boolean,"has_printed_questions":boolean,"booklet_page_number":number|null,"first_question_number":number|null,"is_unofficial_or_practice_paper":boolean,"unofficial_reason":string,"evidence_text_snippet":string}`;
+{"visual_observations":string,"is_acceptable_quality":boolean,"rejection_reason":string,"is_two_page_spread":boolean,"page_layout":"1x1"|"1x2"|"2x1"|"2x2"|"unsupported_canvas","unsupported_layout_reason":string,"is_marking_scheme":boolean,"is_supported_doc":boolean,"detected_subject":"MATHS"|"ENGLISH_LANGUAGE"|"ENGLISH_LITERATURE"|"UNSUPPORTED_SUBJECT"|"NON_ACADEMIC","unsupported_subject_name":string,"exam_board":string,"paper_code_hint":string,"paper_total_marks_hint":number|null,"is_cover_page":boolean,"has_handwriting":boolean,"has_printed_questions":boolean,"booklet_page_number":number|null,"first_question_number":number|null,"is_unofficial_or_practice_paper":boolean,"unofficial_reason":string,"evidence_text_snippet":string}`;
     }
 
     /**
@@ -356,7 +399,11 @@ Analyze the image and return ONLY valid JSON matching the schema below.
                 resolvedRejectionReason = '';
             }
 
-            const resolvedIsTwoPageSpread = Boolean(parsed.is_two_page_spread) && isPhysicallyLandscape;
+            const { pageLayout: resolvedPageLayout, isTwoPageSpread: resolvedIsTwoPageSpread } = sanitizePageLayout({
+                rawPageLayout: parsed.page_layout,
+                rawIsTwoPageSpread: Boolean(parsed.is_two_page_spread),
+                isPhysicallyLandscape
+            });
             const resolvedIsMarkingScheme = sanitizeIsMarkingScheme({
                 rawIsMarkingScheme: Boolean(parsed.is_marking_scheme),
                 isTwoPageSpread: resolvedIsTwoPageSpread,
@@ -371,6 +418,11 @@ Analyze the image and return ONLY valid JSON matching the schema below.
                 rejection_reason: resolvedRejectionReason || undefined,
                 needs_rotation: 0, // Rotation is handled by Vision now
                 is_two_page_spread: resolvedIsTwoPageSpread,
+                page_layout: resolvedPageLayout,
+                unsupported_layout_reason:
+                    resolvedPageLayout === 'unsupported_canvas' && parsed.unsupported_layout_reason
+                        ? String(parsed.unsupported_layout_reason).trim()
+                        : undefined,
                 is_marking_scheme: resolvedIsMarkingScheme,
                 is_supported_doc: isSupportedDoc,
                 evidence_text_snippet: parsed.evidence_text_snippet || undefined,

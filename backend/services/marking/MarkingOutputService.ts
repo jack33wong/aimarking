@@ -26,7 +26,7 @@ export class MarkingOutputService {
         allPagesOcrData: PageOcrResult[],
         files: Express.Multer.File[],
         submissionId: string,
-        options: { userId?: string; scopeLabel?: string },
+        options: { userId?: string; scopeLabel?: string; gradeText?: string },
         markingSchemesMap: Map<string, any>,
         progressCallback: (data: any) => void,
         MULTI_IMAGE_STEPS: string[]
@@ -84,6 +84,7 @@ export class MarkingOutputService {
 
             const mapperCategory = allClassificationResults.find(c => c.pageIndex === pageIndex)?.result?.category;
             const hasMetaPage = mapperCategory === 'metadata' || mapperCategory === 'frontPage' || pageQuestions.length === 0;
+            const gradeToDraw = (isFirstOutputPage && hasMetaPage) ? options.gradeText : undefined;
 
             // [RESOLUTION-SYNC] Synchronize burn dimensions
             const burnW = page.width;
@@ -197,7 +198,8 @@ export class MarkingOutputService {
                     hasDensityError,
                     rubricStampsForThisPage,
                     printedFooterRects,
-                    extraStudentRects
+                    extraStudentRects,
+                    gradeToDraw
                 );
                 return annotatedImageData;
             } catch (drawError) {

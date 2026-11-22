@@ -979,6 +979,7 @@ export class MarkingController {
             const shouldRecordDigest =
                 result.usage.requestCount > 0 ||
                 result.docType === 'pdf_structural_error' ||
+                result.docType === 'unsupported_layout' ||
                 result.docType === 'page_limit_exceeded';
 
             if (capturedLogs && shouldRecordDigest) {

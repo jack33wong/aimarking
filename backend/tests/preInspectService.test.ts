@@ -317,4 +317,41 @@ describe('PreInspectService: strategic page selection, usage tracking, digest me
     expect(res.isWarning).toBe(false);
     expect(res.bannerTitle).toContain('Ready to mark');
   });
+
+  it('flags OneNote Printout / unsupported_canvas layout during pre-inspect with Replace file CTA', async () => {
+    const oneNoteImg = {
+      fieldname: 'files',
+      originalname: 'onenote-printout.jpg',
+      encoding: '7bit',
+      mimetype: 'image/jpeg',
+      buffer: Buffer.from('onenote-printout-bytes'),
+      size: 22,
+    } as Express.Multer.File;
+
+    jest.spyOn(ImageGeometryService, 'analyze').mockResolvedValueOnce({
+      is_acceptable_quality: true,
+      needs_rotation: 0,
+      is_two_page_spread: false,
+      page_layout: 'unsupported_canvas',
+      unsupported_layout_reason: 'OneNote Printout with New Section 1 Page 2 footer and empty right margin',
+      is_marking_scheme: false,
+      is_supported_doc: true,
+      detected_subject: 'MATHS',
+      has_handwriting: true,
+      has_printed_questions: true,
+    });
+
+    const res = await PreInspectService.inspectFiles({
+      files: [oneNoteImg],
+      userId: 'user-onenote',
+      digestSessionId: 'pre-inspect-onenote-1',
+      usageTracker: new UsageTracker(),
+    });
+
+    expect(res.overallStatus).toBe('invalid');
+    expect(res.docType).toBe('unsupported_layout');
+    expect(res.isWarning).toBe(true);
+    expect(res.bannerTitle).toMatch(/OneNote Printout/i);
+    expect(res.suggestions[0]?.action).toBe('replace_file');
+  });
 });

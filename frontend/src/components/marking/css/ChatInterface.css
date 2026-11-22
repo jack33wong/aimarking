@@ -761,7 +761,7 @@ html.dark .follow-up-chat-input-container.follow-up-bottom::before {
   height: 28px;
   object-fit: cover;
   border-radius: 4px;
-  border: 1.5px solid var(--bg-surface-1);
+  border: 1px solid var(--border-primary);
   box-shadow: 0 1px 3px var(--shadow-S);
   background: var(--bg-surface-2);
   flex-shrink: 0;
@@ -782,8 +782,8 @@ html.dark .follow-up-chat-input-container.follow-up-bottom::before {
 
 .ribbon-thumbnail-total-score {
   display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  align-items: baseline;
+  gap: 3px;
   font-size: 9px;
   font-weight: 600;
   line-height: 1;
@@ -792,7 +792,7 @@ html.dark .follow-up-chat-input-container.follow-up-bottom::before {
 }
 
 .ribbon-thumbnail-total-label {
-  font-size: 9px;
+  font-size: 7px;
   font-weight: 600;
   color: var(--text-tertiary);
   text-transform: uppercase;
@@ -800,9 +800,16 @@ html.dark .follow-up-chat-input-container.follow-up-bottom::before {
   white-space: nowrap;
 }
 
+.ribbon-thumbnail-total-sep {
+  font-size: 9px;
+  color: var(--text-tertiary);
+  margin: 0 1px;
+}
+
 .ribbon-thumbnail-total-value {
+  font-family: var(--font-handwritten);
   color: var(--function-error);
-  font-size: 10.5px;
+  font-size: 13.5px;
   font-weight: 700;
   line-height: 1;
   font-variant-numeric: tabular-nums;

@@ -536,14 +536,6 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
 
   const hasAchievedGrade = gradeAchieved !== 'N/A' && gradeAchieved !== 'Partial Paper';
 
-  // Compute the next higher grade boundary above score.awardedMarks (lowest b.mark above score.awardedMarks)
-  const nextBoundary = (() => {
-    if (!sortedBoundariesDesc || sortedBoundariesDesc.length === 0 || !score) return null;
-    const higherBoundaries = sortedBoundariesDesc.filter(b => b.mark > score.awardedMarks);
-    if (higherBoundaries.length === 0) return null;
-    return higherBoundaries[higherBoundaries.length - 1];
-  })();
-
   const formatSummaryQuestionChip = (qStr: string): string => {
     const clean = String(qStr).replace(/^Q/i, '').trim();
     const multiMatch = clean.match(/^(P\d+)[·.\-]Q?(.+)$/i);
@@ -638,23 +630,17 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
               <div className="tmua-hero-badges">
                 {isPastPaperWithBoundaries && (
                   <div className={`tmua-grade-badge ${!hasAchievedGrade ? 'na' : ''}`}>
-                    <span className="pill-text-desktop">
-                      {gradeAchieved === 'Partial Paper' ? 'Partial Paper' : `Grade Achieved: ${gradeAchieved}`}
-                    </span>
-                    <span className="pill-text-mobile">
-                      {gradeAchieved === 'Partial Paper' ? 'Partial' : `Grade: ${gradeAchieved}`}
-                    </span>
-                  </div>
-                )}
-                {nextBoundary && isPastPaperWithBoundaries && score.totalMarks > 0 && (
-                  <div
-                    className="tmua-next-grade-pill"
-                    title={`${nextBoundary.mark - score.awardedMarks} ${nextBoundary.mark - score.awardedMarks === 1 ? 'mark' : 'marks'} away from Grade ${nextBoundary.grade}`}
-                  >
-                    <span>🔥</span>
-                    <span>
-                      {nextBoundary.mark - score.awardedMarks} {nextBoundary.mark - score.awardedMarks === 1 ? 'mark' : 'marks'} to Grade {nextBoundary.grade}
-                    </span>
+                    {gradeAchieved === 'Partial Paper' ? (
+                      <span className="tmua-grade-fallback">
+                        <span className="pill-text-desktop">Partial Paper</span>
+                        <span className="pill-text-mobile">Partial</span>
+                      </span>
+                    ) : (
+                      <>
+                        <span className="tmua-grade-label">Grade</span>
+                        <span className="tmua-grade-value">{gradeAchieved}</span>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -727,11 +713,11 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
                 <div className="tmua-stat-label">Full marks questions</div>
               </div>
               <div className="tmua-stat-card">
-                <div className="tmua-stat-value">{gradeAchieved}</div>
+                <div className={`tmua-stat-value ${!hasAchievedGrade ? 'stat-fallback' : ''}`}>{gradeAchieved}</div>
                 <div className="tmua-stat-label">Grade Achieved</div>
               </div>
               <div className="tmua-stat-card">
-                <div className="tmua-stat-value">{predictedGrade}</div>
+                <div className={`tmua-stat-value ${!predictedGrade || predictedGrade === 'N/A' ? 'stat-fallback' : ''}`}>{predictedGrade}</div>
                 <div className="tmua-stat-label">Predicted Grade</div>
               </div>
             </div>

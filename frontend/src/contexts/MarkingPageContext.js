@@ -2227,16 +2227,20 @@ export const MarkingPageProvider = ({
     );
   }, [reconstructStudentFiles, handleMultiImageAnalysis]);
 
-  const startMarkingFromPreCheck = useCallback(async (mode = 'attempted_only') => {
+  const startMarkingFromPreCheck = useCallback(async (mode = 'attempted_only', customInstructions = '') => {
     const studentFiles = await reconstructStudentFiles();
     if (studentFiles.length === 0) {
       console.warn('No student files available to start marking from pre-check.');
       return false;
     }
 
-    const customText = mode === 'attempted_only'
-      ? 'Only mark attempted questions'
-      : 'Mark Full Paper';
+    const trimmedInstructions = typeof customInstructions === 'string' ? customInstructions.trim() : '';
+    const customText =
+      mode === 'custom_instructions' && trimmedInstructions
+        ? trimmedInstructions
+        : mode === 'attempted_only'
+          ? 'Only mark attempted questions'
+          : 'Mark Full Paper';
 
     return handleMultiImageAnalysis(
       studentFiles,

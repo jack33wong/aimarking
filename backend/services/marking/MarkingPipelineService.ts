@@ -8,7 +8,12 @@ import { ImageUtils } from '../../utils/ImageUtils.js';
 import { MarkingInstructionService } from './MarkingInstructionService.js';
 import { MarkingOutputService } from './MarkingOutputService.js';
 import { MarkingPersistenceService } from './MarkingPersistenceService.js';
-import { ImageGeometryService, isRecognizedAcademicSubject } from './ImageGeometryService.js';
+import { ImageGeometryService, isRecognizedAcademicSubject, type PageLayoutType } from './ImageGeometryService.js';
+import {
+    resolveDocumentLayoutPolicy,
+    formatUnsupportedLayoutMessage,
+    hasOneNotePrintoutSignature
+} from './PreFlightRules.js';
 import { PreInspectService } from './PreInspectService.js';
 import {
     resolvePageLimits,
@@ -2681,22 +2686,144 @@ export class MarkingPipelineService {
 
             let lastRejectionReason = 'Image is blurry, blank, unreadable, or not mathematics content.';
 
-            // 🛡️ [SPREAD CONSISTENCY SWEEP]:
-            // If >= 50% of student images in a multi-image upload (at least 3 student images) are 2-page booklet spreads,
-            // any remaining landscape student image (width > height * 1.1, e.g. Page 0 with Cover + Page 2)
-            // that missed spread detection due to lacking a dark center crease is also a 2-page spread.
-            // Note: Exclude Marking Scheme pages so a 29-page portrait Mark Scheme PDF does not dilute the student spread ratio!
+            // 🛡️ [GENERIC GRID & UNSUPPORTED CANVAS LAYOUT POLICY]:
+            // Evaluates symmetric N-up grids (1x2, 2x1, 2x2) with batch-consistency guards AND detects
+            // unsupported OneNote / asymmetric-whitespace / drifting-gutter canvas exports with multi-signal corroboration.
             const isPageLandscape = (p?: StandardizedPage) =>
                 Boolean(p?.width && p?.height && p.width > p.height * 1.1);
 
-            const nonSchemeIndices = standardizedPages
-                .map((_, idx) => idx)
-                .filter(idx => !geometryResults[idx]?.is_marking_scheme);
-            const spreadCount = nonSchemeIndices.filter(
-                idx => geometryResults[idx]?.is_two_page_spread && isPageLandscape(standardizedPages[idx])
-            ).length;
-            const isMajoritySpreadBatch =
-                nonSchemeIndices.length >= 3 && (spreadCount / nonSchemeIndices.length) >= 0.5;
+            const hasExplicitOneNoteCoverOrFooter = geometryResults.some(g =>
+                hasOneNotePrintoutSignature(`${g?.evidence_text_snippet || ''} ${g?.unsupported_layout_reason || ''} ${g?.rejection_reason || ''}`)
+            );
+            const hasAnyUnsupportedCanvasVote = geometryResults.some(
+                g => g?.page_layout === 'unsupported_canvas' || g?.page_layout === '2x1'
+            );
+
+            // Only run pixel-level asymmetric whitespace check when OneNote/unsupported_canvas is suspected (0ms overhead for normal uploads)
+            const asymmetricCanvasFlags: boolean[] =
+                hasAnyUnsupportedCanvasVote || hasExplicitOneNoteCoverOrFooter
+                    ? await Promise.all(
+                        lightweightPages.map(async (p, idx) => {
+                            const g = geometryResults[idx];
+                            if (!p?.imageData || g?.is_marking_scheme || g?.detected_subject === 'NON_ACADEMIC') {
+                                return false;
+                            }
+                            const res = await ImageUtils.detectAsymmetricCanvasWhitespace(p.imageData);
+                            return res.isAsymmetricCanvas;
+                        })
+                    )
+                    : [];
+
+            const documentLayoutPolicy = resolveDocumentLayoutPolicy({
+                pages: standardizedPages,
+                geometryResults,
+                asymmetricCanvasFlags,
+                hasExplicitOneNoteCoverOrFooter
+            });
+            const isMajoritySpreadBatch = documentLayoutPolicy.isMajoritySpreadBatch;
+
+            if (documentLayoutPolicy.shouldRejectUnsupportedLayout) {
+                const layoutRejectReason = documentLayoutPolicy.rejectionReason || 'Unsupported multi-page canvas layout detected.';
+                console.warn(`⚠️ [GEOMETRY LAYOUT GUARD] Rejecting upload early: ${layoutRejectReason}`);
+                logGeometryComplete();
+                progressCallback(createProgressData(2, 'Unsupported page layout detected.', MULTI_IMAGE_STEPS));
+
+                const guidedLayoutMessage = formatUnsupportedLayoutMessage(
+                    hasExplicitOneNoteCoverOrFooter || /onenote/i.test(layoutRejectReason)
+                );
+
+                try {
+                    const uploadResult = await SessionManagementService.uploadOriginalFiles(
+                        files,
+                        userId || 'anonymous',
+                        submissionId,
+                        !!userId,
+                        pdfContext
+                    );
+                    const { structuredImageDataArray, structuredPdfContexts } = SessionManagementService.createStructuredData(
+                        files,
+                        isPdf,
+                        isMultiplePdfs || isMixedUpload,
+                        pdfContext
+                    );
+                    const userMessage = SessionManagementService.createUserMessageForDatabase(
+                        {
+                            content: options.customText || 'Uploaded document for analysis',
+                            files,
+                            isPdf,
+                            isMultiplePdfs: isMultiplePdfs || isMixedUpload,
+                            sessionId: options.sessionId || submissionId,
+                            model: actualModel,
+                            pdfContext
+                        },
+                        structuredImageDataArray,
+                        structuredPdfContexts,
+                        uploadResult.originalImageLinks
+                    );
+
+                    const aiMessage: any = createAIMessage({
+                        content: guidedLayoutMessage,
+                        messageId: req.body?.aiMessageId
+                    });
+                    aiMessage.canUploadCorrectedFile = true;
+                    aiMessage.isUnsupportedLayout = true;
+
+                    const markingContext: MarkingSessionContext = {
+                        req,
+                        submissionId,
+                        startTime,
+                        userMessage,
+                        aiMessage,
+                        questionDetection: options.markingScheme,
+                        globalQuestionText: options.customText || (files && files[0] ? files[0].originalname : 'Unsupported Layout'),
+                        mode: 'Question',
+                        allQuestionResults: [],
+                        files,
+                        usageTokens: usageTracker.getTotalTokens(),
+                        apiRequests: usageTracker.getTotalRequests(),
+                        model: actualModel,
+                        mathpixCallCount: 0,
+                        totalCost: usageTracker.calculateCost(actualModel).total,
+                        detectionResults: []
+                    };
+
+                    const sessionResult = await SessionManagementService.persistMarkingSession(markingContext);
+                    const finalOutput = {
+                        success: true,
+                        submissionId,
+                        mode: 'Question',
+                        sessionId: sessionResult.sessionId,
+                        sessionTitle: sessionResult.sessionTitle,
+                        unifiedSession: sessionResult.unifiedSession,
+                        aiMessage,
+                        canUploadCorrectedFile: true,
+                        isUnsupportedLayout: true,
+                        annotatedOutput: [],
+                        results: [],
+                        warning: 'CONTENT_REJECTED', // Exempts from credit deduction in MarkingController
+                        processingStats: {
+                            totalLLMTokens: usageTracker.getTotalTokens(),
+                            mathpixCalls: 0
+                        },
+                        ...(pdfContext && {
+                            originalFileType: pdfContext.originalFileType,
+                            originalPdfLink: pdfContext.originalPdfLink,
+                            originalPdfDataUrl: pdfContext.originalPdfDataUrl,
+                            originalFileName: pdfContext.originalFileName,
+                            ...(pdfContext.pdfContexts && {
+                                pdfContexts: pdfContext.pdfContexts
+                            })
+                        })
+                    };
+
+                    progressCallback({ type: 'complete', result: finalOutput });
+                    console.log(`✅ [EARLY EXIT] Persisted unsupported-layout session: ${sessionResult.sessionId} | Reason: ${layoutRejectReason}`);
+                    return finalOutput;
+                } catch (persistError) {
+                    console.error('❌ [EARLY EXIT] Failed to persist unsupported-layout session:', persistError);
+                    throw new Error(guidedLayoutMessage);
+                }
+            }
 
             // 🛡️ [MARK-SCHEME FALSE-POSITIVE GUARD]:
             // In a multi-spread photographed exam booklet (e.g. 23 loose spreads of a teacher-marked script),
@@ -3071,54 +3198,70 @@ export class MarkingPipelineService {
                 }
 
                 const isLandscapeAspect = isPageLandscape(stdPage);
+                const resolvedLayout: PageLayoutType = documentLayoutPolicy.effectivePageLayouts[i] || '1x1';
                 if (geo.is_two_page_spread && !isLandscapeAspect) {
                     console.log(
                         `🛡️ [GEOMETRY GUARD] Ignoring false-positive 2-page spread on Portrait Page ${stdPage.pageIndex} (${stdPage.width}x${stdPage.height}).`
                     );
                 }
-                const shouldSplitSpread = Boolean(isLandscapeAspect && (geo.is_two_page_spread || isMajoritySpreadBatch));
 
-                // Handle 2-page spread splitting
-                if (shouldSplitSpread) {
-                    console.log(`✂️ [GEOMETRY] Splitting 2-page spread for Page ${stdPage.pageIndex}${!geo.is_two_page_spread ? ' (Batch Landscape Spread Sweep)' : ''}.`);
-                    const splitStdImages = await ImageUtils.splitImageVertically(stdPage.imageData);
-                    // Generate full 800px lightweight copies from each split half-page (instead of cutting an 800px image into two tiny 400px halves!)
-                    const splitLightImages = await Promise.all([
-                        ImageUtils.createLightweightCopy(splitStdImages[0], 800),
-                        ImageUtils.createLightweightCopy(splitStdImages[1], 800)
-                    ]);
-                    
-                    newStandardizedPages.push({ ...stdPage, imageData: splitStdImages[0], width: Math.round((stdPage.width || 0) / 2) }); // Left (Canonical)
-                    newStandardizedPages.push({ ...stdPage, imageData: splitStdImages[1], width: Math.round((stdPage.width || 0) / 2) }); // Right (Canonical)
-                    
-                    newLightweightPages.push({ ...lightPage, imageData: splitLightImages[0], width: Math.round((lightPage.width || 0) / 2) }); // Left (Lightweight 800px)
-                    newLightweightPages.push({ ...lightPage, imageData: splitLightImages[1], width: Math.round((lightPage.width || 0) / 2) }); // Right (Lightweight 800px)
+                // Handle symmetric N-up grid splitting (1x2, 2x1, 2x2)
+                if (resolvedLayout === '1x2' || resolvedLayout === '2x1' || resolvedLayout === '2x2') {
+                    const rows: 1 | 2 = (resolvedLayout === '2x1' || resolvedLayout === '2x2') ? 2 : 1;
+                    const cols: 1 | 2 = (resolvedLayout === '1x2' || resolvedLayout === '2x2') ? 2 : 1;
+                    console.log(
+                        `✂️ [GEOMETRY] Splitting ${resolvedLayout} grid for Page ${stdPage.pageIndex}` +
+                        `${resolvedLayout === '1x2' && !geo.is_two_page_spread ? ' (Batch Landscape Spread Sweep)' : ''}.`
+                    );
+                    const splitTiles = await ImageUtils.splitImageGrid(stdPage.imageData, rows, cols);
+                    // Generate full 800px lightweight copies from each split tile (instead of cutting an 800px image into tiny halves/quadrants!)
+                    const splitLightImages = await Promise.all(
+                        splitTiles.map(tile => ImageUtils.createLightweightCopy(tile.imageData, 800))
+                    );
 
-                    const rawSpreadBookletPage =
+                    const rawBookletPage =
                         typeof geo?.booklet_page_number === 'number' &&
                         geo.booklet_page_number >= 1 &&
                         geo.booklet_page_number <= 100
                             ? geo.booklet_page_number
                             : undefined;
-                    let leftBookletPage = rawSpreadBookletPage;
-                    let rightBookletPage = rawSpreadBookletPage;
-                    if (rawSpreadBookletPage !== undefined) {
-                        if (rawSpreadBookletPage === 1) {
-                            leftBookletPage = 1;
-                            rightBookletPage = 2;
-                        } else if (rawSpreadBookletPage % 2 === 0) {
-                            // Standard UK exam spread: even page on left (e.g. 36), odd page on right (e.g. 37)
-                            leftBookletPage = rawSpreadBookletPage;
-                            rightBookletPage = Math.min(100, rawSpreadBookletPage + 1);
-                        } else {
-                            // Pre-flight read the right-hand odd page (e.g. 37) -> left half is 36
-                            leftBookletPage = rawSpreadBookletPage - 1;
-                            rightBookletPage = rawSpreadBookletPage;
-                        }
-                    }
 
-                    newGeometryResults.push({ ...geo, booklet_page_number: leftBookletPage });
-                    newGeometryResults.push({ ...geo, is_cover_page: false, booklet_page_number: rightBookletPage });
+                    const computeTileBookletPage = (tileIdx: number): number | undefined => {
+                        if (rawBookletPage === undefined) return undefined;
+                        if (resolvedLayout === '1x2') {
+                            if (rawBookletPage === 1) return tileIdx === 0 ? 1 : 2;
+                            if (rawBookletPage % 2 === 0) {
+                                // Standard UK exam spread: even page on left (e.g. 36), odd page on right (e.g. 37)
+                                return tileIdx === 0 ? rawBookletPage : Math.min(100, rawBookletPage + 1);
+                            }
+                            // Pre-flight read the right-hand odd page (e.g. 37) -> left half is 36
+                            return tileIdx === 0 ? rawBookletPage - 1 : rawBookletPage;
+                        }
+                        // For 2x1 and 2x2, increment in reading order (TL -> TR -> BL -> BR)
+                        return Math.min(100, rawBookletPage + tileIdx);
+                    };
+
+                    splitTiles.forEach((tile, tileIdx) => {
+                        newStandardizedPages.push({
+                            ...stdPage,
+                            imageData: tile.imageData,
+                            width: tile.width || Math.round((stdPage.width || 0) / cols),
+                            height: tile.height || Math.round((stdPage.height || 0) / rows)
+                        });
+                        newLightweightPages.push({
+                            ...lightPage,
+                            imageData: splitLightImages[tileIdx],
+                            width: Math.round((lightPage.width || 0) / cols),
+                            height: Math.round((lightPage.height || 0) / rows)
+                        });
+                        newGeometryResults.push({
+                            ...geo,
+                            page_layout: '1x1',
+                            is_two_page_spread: false,
+                            is_cover_page: tileIdx === 0 ? geo.is_cover_page : false,
+                            booklet_page_number: computeTileBookletPage(tileIdx)
+                        });
+                    });
                 } else {
                     newStandardizedPages.push(stdPage);
                     newLightweightPages.push(lightPage);
@@ -6224,53 +6367,74 @@ export class MarkingPipelineService {
             progressCallback(createProgressData(7, 'Aggregating results and generating annotated images...', MULTI_IMAGE_STEPS));
             const logOutputGenerationComplete = logStep('Output Generation', 'output-generation');
 
+            // Pre-calculate past-paper grade once so both the parallel Performance Summary
+            // and the Meta / Front Cover page SVG annotation can use it.
+            const { overallScore: preOverall, totalPossibleScore: preTotal, overallScoreText: preScoreText } =
+                calculateOverallScore(allQuestionResults, markingScope?.label);
+            const isModifiedPaperForOutput = detectionResults?.some((r: any) => r.detectionResult?.isModifiedQuestion === true) || false;
+            const validDetectionEntryForOutput = detectionResults?.find((r: any) => {
+                const m = r?.detectionResult?.match;
+                return r?.detectionResult?.found === true && m?.board && m.board !== 'Unknown' && m.board !== 'N/A' && m?.paperCode !== 'Generic Question';
+            });
+            const firstDetectionForOutput = validDetectionEntryForOutput?.detectionResult?.match || detectionResults?.[0]?.detectionResult?.match || {};
+            const isAnyQuestionFoundForOutput = detectionResults?.some((r: any) => r.detectionResult?.found === true) || false;
+            const isRealPastPaperForOutput = Boolean(firstDetectionForOutput.board && firstDetectionForOutput.board !== 'Unknown' && isAnyQuestionFoundForOutput);
+
+            let detectedQuestionForGradePre: any = undefined;
+            if (!isModifiedPaperForOutput && markingSchemesMap && markingSchemesMap.size > 0) {
+                const allSchemes = Array.from(markingSchemesMap.values());
+                const firstSchemeEntry =
+                    allSchemes.find((s: any) => !s?.isGeneric && s?.questionDetection?.found && s?.questionDetection?.match) ||
+                    allSchemes[0];
+                detectedQuestionForGradePre = firstSchemeEntry?.questionDetection || undefined;
+            }
+            let preGradeResult: { grade?: string; predictedGrade?: string; boundaries?: any } = {
+                grade: undefined,
+                predictedGrade: undefined,
+                boundaries: undefined
+            };
+            if (!isModifiedPaperForOutput) {
+                try {
+                    preGradeResult = await GradeBoundaryService.calculateGradeWithOrchestration(
+                        preOverall,
+                        preTotal,
+                        detectedQuestionForGradePre,
+                        markingSchemesMap
+                    );
+                } catch (gradeErr) {
+                    console.warn('⚠️ [PRE-GRADE] Failed to calculate grade before output generation:', gradeErr);
+                }
+            }
+            const metaPageGradeText =
+                isRealPastPaperForOutput &&
+                !isModifiedPaperForOutput &&
+                preGradeResult.grade &&
+                preGradeResult.grade !== 'Partial Paper' &&
+                preGradeResult.grade !== 'N/A'
+                    ? preGradeResult.grade
+                    : undefined;
+
             // 🚀 [PARALLEL PERFORMANCE SUMMARY]:
             // Kick off the 4s Performance Summary AI call concurrently with Output Generation (SVG burning + Firebase Storage image uploads)!
             const precomputedPerformanceSummaryPromise = (async () => {
                 const summaryStart = Date.now();
                 try {
-                    const { overallScore: preOverall, totalPossibleScore: preTotal, overallScoreText: preScoreText } =
-                        calculateOverallScore(allQuestionResults, markingScope?.label);
-                    const isModifiedPaper = detectionResults?.some((r: any) => r.detectionResult?.isModifiedQuestion === true) || false;
-                    let detectedQuestionForGrade: any = undefined;
-                    if (!isModifiedPaper && markingSchemesMap && markingSchemesMap.size > 0) {
-                        const allSchemes = Array.from(markingSchemesMap.values());
-                        const firstSchemeEntry =
-                            allSchemes.find((s: any) => !s?.isGeneric && s?.questionDetection?.found && s?.questionDetection?.match) ||
-                            allSchemes[0];
-                        detectedQuestionForGrade = firstSchemeEntry?.questionDetection || undefined;
-                    }
-                    const gradeResult = isModifiedPaper
-                        ? { grade: undefined, predictedGrade: undefined, boundaries: undefined }
-                        : await GradeBoundaryService.calculateGradeWithOrchestration(
-                            preOverall,
-                            preTotal,
-                            detectedQuestionForGrade,
-                            markingSchemesMap
-                        );
-                    const validDetectionEntry = detectionResults?.find((r: any) => {
-                        const m = r?.detectionResult?.match;
-                        return r?.detectionResult?.found === true && m?.board && m.board !== 'Unknown' && m.board !== 'N/A' && m?.paperCode !== 'Generic Question';
-                    });
-                    const firstDetection = validDetectionEntry?.detectionResult?.match || detectionResults?.[0]?.detectionResult?.match || {};
-                    const isAnyQuestionFound = detectionResults?.some((r: any) => r.detectionResult?.found === true) || false;
-                    const isRealPastPaper = Boolean(firstDetection.board && firstDetection.board !== 'Unknown' && isAnyQuestionFound);
-                    const examInfo = isRealPastPaper ? {
-                        examBoard: firstDetection.board || '',
-                        examSeries: firstDetection.examSeries || firstDetection.year || '',
-                        subject: firstDetection.subject || firstDetection.qualification || '',
-                        examCode: firstDetection.paperCode || '',
-                        tier: firstDetection.tier || '',
-                        ...(isModifiedPaper ? { isModified: true } : {})
+                    const examInfo = isRealPastPaperForOutput ? {
+                        examBoard: firstDetectionForOutput.board || '',
+                        examSeries: firstDetectionForOutput.examSeries || firstDetectionForOutput.year || '',
+                        subject: firstDetectionForOutput.subject || firstDetectionForOutput.qualification || '',
+                        examCode: firstDetectionForOutput.paperCode || '',
+                        tier: firstDetectionForOutput.tier || '',
+                        ...(isModifiedPaperForOutput ? { isModified: true } : {})
                     } : undefined;
 
                     const summary = await SessionManagementService.generateMasterPerformanceSummary(
                         allQuestionResults,
                         actualModel,
                         usageTracker,
-                        isRealPastPaper && !isModifiedPaper ? gradeResult.grade : undefined,
-                        isRealPastPaper && !isModifiedPaper ? gradeResult.predictedGrade : undefined,
-                        isRealPastPaper && !isModifiedPaper ? gradeResult.boundaries : undefined,
+                        isRealPastPaperForOutput && !isModifiedPaperForOutput ? preGradeResult.grade : undefined,
+                        isRealPastPaperForOutput && !isModifiedPaperForOutput ? preGradeResult.predictedGrade : undefined,
+                        isRealPastPaperForOutput && !isModifiedPaperForOutput ? preGradeResult.boundaries : undefined,
                         { totalMarks: preTotal, awardedMarks: preOverall, scoreText: preScoreText },
                         examInfo
                     );
@@ -6296,7 +6460,7 @@ export class MarkingPipelineService {
                 allPagesOcrData,
                 files,
                 submissionId,
-                { ...options, scopeLabel: markingScope?.label },
+                { ...options, scopeLabel: markingScope?.label, gradeText: metaPageGradeText },
                 markingSchemesMap,
                 progressCallback,
                 MULTI_IMAGE_STEPS
@@ -6924,6 +7088,42 @@ export class MarkingPipelineService {
             size: p.imageData.length
         }));
 
+        let detectedQuestionForGrade: any = undefined;
+        if (markingSchemesMap && markingSchemesMap.size > 0) {
+            const allSchemes = Array.from(markingSchemesMap.values());
+            const firstSchemeEntry = allSchemes.find((s: any) => !s?.isGeneric && s?.questionDetection?.found && s?.questionDetection?.match) || allSchemes[0];
+            detectedQuestionForGrade = firstSchemeEntry?.questionDetection || undefined;
+        }
+
+        const { overallScore: preRemarkOverall, totalPossibleScore: preRemarkTotal } = calculateOverallScore(allQuestionResults);
+        const isRemarkModifiedPaper = detectionResults?.some((r: any) => r.detectionResult?.isModifiedQuestion === true) || false;
+        const remarkValidDetection = detectionResults?.find((r: any) => {
+            const m = r?.detectionResult?.match;
+            return r?.detectionResult?.found === true && m?.board && m.board !== 'Unknown' && m.board !== 'N/A' && m?.paperCode !== 'Generic Question';
+        });
+        const remarkFirstDetection = remarkValidDetection?.detectionResult?.match || detectionResults?.[0]?.detectionResult?.match || {};
+        const isRemarkPastPaper = Boolean(
+            remarkFirstDetection.board &&
+            remarkFirstDetection.board !== 'Unknown' &&
+            detectionResults?.some((r: any) => r.detectionResult?.found === true)
+        );
+
+        const gradeResult = await GradeBoundaryService.calculateGradeWithOrchestration(
+            preRemarkOverall,
+            preRemarkTotal,
+            detectedQuestionForGrade,
+            markingSchemesMap
+        );
+
+        const remarkMetaPageGradeText =
+            isRemarkPastPaper &&
+            !isRemarkModifiedPaper &&
+            gradeResult.grade &&
+            gradeResult.grade !== 'Partial Paper' &&
+            gradeResult.grade !== 'N/A'
+                ? gradeResult.grade
+                : undefined;
+
         const {
             finalAnnotatedOutput,
             overallScore,
@@ -6939,24 +7139,10 @@ export class MarkingPipelineService {
             allPagesOcrData,
             dummyFiles,
             resolvedSessionId,
-            { userId: options.userId },
+            { userId: options.userId, gradeText: remarkMetaPageGradeText },
             markingSchemesMap,
             progressCallback,
             REMARK_STEPS
-        );
-
-        let detectedQuestionForGrade: any = undefined;
-        if (markingSchemesMap && markingSchemesMap.size > 0) {
-            const allSchemes = Array.from(markingSchemesMap.values());
-            const firstSchemeEntry = allSchemes.find((s: any) => !s?.isGeneric && s?.questionDetection?.found && s?.questionDetection?.match) || allSchemes[0];
-            detectedQuestionForGrade = firstSchemeEntry?.questionDetection || undefined;
-        }
-
-        const gradeResult = await GradeBoundaryService.calculateGradeWithOrchestration(
-            overallScore,
-            totalPossibleScore,
-            detectedQuestionForGrade,
-            markingSchemesMap
         );
 
         const richMarkingContext = await ChatContextBuilder.buildMarkingContext({

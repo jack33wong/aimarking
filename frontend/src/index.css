@@ -88,6 +88,9 @@ html {
   --tab-fill: rgba(0, 0, 0, 0.04);
   --tab-active-black: #2c2b28;
 
+  /* --- Typography --- */
+  --font-handwritten: 'Kalam', 'Comic Neue', 'Comic Sans MS', cursive;
+
   --shadow-L: rgba(0, 0, 0, 0.18);
   --shadow-M: rgba(0, 0, 0, 0.10);
   --shadow-S: rgba(0, 0, 0, 0.05);

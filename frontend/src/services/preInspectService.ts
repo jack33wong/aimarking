@@ -16,6 +16,7 @@ export type PreInspectDocType =
   | 'multi_paper_not_supported'
   | 'page_limit_exceeded'
   | 'pdf_structural_error'
+  | 'unsupported_layout'
   | 'unofficial_paper'
   | 'non_academic'
   | 'unreadable';
