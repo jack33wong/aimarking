@@ -360,16 +360,41 @@ export class ChatContextBuilder {
     }
 
     /**
+     * Extracts all base question numbers explicitly referenced in a user's follow-up message
+     * (e.g. "Why did I lose marks on Question 1c and Question 3a?" -> ["1", "3"]).
+     */
+    static extractReferencedQuestionNumbers(messageText?: string | null): string[] {
+        if (!messageText || typeof messageText !== 'string') return [];
+        const matches = messageText.matchAll(/\b(?:questions?|q)\s*(\d+)(?:[a-z]|\([a-z0-9]+\)|\.\d+)*/gi);
+        const ordered: string[] = [];
+        const seen = new Set<string>();
+        for (const m of matches) {
+            const qNum = String(m[1] || '').replace(/^0+(?=\d)/, '').trim();
+            if (qNum && !seen.has(qNum)) {
+                seen.add(qNum);
+                ordered.push(qNum);
+            }
+        }
+        return ordered;
+    }
+
+    /**
      * Resolves the SubjectProfile from a stored MarkingContext (and optional focused question ID).
      * Works for both matched papers (using examInfo) and unmatched Question Mode uploads (using question text/scheme).
      */
-    static resolveSubjectProfile(markingContext?: MarkingContext, contextQuestionId?: string | null): SubjectProfile {
+    static resolveSubjectProfile(
+        markingContext?: MarkingContext,
+        contextQuestionId?: string | string[] | null
+    ): SubjectProfile {
         if (!markingContext) {
             return SUBJECT_PROFILES.MATHS;
         }
         const questions = Array.isArray(markingContext.questionResults) ? markingContext.questionResults : [];
-        const focusedQuestions = contextQuestionId
-            ? questions.filter(q => String(q.number) === String(contextQuestionId))
+        const targetIds = Array.isArray(contextQuestionId)
+            ? contextQuestionId.map(id => String(id).trim()).filter(Boolean)
+            : (contextQuestionId ? [String(contextQuestionId).trim()] : []);
+        const focusedQuestions = targetIds.length > 0
+            ? questions.filter(q => targetIds.includes(String(q.number)))
             : [];
         const sourceQuestions = focusedQuestions.length > 0 ? focusedQuestions : questions;
         const rawTextHint = sourceQuestions
@@ -399,7 +424,10 @@ export class ChatContextBuilder {
      * This is called for every text-based follow-up message.
      * Now uses clean nested parts[] structure - no parsing needed!
      */
-    static formatContextAsPrompt(markingContext: MarkingContext, contextQuestionId?: string | null): string {
+    static formatContextAsPrompt(
+        markingContext: MarkingContext,
+        contextQuestionId?: string | string[] | null
+    ): string {
         let prompt = '';
 
         if (markingContext.sessionType === 'Question') {
@@ -475,12 +503,23 @@ export class ChatContextBuilder {
         // 2. Question Details - iterate parts[] directly
         let questionsToInclude = markingContext.questionResults;
 
-        // Filter to specific question if context is active
-        if (contextQuestionId) {
-            questionsToInclude = markingContext.questionResults.filter(q => String(q.number) === String(contextQuestionId));
-            if (questionsToInclude.length > 0) {
-                prompt += `## Deep Focus: Question ${contextQuestionId}\n`;
-                prompt += `The user is currently viewing Question ${contextQuestionId}. Here are the deep details for this specific question:\n\n`;
+        const targetQuestionIds = Array.isArray(contextQuestionId)
+            ? Array.from(new Set(contextQuestionId.map(id => String(id).trim()).filter(Boolean)))
+            : (contextQuestionId ? [String(contextQuestionId).trim()] : []);
+
+        // Filter to specific question(s) if context is active
+        if (targetQuestionIds.length > 0) {
+            questionsToInclude = markingContext.questionResults.filter(q =>
+                targetQuestionIds.includes(String(q.number))
+            );
+            if (questionsToInclude.length === 1) {
+                const singleId = questionsToInclude[0].number;
+                prompt += `## Deep Focus: Question ${singleId}\n`;
+                prompt += `The user is currently viewing Question ${singleId}. Here are the deep details for this specific question:\n\n`;
+            } else if (questionsToInclude.length > 1) {
+                const labelList = questionsToInclude.map(q => `Question ${q.number}`).join(', ');
+                prompt += `## Deep Focus: ${labelList}\n`;
+                prompt += `The user asked about ${labelList}. Here are the deep details for each of these questions:\n\n`;
             } else {
                 // Fallback to all if not found
                 questionsToInclude = markingContext.questionResults;
@@ -604,6 +643,180 @@ export class ChatContextBuilder {
         }
         */
         return prompt;
+    }
+
+    /**
+     * Builds a comprehensive Session Upload & Status Inventory across all messages in the session.
+     * Ensures the follow-up chat AI ALWAYS knows:
+     * 1. Which files (PDFs/images) the student uploaded in each turn
+     * 2. Whether a file is already marked, awaiting a mark scheme (with handwriting visibility confirmation), or hit an upload validation error
+     * 3. The overall marking summary (if marked)
+     */
+    static formatSessionUploadInventory(messages: any[]): {
+        inventoryPrompt: string;
+        detectedSubjectHint?: string;
+        paperCodeHint?: string;
+        pendingPreMarkingState?: {
+            requiresMarkingScheme: boolean;
+            canStartMarkingFromPreCheck: boolean;
+            detectedSubjectName?: string;
+            paperCodeHint?: string;
+            uploadedPageCount?: number;
+            handwrittenPageCount?: number;
+        };
+    } {
+        if (!Array.isArray(messages) || messages.length === 0) {
+            return { inventoryPrompt: '' };
+        }
+
+        const uploadTurns: string[] = [];
+        let detectedSubjectHint: string | undefined;
+        let paperCodeHint: string | undefined;
+        let latestPendingState: {
+            requiresMarkingScheme: boolean;
+            canStartMarkingFromPreCheck: boolean;
+            detectedSubjectName?: string;
+            paperCodeHint?: string;
+            uploadedPageCount?: number;
+            handwrittenPageCount?: number;
+        } | undefined;
+        let hasCompletedMarking = false;
+
+        for (let i = 0; i < messages.length; i++) {
+            const msg = messages[i];
+            if (!msg || msg.role !== 'user') continue;
+
+            const fileNames: string[] = [];
+            if (Array.isArray(msg.pdfContexts) && msg.pdfContexts.length > 0) {
+                for (const pdf of msg.pdfContexts) {
+                    if (pdf?.originalFileName) {
+                        fileNames.push(pdf.originalFileName);
+                    }
+                }
+            }
+            if (fileNames.length === 0 && msg.originalFileName) {
+                fileNames.push(msg.originalFileName);
+            }
+            if (fileNames.length === 0 && msg.fileName) {
+                fileNames.push(msg.fileName);
+            }
+            if (fileNames.length === 0 && Array.isArray(msg.originalFiles) && msg.originalFiles.length > 0) {
+                for (const f of msg.originalFiles) {
+                    if (f?.name) fileNames.push(f.name);
+                }
+            }
+            if (fileNames.length === 0 && Array.isArray(msg.imageDataArray) && msg.imageDataArray.length > 0) {
+                const named = msg.imageDataArray
+                    .map((item: any, idx: number) => (typeof item === 'object' && item?.originalFileName) || `image-${idx + 1}`)
+                    .filter(Boolean);
+                fileNames.push(...named);
+            }
+
+            if (fileNames.length === 0) continue;
+
+            // Find the paired assistant response immediately following this user upload
+            let pairedAi: any = null;
+            for (let j = i + 1; j < messages.length; j++) {
+                if (messages[j]?.role === 'assistant') {
+                    pairedAi = messages[j];
+                    break;
+                }
+                if (messages[j]?.role === 'user') break;
+            }
+
+            const filesLabel = fileNames.map(n => `"${n}"`).join(', ');
+            let statusDesc = 'Uploaded and received by the system.';
+
+            if (pairedAi) {
+                const aiContent = String(pairedAi.content || '').trim();
+                if (pairedAi.markingContext) {
+                    hasCompletedMarking = true;
+                    latestPendingState = undefined;
+                    const mc = pairedAi.markingContext;
+                    if (mc.detectedSubject && !detectedSubjectHint) detectedSubjectHint = mc.detectedSubject;
+                    if (mc.examInfo?.examCode && !paperCodeHint) paperCodeHint = mc.examInfo.examCode;
+                    if (mc.sessionType === 'Question') {
+                        statusDesc = `Processed in Question Mode (${mc.totalQuestionsMarked || 0} question(s) detected).`;
+                    } else {
+                        const scoreStr = mc.overallScore?.scoreText || `${mc.overallScore?.awarded ?? 0}/${mc.overallScore?.total ?? 0}`;
+                        statusDesc = `MARKED — Total Score: ${scoreStr} across ${mc.totalQuestionsMarked || 0} question(s).`;
+                    }
+                } else if (pairedAi.isPreCheckPause || pairedAi.canStartMarkingFromPreCheck) {
+                    const subj = pairedAi.detectedSubjectName;
+                    if (subj && !detectedSubjectHint) detectedSubjectHint = subj;
+                    if (pairedAi.paperCodeHint && !paperCodeHint) paperCodeHint = pairedAi.paperCodeHint;
+                    const pageInfo = pairedAi.uploadedPageCount ? ` (${pairedAi.uploadedPageCount} pages)` : '';
+                    const hwCount = pairedAi.handwrittenPageCount !== undefined ? ` (${pairedAi.handwrittenPageCount} pages with handwriting)` : '';
+                    const needsMs = Boolean(pairedAi.requiresMarkingScheme);
+                    latestPendingState = {
+                        requiresMarkingScheme: needsMs,
+                        canStartMarkingFromPreCheck: !needsMs,
+                        detectedSubjectName: subj,
+                        paperCodeHint: pairedAi.paperCodeHint,
+                        uploadedPageCount: pairedAi.uploadedPageCount,
+                        handwrittenPageCount: pairedAi.handwrittenPageCount
+                    };
+                    statusDesc = `PRE-CHECK COMPLETED & MARKING PAUSED${pageInfo}${subj ? ` [Subject: ${subj}]` : ''}. Handwriting visibility confirmed${hwCount}. ${needsMs ? 'Awaiting official mark scheme (or student can click "Mark with AI (General Mark Scheme)").' : 'Ready for student to click button below to start marking.'}`;
+                } else if (pairedAi.requiresMarkingScheme || /Marking Scheme Required|Attach Marking Scheme/i.test(aiContent)) {
+                    const subjMatch = aiContent.match(/Marking Scheme Required \(([^)]+)\)/i);
+                    const subj = pairedAi.detectedSubjectName || (subjMatch ? subjMatch[1] : undefined);
+                    if (subj && !detectedSubjectHint) detectedSubjectHint = subj;
+                    if (pairedAi.paperCodeHint && !paperCodeHint) paperCodeHint = pairedAi.paperCodeHint;
+                    const pageInfo = pairedAi.uploadedPageCount ? ` (${pairedAi.uploadedPageCount} pages)` : '';
+                    const hwInfo = pairedAi.hasDetectedHandwriting !== false
+                        ? ' Handwriting and printed questions ARE received and visible on the uploaded file.'
+                        : '';
+                    latestPendingState = {
+                        requiresMarkingScheme: true,
+                        canStartMarkingFromPreCheck: false,
+                        detectedSubjectName: subj,
+                        paperCodeHint: pairedAi.paperCodeHint,
+                        uploadedPageCount: pairedAi.uploadedPageCount,
+                        handwrittenPageCount: pairedAi.handwrittenPageCount
+                    };
+                    statusDesc = `RECEIVED & AWAITING MARK SCHEME${pageInfo}${subj ? ` [Subject: ${subj}]` : ''}.${hwInfo} Grading paused until the student attaches the mark scheme (or clicks "Mark with AI (General Mark Scheme)").`;
+                } else if (
+                    pairedAi.errorCode ||
+                    pairedAi.canMarkAnyway ||
+                    pairedAi.canRetryUpload ||
+                    /duplicate question numbers|temporary technical issue|temporary error|couldn't complete marking|exceeds the maximum limit|limited to grading/i.test(aiContent)
+                ) {
+                    const cleanErr = aiContent.replace(/\s+/g, ' ').slice(0, 320);
+                    statusDesc = `UPLOAD RECEIVED, BUT MARKING STOPPED WITH SYSTEM/VALIDATION MESSAGE: "${cleanErr}"`;
+                }
+            }
+
+            uploadTurns.push(`- Uploaded File(s): ${filesLabel} -> Status: ${statusDesc}`);
+        }
+
+        if (uploadTurns.length === 0) {
+            return { inventoryPrompt: '' };
+        }
+
+        const pendingPreMarkingState = !hasCompletedMarking ? latestPendingState : undefined;
+        let preMarkingDirective = '';
+        if (pendingPreMarkingState) {
+            preMarkingDirective =
+                `\n## PRE-MARKING STATUS RESPONSE FORMAT (MANDATORY)\n` +
+                `Marking has NOT started yet for the uploaded paper above. Action buttons will be rendered directly below your message.\n` +
+                `After briefly and warmly answering the student's message, ALWAYS end your reply with a clean, scannable status summary using these exact 3 bullet points:\n` +
+                `- **Paper Received:** State the uploaded subject/paper code & page/handwriting count already on file.\n` +
+                `- **Noted Instructions:** Concisely recap any grading preferences or constraints the student mentioned so far (e.g. skipped questions, specific focus areas, or "None yet").\n` +
+                `- **Next Step:** State clearly what you are waiting for (${pendingPreMarkingState.requiresMarkingScheme ? 'use **Attach Marking Scheme** below to upload the mark scheme PDF/images, or click **Mark with AI (General Mark Scheme)** to start now' : 'click **Mark Full Paper** or **Mark Attempted Questions Only** below whenever you are ready to start grading'}).\n\n`;
+        }
+
+        const inventoryPrompt =
+            `## Session Uploaded Files & Grading Status\n` +
+            `IMPORTANT: The following file(s) WERE successfully uploaded and received in this session (NEVER tell the student their file failed to attach or didn't come through):\n` +
+            `${uploadTurns.join('\n')}\n` +
+            `${preMarkingDirective}`;
+
+        return {
+            inventoryPrompt,
+            detectedSubjectHint,
+            paperCodeHint,
+            pendingPreMarkingState
+        };
     }
 
     /**

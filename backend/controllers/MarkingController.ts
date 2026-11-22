@@ -416,6 +416,8 @@ export class MarkingController {
                 customText: req.body.customText,
                 model: requestedModel,
                 allowGenericSubjectMarking: req.body.allowGenericSubjectMarking === true || req.body.allowGenericSubjectMarking === 'true',
+                bypassDuplicateQuestionGuard: req.body.bypassDuplicateQuestionGuard === true || req.body.bypassDuplicateQuestionGuard === 'true',
+                bypassPreCheckPause: req.body.bypassPreCheckPause === true || req.body.bypassPreCheckPause === 'true',
                 ...(selectedRawPageIndices ? { selectedRawPageIndices } : {})
             };
 
@@ -676,7 +678,18 @@ export class MarkingController {
             const resolvedSessionId = finalSessionId || sessionId;
 
             // 2-Bucket non-technical error message for the UI
-            let displayMessage = `We couldn't complete marking your work due to a temporary technical issue on our end.\n\nPlease try again in a moment — **no credits were deducted**.`;
+            let displayMessage = `We hit a temporary error while processing your work — **no credits were deducted**. Please click **Retry** below to try again.`;
+
+            const isDuplicateQuestionError =
+                error instanceof UserFacingError &&
+                (error.code === 'COMBINED_MULTI_PAPER_PDF_NOT_SUPPORTED' ||
+                    error.code === 'MULTI_PAPER_LOOSE_IMAGES_NOT_SUPPORTED');
+
+            const isUnexpectedSystemError =
+                !(error instanceof UserFacingError && error.category === 'user_fixable') &&
+                !error.message?.includes('PDF_UNREADABLE') &&
+                !error.message?.includes('Postscript delegate failed') &&
+                !isLegacyUserFixable;
 
             if (error instanceof UserFacingError) {
                 displayMessage = error.userMessage;
@@ -705,6 +718,9 @@ export class MarkingController {
                 timestamp: aiTimestamp,
                 type: 'text',
                 isProcessing: false,
+                ...(error instanceof UserFacingError ? { errorCode: error.code } : { errorCode: 'SYSTEM_ERROR' }),
+                ...(isDuplicateQuestionError ? { canMarkAnyway: true } : {}),
+                ...(isUnexpectedSystemError ? { canRetryUpload: true } : {}),
                 ...(requiresUpgrade ? { requiresUpgrade: true } : {}),
                 ...(detectedPaperGroups ? { detectedPaperGroups } : {}),
                 processingStats: {

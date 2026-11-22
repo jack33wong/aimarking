@@ -28,8 +28,9 @@ jest.mock('./QuestionNavigator', () => () => null);
 jest.mock('../common/SEO', () => () => null);
 jest.mock('../common/ImageViewer', () => () => null);
 
+let mockGroupedQuestions: any[] = [];
 jest.mock('../../hooks/useQuestionGrouping', () => ({
-  useQuestionGrouping: () => ({ groupedQuestions: [], getGroupColor: () => 'gray' }),
+  useQuestionGrouping: () => ({ groupedQuestions: mockGroupedQuestions, getGroupColor: () => 'gray' }),
 }));
 
 jest.mock('../../utils/engagementTracker', () => ({
@@ -51,6 +52,7 @@ describe('MainLayout contextQuestionId propagation', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGroupedQuestions = [];
     mockFollowUpChatInput.mockImplementation((props: any) => (
       <div data-testid={`chat-input-${props.mode}`}>
         {props.contextQuestionId ? (
@@ -128,5 +130,39 @@ describe('MainLayout contextQuestionId propagation', () => {
         contextQuestionId: '3',
       })
     );
+  });
+
+  it('does not render ribbon-thumbnail-tick-badge when marking is not completed (no student mark / total mark)', () => {
+    mockMarkingPageState.currentSession = {
+      id: 'sess-precheck',
+      messages: [
+        { id: 'u1', role: 'user', content: 'check hand written only', imageData: 'data:image/jpeg;base64,abc' },
+        { id: 'a1', role: 'assistant', content: 'I have checked your document.', isPreCheckPause: true }
+      ]
+    };
+    mockMarkingPageState.chatMessages = mockMarkingPageState.currentSession.messages;
+    mockGroupedQuestions = [];
+
+    const { container } = render(<MainLayout />);
+    expect(container.querySelector('.ribbon-thumbnail-stack-btn')).toBeInTheDocument();
+    expect(container.querySelector('.ribbon-thumbnail-tick-badge')).not.toBeInTheDocument();
+  });
+
+  it('renders ribbon-thumbnail-tick-badge when marking is completed with valid student mark / total mark', () => {
+    mockMarkingPageState.currentSession = {
+      id: 'sess-marked',
+      messages: [
+        { id: 'u1', role: 'user', content: '', imageData: 'data:image/jpeg;base64,abc' },
+        { id: 'a1', role: 'assistant', content: 'Marked', isProcessing: false }
+      ]
+    };
+    mockMarkingPageState.chatMessages = mockMarkingPageState.currentSession.messages;
+    mockGroupedQuestions = [
+      { questionNumber: '10', hasResults: true, awardedMarks: 5, totalMarks: 7 }
+    ];
+
+    const { container } = render(<MainLayout />);
+    expect(container.querySelector('.ribbon-thumbnail-stack-btn')).toBeInTheDocument();
+    expect(container.querySelector('.ribbon-thumbnail-tick-badge')).toBeInTheDocument();
   });
 });

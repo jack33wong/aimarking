@@ -1,6 +1,6 @@
 import { ModelProvider, type ModelPhase } from '../../utils/ModelProvider.js';
 import { ModelType } from '../../types/index.js';
-import { cleanSubjectAndQualification } from './MarkingHelpers.js';
+import { cleanSubjectAndQualification, sanitizeUnofficialPaperFlag } from './MarkingHelpers.js';
 
 export interface GeometryAnalysisResult {
     is_acceptable_quality: boolean;
@@ -212,7 +212,7 @@ Analyze the image and return ONLY valid JSON matching the schema below.
 11. has_printed_questions (boolean): true if printed exam question text/prompts are visible; false for cover/blank pages or lined-paper answers-only sheets.
 12. booklet_page_number (integer | null): Printed booklet page number (1–60) in margin/footer/barcode, else null.
 13. first_question_number (integer | null): Lowest main printed question number (1–60) visible on this page, else null.
-14. is_unofficial_or_practice_paper (boolean): true ONLY if the document header/footer/cover has third-party/unofficial practice branding ("Practice Paper", "Not produced or endorsed by AQA", "MarkMe", "SaveMyExams", "PMT"). False for official past papers.
+14. is_unofficial_or_practice_paper (boolean): true ONLY if the document is a synthetic/practice/mock/predicted/rewritten paper ("Practice Paper", "Mock Paper", "Predicted Paper", "Guess Paper", "Not produced or endorsed by AQA", "MarkMe", "SaveMyExams", "CorbettMaths", "OnMaths"). Return **false** for genuine official exam board past papers (AQA, Edexcel, OCR, CIE/Cambridge, WJEC, Eduqas, CCEA) EVEN IF they have third-party archive distribution watermarks or footers (such as "PapaCambridge", "papacambridge.com", "GCE Guide", "Dynamic Papers", "XtremePapers", "Physics & Maths Tutor / PMT").
 15. unofficial_reason (string): Verbatim brand/phrase if \`is_unofficial_or_practice_paper\` is true, else "".
 16. rejection_reason (string): Provide a short reason ONLY if \`is_acceptable_quality\` is false; otherwise return "".
 17. evidence_text_snippet (string): First 15 words of text ONLY if \`is_supported_doc\` is false; otherwise return "".
@@ -393,8 +393,16 @@ Analyze the image and return ONLY valid JSON matching the schema below.
                     const n = Number(parsed.first_question_number);
                     return Number.isInteger(n) && n >= 1 && n <= 100 ? n : undefined;
                 })(),
-                is_unofficial_or_practice_paper: Boolean(parsed.is_unofficial_or_practice_paper),
-                unofficial_reason: parsed.unofficial_reason ? String(parsed.unofficial_reason).trim() : undefined
+                ...(() => {
+                    const sanitized = sanitizeUnofficialPaperFlag(
+                        Boolean(parsed.is_unofficial_or_practice_paper),
+                        parsed.unofficial_reason
+                    );
+                    return {
+                        is_unofficial_or_practice_paper: sanitized.isUnofficial,
+                        unofficial_reason: sanitized.reason
+                    };
+                })()
             };
 
         } catch (error) {

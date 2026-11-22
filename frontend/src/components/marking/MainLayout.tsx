@@ -572,11 +572,28 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
     const trimmed = rawText.trim();
     if (!trimmed || !onSendMessage) return;
     isSyncingRef.current = true;
-    const targetQ = questionNumber || activeQuestionMeta?.questionNumber || activeQuestionId || null;
+    const explicitMatch = trimmed.match(/\b(?:questions?|q)\s*(\d+)/i);
+    const explicitQ = explicitMatch ? explicitMatch[1] : null;
+    const targetQ = explicitQ || questionNumber || activeQuestionMeta?.questionNumber || activeQuestionId || null;
     if (targetQ) {
       setActiveQuestionId(String(targetQ));
+      // If the viewer is currently on a metadata/cover page (or a page that doesn't contain targetQ), jump to targetQ's page
+      const matchedGroup = groupedQuestions.find(
+        g => String(g.questionNumber).toLowerCase() === String(targetQ).toLowerCase()
+      );
+      if (matchedGroup && splitModeImages && splitModeImages.length > 0) {
+        const currentIdx = activeImageIndex || 0;
+        const currentImg = splitModeImages[currentIdx];
+        const currentPageIdx = currentImg?.pageIndex ?? currentIdx;
+        const isAlreadyOnTargetQuestionPage =
+          matchedGroup.allImageIndices.includes(currentPageIdx) ||
+          matchedGroup.allImageIndices.includes(currentIdx);
+        if (!isAlreadyOnTargetQuestionPage && typeof matchedGroup.sourceImageIndex === 'number') {
+          setActiveImageIndex(matchedGroup.sourceImageIndex);
+        }
+      }
     }
-    const mentionsQuestion = /(?:question|q)\s*\d+/i.test(trimmed);
+    const mentionsQuestion = /\b(?:questions?|q)\s*\d+/i.test(trimmed);
     const formattedPrompt = targetQ && !mentionsQuestion
       ? `[Question ${targetQ}] ${trimmed}`
       : trimmed;
@@ -584,15 +601,62 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
     setTimeout(() => {
       isSyncingRef.current = false;
     }, 1000);
-  }, [onSendMessage, activeQuestionMeta, activeQuestionId, setActiveQuestionId]);
+  }, [onSendMessage, activeQuestionMeta, activeQuestionId, setActiveQuestionId, groupedQuestions, splitModeImages, activeImageIndex, setActiveImageIndex]);
 
   const followUpResponsesByQuestion = useMemo(() => {
     const map = new Map<string, { id: string; questionNumber: string; content: string }>();
     if (!chatMessages || chatMessages.length === 0) return map;
 
-    const extractQFromText = (txt: string): string | null => {
-      const m = txt.match(/(?:question|q)\s*(\d+[a-z]*)/i);
-      return m ? m[1] : null;
+    const extractAllBaseQsFromText = (txt: string): string[] => {
+      if (!txt) return [];
+      const matches = Array.from(txt.matchAll(/\b(?:questions?|q)\s*(\d+)(?:[a-z]|\([a-z0-9]+\)|\.\d+)*/gi));
+      const list: string[] = [];
+      const seen = new Set<string>();
+      for (const m of matches) {
+        const base = String(m[1] || '').replace(/^0+(?=\d)/, '').trim();
+        if (base && !seen.has(base)) {
+          seen.add(base);
+          list.push(base);
+        }
+      }
+      return list;
+    };
+
+    const sliceContentForQuestion = (fullText: string, targetBaseQ: string, totalQuestionsInMsg: number): string => {
+      if (totalQuestionsInMsg <= 1) return fullText;
+      const lines = fullText.split('\n');
+      const sectionStarts: Array<{ lineIdx: number; baseQ: string }> = [];
+
+      for (let idx = 0; idx < lines.length; idx++) {
+        const line = lines[idx].trim();
+        // Match markdown headings or bold section headers like "### **Question 1(c)**", "## Question 3a", "**Question 1(c)**"
+        const hMatch = line.match(/^(?:#{1,4}\s*|\*\*)\s*(?:\*\*)?\s*(?:Question|Q)\s*(\d+)(?:[a-z]|\([a-z0-9]+\)|\.\d+)*(?:\*\*)?(?:\s*[:\-—]|\s*$)/i);
+        if (hMatch && hMatch[1]) {
+          const bQ = String(hMatch[1]).replace(/^0+(?=\d)/, '').trim();
+          sectionStarts.push({ lineIdx: idx, baseQ: bQ });
+        }
+      }
+
+      if (sectionStarts.length < 2) return fullText;
+      const matchingSections: string[] = [];
+      for (let s = 0; s < sectionStarts.length; s++) {
+        if (sectionStarts[s].baseQ.toLowerCase() === targetBaseQ.toLowerCase()) {
+          const startLine = sectionStarts[s].lineIdx;
+          const endLine = s + 1 < sectionStarts.length ? sectionStarts[s + 1].lineIdx : lines.length;
+          // Trim trailing horizontal rule (`---`) if it belongs to the separator before the next question section
+          const sliceLines = lines.slice(startLine, endLine);
+          while (sliceLines.length > 0 && /^(?:---+|\*\*\*+|___+|\s*)$/.test(sliceLines[sliceLines.length - 1].trim())) {
+            sliceLines.pop();
+          }
+          const sectionText = sliceLines.join('\n').trim();
+          if (sectionText) matchingSections.push(sectionText);
+        }
+      }
+
+      if (matchingSections.length > 0) {
+        return matchingSections.join('\n\n---\n\n');
+      }
+      return fullText;
     };
 
     for (let i = 0; i < chatMessages.length; i++) {
@@ -604,20 +668,32 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
         !msg.performanceSummary &&
         !msg.studentScore
       ) {
-        const contentStr = ensureStringContent(msg.content).trim();
-        if (!contentStr) continue;
+        const rawContentStr = ensureStringContent(msg.content).trim();
+        if (!rawContentStr) continue;
+        // Strip any stray [SHOW_WORK_Q:X] tags from display content
+        const contentStr = rawContentStr.replace(/\s*\[SHOW_WORK_Q:\s*\d+\]/gi, '').trim();
         const prevUser = i > 0 && chatMessages[i - 1]?.role === 'user' ? (chatMessages[i - 1] as any) : null;
-        const resolvedQ =
-          msg.contextQuestionId ||
-          prevUser?.contextQuestionId ||
-          extractQFromText(ensureStringContent(prevUser?.content || '')) ||
-          extractQFromText(contentStr);
-        if (resolvedQ) {
-          const key = String(resolvedQ).toLowerCase();
+        const userQs = extractAllBaseQsFromText(ensureStringContent(prevUser?.content || ''));
+        const contentQs = extractAllBaseQsFromText(contentStr);
+
+        const candidateQs = new Set<string>();
+        userQs.forEach(q => candidateQs.add(String(q).toLowerCase()));
+        if (msg.contextQuestionId) candidateQs.add(String(msg.contextQuestionId).replace(/^0+(?=\d)/, '').toLowerCase());
+        if (prevUser?.contextQuestionId) candidateQs.add(String(prevUser.contextQuestionId).replace(/^0+(?=\d)/, '').toLowerCase());
+        if (candidateQs.size === 0) {
+          contentQs.forEach(q => candidateQs.add(String(q).toLowerCase()));
+        } else {
+          // Also include any question with an explicit section heading in the AI reply
+          contentQs.forEach(q => candidateQs.add(String(q).toLowerCase()));
+        }
+
+        const allMatchedKeys = Array.from(candidateQs).filter(Boolean);
+        for (const key of allMatchedKeys) {
+          const slicedContent = sliceContentForQuestion(contentStr, key, allMatchedKeys.length);
           map.set(key, {
-            id: String(msg.id || i),
-            questionNumber: String(resolvedQ),
-            content: contentStr
+            id: `${String(msg.id || i)}-q${key}`,
+            questionNumber: key,
+            content: slicedContent
           });
         }
       }
@@ -701,6 +777,8 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
                 const isMarkingCompleted =
                   !isProcessing &&
                   !isAIThinking &&
+                  hasScoredQuestions &&
+                  totalMax > 0 &&
                   chatMessages.some((m: UnifiedMessage) => m.role === 'assistant' && !m.isProcessing);
 
                 return (

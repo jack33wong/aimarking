@@ -137,16 +137,122 @@ export function cleanSubjectAndQualification(
   return { subject, qualification };
 }
 
-const UNOFFICIAL_PAPER_INDICATOR_REGEX = /\b(practice\s+(?:paper|exam|test|questions?|assessment)|mock\s+(?:paper|exam|test|assessment)|predicted\s+(?:paper|exam)|rewritten\s+(?:questions?|paper|exam)|modelled\s+on|modeled\s+on|not\s+(?:produced|endorsed|affiliated|approved|accredited)(?:\s+(?:or|and)\s+(?:produced|endorsed|affiliated|approved|accredited))*\s+(?:by|with)|unofficial\s+(?:paper|mark\s*scheme|scheme|exam)|(?:(?:june|may|summer|november|autumn|january|winter)(?:\s+20\d{2})?|20\d{2})\s+format|markme|savemyexams|save\s+my\s+exams|physics\s*(?:&|and)\s*maths\s*tutor)\b/i;
+/**
+ * Layer 1 (Whitelisted Official Exam Boards):
+ * Official examination boards whose genuine past papers and mark schemes are eligible for auto-cataloging.
+ */
+export const WHITELISTED_OFFICIAL_EXAM_BOARD_REGEX =
+  /^(aqa|edexcel|pearson|pearson\s+edexcel|ocr|wjec|eduqas|cie|cambridge|cambridge\s+international|cambridge\s+assessment|ccea|ib)\b/i;
+
+export function isWhitelistedOfficialExamBoard(board?: string | null): boolean {
+  const b = String(board || '').trim();
+  if (!b || /^(custom|unknown|n\/a|none)$/i.test(b)) return false;
+  return WHITELISTED_OFFICIAL_EXAM_BOARD_REGEX.test(b);
+}
 
 /**
- * Detects whether text (cover snippet, filename, scheme title/guidance, or extracted question text)
+ * Layer 1b (Whitelisted Past-Paper Archive Host Watermarks):
+ * Third-party repositories that redistribute unmodified official exam board PDFs with a site watermark/footer
+ * (e.g. "PapaCambridge · papacambridge.com", "GCE Guide", "Dynamic Papers", "XtremePapers", "Physics & Maths Tutor").
+ * A watermark from these archive hosts does NOT make an official exam paper unofficial, UNLESS accompanied by
+ * a synthetic/practice indicator (e.g. "Predicted Paper", "Guess Paper", "Practice Paper").
+ */
+export const ARCHIVE_HOST_WATERMARK_REGEX =
+  /\b(papacambridge(?:\.com)?|papa\s+cambridge|gce\s*guide(?:\.com|\.(?:xyz|cc))?|dynamic\s*papers(?:\.com)?|xtremepapers(?:\.com|\.(?:rs|xyz))?|xtreme\s+papers|bestexamhelp(?:\.com)?|exam[- ]?mate(?:\.com)?|pastpapers(?:\.co|\.(?:org|com))?|physics\s*(?:&|and)\s*maths\s*tutor|pmt(?:\.education)?|revision\s*world(?:\.com)?|maths\s*made\s*easy|mme\s*revise)\b/i;
+
+/**
+ * Layer 2 (Blacklisted Synthetic / Mock / Practice / Rewritten Content & Pure Synthetic Generators):
+ * Matches document-type phrases ("Practice Paper", "Mock Paper", "Predicted Paper", "Guess Paper",
+ * "Not produced or endorsed by...", "June 2024 Format", "Rewritten questions") and pure synthetic/worksheet
+ * generators ("MarkMe", "SaveMyExams", "OnMaths", "CorbettMaths", "DrFrostMaths", "MathsGenie", "1st Class Maths", "Cognito").
+ */
+const UNOFFICIAL_PAPER_INDICATOR_REGEX =
+  /\b(practice\s+(?:paper|exam|test|questions?|assessment)|mock\s+(?:paper|exam|test|assessment)|predicted\s+(?:paper|exam|questions?)|guess\s+(?:paper|exam|questions?)|specimen[- ]style|rewritten\s+(?:questions?|paper|exam)|modelled\s+on|modeled\s+on|not\s+(?:produced|endorsed|affiliated|approved|accredited)(?:\s+(?:or|and)\s+(?:produced|endorsed|affiliated|approved|accredited))*\s+(?:by|with)|unofficial\s+(?:paper|mark\s*scheme|scheme|exam)|(?:(?:june|may|summer|november|autumn|january|winter)(?:\s+20\d{2})?|20\d{2})\s+format|markme(?:\.ai)?|savemyexams|save\s+my\s+exams|onmaths|corbett\s*maths|dr\s*frost(?:\s*maths)?|maths\s*genie|1st\s*class\s*maths|cognito(?:\s*edu)?)\b/i;
+
+/**
+ * Detects whether text (cover snippet, scheme title/guidance, or extracted question text)
  * indicates an unofficial/practice/mock/rewritten paper rather than a genuine exam board past paper.
  */
 export function hasUnofficialPaperIndicators(text?: string | null): boolean {
   const s = String(text || '').replace(/[_-]+/g, ' ').trim();
   if (!s) return false;
   return UNOFFICIAL_PAPER_INDICATOR_REGEX.test(s);
+}
+
+/**
+ * Returns true when an LLM-reported `unofficial_reason` or `sourceDisclaimer` is ONLY a whitelisted
+ * past-paper archive host watermark (e.g. "PapaCambridge · papacambridge.com", "GCE Guide", "PMT")
+ * with no actual practice/mock/predicted/rewritten indicators.
+ */
+export function isArchiveHostWatermarkOnly(reasonOrDisclaimer?: string | null): boolean {
+  const s = String(reasonOrDisclaimer || '').trim();
+  if (!s) return false;
+  if (hasUnofficialPaperIndicators(s)) return false;
+  return ARCHIVE_HOST_WATERMARK_REGEX.test(s);
+}
+
+/**
+ * Sanitizes a raw LLM `is_unofficial_or_practice_paper` flag against `unofficial_reason` so that
+ * archive host watermarks (e.g. "PapaCambridge", "GCE Guide", "Dynamic Papers") on genuine official
+ * past papers are never misclassified as unofficial practice papers.
+ */
+export function sanitizeUnofficialPaperFlag(
+  rawFlag?: boolean | null,
+  unofficialReason?: string | null
+): { isUnofficial: boolean; reason?: string } {
+  const trimmedReason = String(unofficialReason || '').trim();
+  if (!rawFlag) {
+    return { isUnofficial: false, reason: undefined };
+  }
+  if (trimmedReason && isArchiveHostWatermarkOnly(trimmedReason)) {
+    return { isUnofficial: false, reason: undefined };
+  }
+  return {
+    isUnofficial: true,
+    reason: trimmedReason || undefined
+  };
+}
+
+/**
+ * Evaluates a batch of page GeometryAnalysisResults to determine if the document is genuinely
+ * an unofficial/practice/mock paper.
+ * - Filters out archive-host watermark false positives (e.g. "PapaCambridge", "GCE Guide", "PMT").
+ * - For multi-page documents (>= 3 non-scheme pages), ignores a single uncorroborated empty-reason
+ *   LLM hallucination unless at least 2 pages are flagged OR at least 1 page provides a non-archive
+ *   `unofficial_reason` (or `hasUnofficialPaperIndicators` matches).
+ */
+export function hasVerifiedUnofficialGeometryFlag(
+  geometryResults: Array<{
+    is_unofficial_or_practice_paper?: boolean;
+    unofficial_reason?: string;
+    is_marking_scheme?: boolean;
+  } | undefined | null>
+): boolean {
+  const validGeos = (geometryResults || []).filter(Boolean) as Array<{
+    is_unofficial_or_practice_paper?: boolean;
+    unofficial_reason?: string;
+    is_marking_scheme?: boolean;
+  }>;
+  if (validGeos.length === 0) return false;
+
+  const flaggedWithSanitized = validGeos
+    .map(g => sanitizeUnofficialPaperFlag(g.is_unofficial_or_practice_paper, g.unofficial_reason))
+    .filter(s => s.isUnofficial);
+
+  if (flaggedWithSanitized.length === 0) return false;
+
+  // If any flagged page gave an explicit non-archive reason (e.g. "13.1 Applied Test", "MarkMe", "Practice Paper"), trust it
+  if (flaggedWithSanitized.some(s => Boolean(s.reason))) {
+    return true;
+  }
+
+  // In a multi-page document (>= 3 pages), a single page with `is_unofficial_or_practice_paper: true`
+  // and `unofficial_reason: ""` is treated as an uncorroborated outlier unless >= 2 pages agree.
+  if (validGeos.length >= 3 && flaggedWithSanitized.length === 1) {
+    return false;
+  }
+
+  return true;
 }
 
 /**

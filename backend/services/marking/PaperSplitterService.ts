@@ -409,6 +409,23 @@ function isOpeningSubPart(part: string): boolean {
     return part === 'a' || part === 'ai' || part === '1' || part === 'i';
 }
 
+function isNestedUnderPartA(part: string): boolean {
+    return part === 'ai' || part === 'aii' || part === 'aiii' || part === 'aiv' ||
+        part === 'i' || part === 'ii' || part === 'iii' || part === 'iv';
+}
+
+function isHierarchicalParentAndChildQNum(a: string, b: string, baseQ: string): boolean {
+    if (a === b) return false;
+    const isOneBareAndOneSub = (a === baseQ && b !== baseQ) || (b === baseQ && a !== baseQ);
+    if (isOneBareAndOneSub) return true;
+    const partA = a.startsWith(baseQ) ? a.slice(baseQ.length) : a;
+    const partB = b.startsWith(baseQ) ? b.slice(baseQ.length) : b;
+    if ((partA === 'a' && isNestedUnderPartA(partB)) || (partB === 'a' && isNestedUnderPartA(partA))) {
+        return true;
+    }
+    return false;
+}
+
 function getPrimarySubLetterRank(part: string): number | null {
     if (!part) return null;
     const romanMap: Record<string, number> = {
@@ -435,10 +452,23 @@ export class PaperSplitterService {
      */
     static assertSinglePaperClassification(
         allClassificationResults: Array<{ pageIndex: number; result?: any }>,
-        options: { isPdf?: boolean; pageCount?: number; fileName?: string; isUserSelectedPageChunk?: boolean } = {}
+        options: {
+            isPdf?: boolean;
+            pageCount?: number;
+            fileName?: string;
+            isUserSelectedPageChunk?: boolean;
+            hasUploadedMarkingScheme?: boolean;
+            bypassDuplicateQuestionGuard?: boolean;
+        } = {}
     ): void {
+        if (options.bypassDuplicateQuestionGuard) {
+            console.log(`⏭️  [PAPER-SPLITTER] Bypassing duplicate-question guard (user requested "Mark Paper Anyway").`);
+            return;
+        }
+
         const stemsByBaseQ = new Map<string, Array<{ pageIndex: number; normalizedQNum: string; tokens: Set<string> }>>();
         const subPartsByBaseQAndPage = new Map<string, Map<number, { subParts: Set<string>; hasOpeningStem: boolean }>>();
+        const allSeenBaseQNumbers = new Set<string>();
 
         for (const entry of allClassificationResults || []) {
             const pageIndex = entry?.pageIndex;
@@ -450,6 +480,7 @@ export class PaperSplitterService {
                 const baseMatch = rawQNum.match(/^(\d+)/);
                 if (!baseMatch) continue;
                 const baseQ = baseMatch[1].replace(/^0+(?=\d)/, '');
+                allSeenBaseQNumbers.add(baseQ);
                 const normalizedQNum = rawQNum.toLowerCase().replace(/[().\s]/g, '').replace(/^0+(?=\d)/, '');
 
                 // Collect sub-parts per (baseQ, pageIndex) for sub-question reset detection
@@ -495,12 +526,23 @@ export class PaperSplitterService {
                         // only flag same-page duplicates when the exact same question number appears twice.
                         continue;
                     }
-                    // Cross-page bare parent stem (e.g. "2") vs. sub-part (e.g. "2a") belong to the same question
-                    const isOneBareAndOneSub =
-                        (entries[i].normalizedQNum === baseQ && entries[j].normalizedQNum !== baseQ) ||
-                        (entries[j].normalizedQNum === baseQ && entries[i].normalizedQNum !== baseQ);
-                    if (isOneBareAndOneSub) {
+                    // Cross-page bare parent stem (e.g. "2" vs "2a") or parent sub-part vs nested child (e.g. "3a" vs "3ai"/"3i") belong to the same question
+                    if (isHierarchicalParentAndChildQNum(entries[i].normalizedQNum, entries[j].normalizedQNum, baseQ)) {
                         continue;
+                    }
+                    // Also check subPartsByBaseQAndPage for hierarchical parent->child continuation across pages
+                    // (when Classification outputs questionNumber: "3" on both Page N with part "a" and Page N+1 with part "i"/"ii")
+                    if (!samePage) {
+                        const pageMap = subPartsByBaseQAndPage.get(baseQ);
+                        const partsI = Array.from(pageMap?.get(entries[i].pageIndex)?.subParts || []);
+                        const partsJ = Array.from(pageMap?.get(entries[j].pageIndex)?.subParts || []);
+                        const isPageIParentAOnly = partsI.includes('a') && !partsI.some(isNestedUnderPartA);
+                        const isPageJNestedA = partsJ.some(isNestedUnderPartA) && !partsJ.includes('a');
+                        const isPageJParentAOnly = partsJ.includes('a') && !partsJ.some(isNestedUnderPartA);
+                        const isPageINestedA = partsI.some(isNestedUnderPartA) && !partsI.includes('a');
+                        if ((isPageIParentAOnly && isPageJNestedA) || (isPageJParentAOnly && isPageINestedA)) {
+                            continue;
+                        }
                     }
 
                     const tokensA = entries[i].tokens;
@@ -539,12 +581,28 @@ export class PaperSplitterService {
                 return;
             }
 
-            // Out-of-order / continuation guard:
-            // A genuine duplicate-question reset on part (a) / (i) / (1) must have a real printed
-            // opening stem (>= 20 chars, non-continuation) on the subsequent page. Continuation pages
-            // (e.g. "Question 10 continued" carrying student work for 10a) have hasOpeningStem === false
-            // and must NEVER be rejected as a multi-paper upload.
-            const validSubsequentOpeningPages = pagesWithOpeningSubPart.slice(1).filter(p => p.hasOpeningStem);
+            // Out-of-order / continuation / hierarchical-child guard:
+            // 1. A genuine duplicate-question reset on part (a) / (i) / (1) must have a real printed
+            //    opening stem (>= 20 chars, non-continuation) on the subsequent page.
+            // 2. If the earlier page had parent part "a" (intro/diagram for 3(a) without nested "ai"/"i")
+            //    and the subsequent page has nested Roman child parts ("ai"/"i", "aii"/"ii") without bare "a",
+            //    that is hierarchical progression (3(a) intro -> 3(a)(i), 3(a)(ii)), NEVER a reset!
+            const firstOpeningPage = pagesWithOpeningSubPart[0];
+            const firstHasBareAWithoutNested =
+                firstOpeningPage.subParts.includes('a') &&
+                !firstOpeningPage.subParts.some(isNestedUnderPartA);
+
+            const validSubsequentOpeningPages = pagesWithOpeningSubPart.slice(1).filter(p => {
+                if (!p.hasOpeningStem) return false;
+                const isHierarchicalRomanContinuationOfA =
+                    firstHasBareAWithoutNested &&
+                    !p.subParts.includes('a') &&
+                    p.subParts.some(isNestedUnderPartA);
+                if (isHierarchicalRomanContinuationOfA) {
+                    return false;
+                }
+                return true;
+            });
 
             if (validSubsequentOpeningPages.length >= 1) {
                 subQuestionResetBaseNumbers.add(baseQ);
@@ -560,6 +618,23 @@ export class PaperSplitterService {
             const sortedConflicts = Array.from(
                 new Set([...conflictingQuestionNumbers, ...subQuestionResetBaseNumbers])
             ).sort((a, b) => Number(a) - Number(b));
+
+            // 🛡️ AUTO-PROCEED ON LOW-RISK CASES:
+            // 1. Isolated single-question reset/conflict inside a multi-question sequential exam paper (>= 3 distinct base questions), OR
+            // 2. BYOMS upload with an explicit marking scheme attached where only 1 question is flagged.
+            const isIsolatedSingleQuestionInMultiQuestionPaper =
+                sortedConflicts.length === 1 &&
+                !hasRepeatedSingleQuestionConflict &&
+                samePageConflictingQuestionNumbers.size < 2 &&
+                (allSeenBaseQNumbers.size >= 3 || Boolean(options.hasUploadedMarkingScheme));
+
+            if (isIsolatedSingleQuestionInMultiQuestionPaper) {
+                console.log(
+                    `🛡️ [PAPER-SPLITTER] Auto-proceeding past isolated single-question conflict on Q${sortedConflicts[0]} (distinctBaseQs=${allSeenBaseQNumbers.size}, hasUploadedMarkingScheme=${Boolean(options.hasUploadedMarkingScheme)}).`
+                );
+                return;
+            }
+
             const sampleQs = sortedConflicts.slice(0, 5).map(q => `Q${q}`).join(', ');
             console.warn(
                 `⚠️ [PAPER-SPLITTER] Conflicting question stems or sub-question resets detected on ${sortedConflicts.map(q => `Q${q}`).join(', ')} (isPdf=${Boolean(options.isPdf)}, pages=${options.pageCount ?? 'unknown'}, isUserSelectedPageChunk=${Boolean(options.isUserSelectedPageChunk)}).`
@@ -569,7 +644,7 @@ export class PaperSplitterService {
                 throw new UserFacingError({
                     code: 'COMBINED_MULTI_PAPER_PDF_NOT_SUPPORTED',
                     category: 'user_fixable',
-                    shouldAlertAdmin: false,
+                    shouldAlertAdmin: true,
                     userMessage:
                         `This PDF${options.fileName ? ` ("${options.fileName}")` : ''} contains **duplicate question numbers** (${sampleQs}) — such as a topic pack, compiled worksheet, or combined multi-paper PDF.\n\n` +
                         `**Duplicate question numbers are not currently supported.** Please upload a **single unique exam paper** (or upload each exam paper as a separate PDF file with unique question numbers).`,
@@ -596,8 +671,17 @@ export class PaperSplitterService {
      */
     static assertNoDuplicateQuestionsInMapperResults(
         mapperPageResults: Array<{ pageIndex: number; flatQuestions?: string[]; category?: string }>,
-        options: { isPdf?: boolean; pageCount?: number; fileName?: string } = {}
+        options: {
+            isPdf?: boolean;
+            pageCount?: number;
+            fileName?: string;
+            hasUploadedMarkingScheme?: boolean;
+            bypassDuplicateQuestionGuard?: boolean;
+        } = {}
     ): void {
+        if (options.bypassDuplicateQuestionGuard) {
+            return;
+        }
         if (!Array.isArray(mapperPageResults) || mapperPageResults.length === 0) return;
 
         // Deduplicate by pageIndex so ClassificationMapper's internal 2-page overlap is never counted twice
@@ -627,6 +711,7 @@ export class PaperSplitterService {
         const firstSeenPageByBaseQ = new Map<string, number>();
         const maxNumSeenSinceFirst = new Map<string, number>();
         const resetBaseQs = new Set<string>();
+        const allSeenBaseQNumbers = new Set<string>();
 
         for (const [pageIndex, labelSet] of sortedPages) {
             const baseQsOnPage = new Set<string>();
@@ -639,6 +724,7 @@ export class PaperSplitterService {
                 const subPart = m[2].toLowerCase().replace(/[().\s]/g, '');
 
                 baseQsOnPage.add(baseQ);
+                allSeenBaseQNumbers.add(baseQ);
 
                 // Guard B: Only treat "a", "ai", "1", or "i" (top-level Roman) as opening sub-parts
                 if (subPart && isOpeningSubPart(subPart)) {
@@ -692,6 +778,19 @@ export class PaperSplitterService {
         if (openingResetBaseQs.size >= 1 || hasDownwardReset) {
             const conflictList = Array.from(new Set([...openingResetBaseQs, ...resetBaseQs]))
                 .sort((a, b) => Number(a) - Number(b));
+
+            const isIsolatedSingleQuestionInMultiQuestionPaper =
+                conflictList.length === 1 &&
+                !hasDownwardReset &&
+                (allSeenBaseQNumbers.size >= 3 || Boolean(options.hasUploadedMarkingScheme));
+
+            if (isIsolatedSingleQuestionInMultiQuestionPaper) {
+                console.log(
+                    `🛡️ [MAPPER-PRECHECK] Auto-proceeding past isolated single-question reset on Q${conflictList[0]} (distinctBaseQs=${allSeenBaseQNumbers.size}, hasUploadedMarkingScheme=${Boolean(options.hasUploadedMarkingScheme)}).`
+                );
+                return;
+            }
+
             const sampleQs = conflictList.slice(0, 5).map(q => `Q${q}`).join(', ');
             console.warn(
                 `⚠️ [MAPPER-PRECHECK] Duplicate question numbers / sub-question resets detected on ${conflictList.map(q => `Q${q}`).join(', ')} (isPdf=${Boolean(options.isPdf)}, pages=${options.pageCount ?? 'unknown'}).`
@@ -701,7 +800,7 @@ export class PaperSplitterService {
                 throw new UserFacingError({
                     code: 'COMBINED_MULTI_PAPER_PDF_NOT_SUPPORTED',
                     category: 'user_fixable',
-                    shouldAlertAdmin: false,
+                    shouldAlertAdmin: true,
                     userMessage:
                         `This PDF${options.fileName ? ` ("${options.fileName}")` : ''} contains **duplicate question numbers** (${sampleQs}) — such as a topic pack, compiled worksheet, or combined multi-paper PDF.\n\n` +
                         `**Duplicate question numbers are not currently supported.** Please upload a **single unique exam paper** (or upload each exam paper as a separate PDF file with unique question numbers).`,

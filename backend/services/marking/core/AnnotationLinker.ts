@@ -81,7 +81,10 @@ export class AnnotationLinker {
 
             // 🛡️ [HEADER-DETACH]: If AI matched a printed instruction/header, SEVER the link.
             // This allows Path 3 (Rescue) to find the actual handwriting.
-            if (physicalId) {
+            // EXCEPTION: For `action === 'not_attempted'`, there IS NO student handwriting — the printed
+            // sub-question header (e.g. "(ii) Using the information...") is the exact intended anchor!
+            const isNotAttempted = String(anno.action || '').toLowerCase() === 'not_attempted';
+            if (physicalId && !isNotAttempted) {
                 const block = allOcrBlocks.find(b => b.id === physicalId);
                 const isHeader = block && (block.id === (zoneData as any)?.headerBlockId || (block as any)._isInstruction);
                 if (isHeader) {

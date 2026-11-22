@@ -428,6 +428,8 @@ ${images.map((_img, index) => `--- Page ${index + 1} ---`).join('\n')}`;
             if (isFullPage || hasInScopeQuestion) {
               scopedTasks.push(task);
             }
+          } else {
+            scopedTasks.push(task);
           }
         }
         markingTasks.length = 0;

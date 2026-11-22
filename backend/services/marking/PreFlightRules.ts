@@ -1,5 +1,9 @@
 import { isRecognizedAcademicSubject, type GeometryAnalysisResult } from './ImageGeometryService.js';
-import { collapseCompatibleSubjectAliases, hasUnofficialPaperIndicators } from './MarkingHelpers.js';
+import {
+  collapseCompatibleSubjectAliases,
+  hasUnofficialPaperIndicators,
+  hasVerifiedUnofficialGeometryFlag
+} from './MarkingHelpers.js';
 
 export type SupportedUserPlan = 'free' | 'pro' | 'ultra' | 'admin_test';
 
@@ -211,7 +215,7 @@ export async function lookupCatalogedOfficialSchemeIfEligible(params: {
     return { catalogedScheme: null, skippedUnofficial: false };
   }
 
-  const hasGeometryUnofficialFlag = geometryResults.some((g) => g?.is_unofficial_or_practice_paper === true);
+  const hasGeometryUnofficialFlag = hasVerifiedUnofficialGeometryFlag(geometryResults);
   const combinedGeoHints = [
     ...geometryResults.map((g) => g?.paper_code_hint || ''),
     ...geometryResults.map((g) => g?.evidence_text_snippet || ''),

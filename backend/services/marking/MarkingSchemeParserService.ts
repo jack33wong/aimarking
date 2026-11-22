@@ -8,7 +8,10 @@ import { getBaseQuestionNumber } from '../../utils/TextNormalizationUtils.js';
 import {
     cleanSubjectAndQualification,
     hasUnofficialPaperIndicators,
-    areSubjectsCompatible
+    areSubjectsCompatible,
+    isWhitelistedOfficialExamBoard,
+    isArchiveHostWatermarkOnly,
+    sanitizeUnofficialPaperFlag
 } from './MarkingHelpers.js';
 import { UserFacingError } from '../../utils/UserFacingError.js';
 
@@ -164,14 +167,22 @@ export function mergeParsedSchemeChunks(chunkObjects: any[]): any {
         }
     }
 
-    const isUnofficialOrPractice = validChunks.some(
-        c => c?.examDetails?.isUnofficialOrPractice === true || c?.examDetails?.isOfficial === false || c?.examDetails?.isPractice === true || c?.examDetails?.isMock === true
-    );
+    const isUnofficialOrPractice = validChunks.some(c => {
+        const d = c?.examDetails;
+        if (!d) return false;
+        if (d.isOfficial === false || d.isPractice === true || d.isMock === true) return true;
+        if (d.isUnofficialOrPractice === true) {
+            const disclaimer = String(d.sourceDisclaimer || d.disclaimer || '').trim();
+            if (disclaimer && isArchiveHostWatermarkOnly(disclaimer)) return false;
+            return true;
+        }
+        return false;
+    });
     const sourceDisclaimers = Array.from(
         new Set(
             validChunks
                 .map(c => String(c?.examDetails?.sourceDisclaimer || c?.examDetails?.disclaimer || '').trim())
-                .filter(Boolean)
+                .filter(d => Boolean(d) && !isArchiveHostWatermarkOnly(d))
         )
     );
     const sourceDisclaimer = sourceDisclaimers.join(' | ');
@@ -474,8 +485,8 @@ Output JSON Schema:
     "tier": "Higher | Foundation | N/A",
     "exam_series": "Exam series if visible, else 'N/A'",
     "paperTotalMarks": "Integer total/maximum mark for the WHOLE paper ONLY if explicitly printed in the document (e.g. 'Total for paper: 100', 'Maximum mark: 80'), else null",
-    "isUnofficialOrPractice": "boolean — true ONLY if the document itself is a third-party/unofficial practice, mock, predicted, or rewritten mark scheme (e.g. MarkMe, SaveMyExams, PMT, 'Practice Paper', 'Not produced or endorsed by AQA/Edexcel', 'June 2024 Format'); false for genuine official exam board mark schemes",
-    "sourceDisclaimer": "Short verbatim third-party branding or non-endorsement disclaimer printed on the document (e.g. 'MarkMe', 'Not produced or endorsed by AQA'), else ''"
+    "isUnofficialOrPractice": "boolean — true ONLY if the document itself is a synthetic/practice, mock, predicted, or rewritten mark scheme (e.g. MarkMe, SaveMyExams, 'Practice Paper', 'Predicted Paper', 'Not produced or endorsed by AQA/Edexcel', 'June 2024 Format'); false for genuine official exam board mark schemes even if they carry third-party archive watermarks/footers like 'PapaCambridge', 'GCE Guide', 'Dynamic Papers', or 'PMT'",
+    "sourceDisclaimer": "Short verbatim third-party practice/mock branding or non-endorsement disclaimer printed on the document (e.g. 'MarkMe', 'Not produced or endorsed by AQA'). Return '' for official past paper archive watermarks like 'PapaCambridge' or 'GCE Guide'."
   },
   "documentCompleteness": {
     "isComplete": "true ONLY if the images contain the marking scheme for EVERY question of the paper from Question 1 to the final question with no missing pages; false if any pages/questions appear to be missing, cut off, or only selected questions are included",
@@ -565,6 +576,7 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
         if (!parsedObj || typeof parsedObj !== 'object') return parsedObj;
 
         // Clean qualification prefix/suffix from subject (e.g. "GCSE COMBINED SCIENCE: TRILOGY" -> "COMBINED SCIENCE: TRILOGY")
+        // and sanitize archive-host watermarks (e.g. "PapaCambridge") out of isUnofficialOrPractice / sourceDisclaimer.
         if (parsedObj.examDetails && typeof parsedObj.examDetails === 'object') {
             const { subject, qualification } = cleanSubjectAndQualification(
                 parsedObj.examDetails.subject,
@@ -572,6 +584,20 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
             );
             parsedObj.examDetails.subject = subject;
             if (qualification) parsedObj.examDetails.qualification = qualification;
+
+            const rawDisclaimer = String(parsedObj.examDetails.sourceDisclaimer || parsedObj.examDetails.disclaimer || '').trim();
+            if (parsedObj.examDetails.isUnofficialOrPractice === true) {
+                const sanitized = sanitizeUnofficialPaperFlag(true, rawDisclaimer);
+                parsedObj.examDetails.isUnofficialOrPractice = sanitized.isUnofficial;
+                if (!sanitized.isUnofficial) {
+                    delete parsedObj.examDetails.isUnofficialOrPractice;
+                    if (parsedObj.examDetails.sourceDisclaimer && isArchiveHostWatermarkOnly(parsedObj.examDetails.sourceDisclaimer)) {
+                        parsedObj.examDetails.sourceDisclaimer = '';
+                    }
+                }
+            } else if (rawDisclaimer && isArchiveHostWatermarkOnly(rawDisclaimer)) {
+                parsedObj.examDetails.sourceDisclaimer = '';
+            }
         }
 
         const cleanKey = (k: string) => String(k || '').trim().replace(/^0+(?=\d)/, '');
@@ -796,11 +822,16 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
 
         if (
             details.isOfficial === false ||
-            details.isUnofficialOrPractice === true ||
             details.isPractice === true ||
             details.isMock === true
         ) {
             return false;
+        }
+        if (details.isUnofficialOrPractice === true) {
+            const rawDisclaimer = String(details.sourceDisclaimer || details.disclaimer || '').trim();
+            if (!rawDisclaimer || !isArchiveHostWatermarkOnly(rawDisclaimer)) {
+                return false;
+            }
         }
 
         const board = String(details.board || '').trim();
@@ -808,8 +839,7 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
         const subject = String(details.subject || '').trim();
         const questions = parsedObj.questions;
 
-        if (!board || /^(custom|unknown|n\/a|none)$/i.test(board)) return false;
-        if (!/^(aqa|edexcel|pearson|ocr|wjec|eduqas|cie|cambridge|ccea)/i.test(board)) return false;
+        if (!isWhitelistedOfficialExamBoard(board)) return false;
 
         if (!paperCode || /^(uploaded|custom|unknown|n\/a|none)$/i.test(paperCode)) return false;
         if (paperCode.length < 3 || !/[0-9]/.test(paperCode)) return false;

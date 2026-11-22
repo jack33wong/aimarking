@@ -537,5 +537,182 @@ describe('Subject-aware follow-up chat prompts and Question Mode subject resolut
       expect(systemPromptUsed).toContain('GCSE English Language');
       expect(systemPromptUsed).toContain('NEVER use Maths codes like [M1], [A1], [B1]');
     });
+
+    it('includes Session Uploaded Files & Grading Status in follow-up chat when session is awaiting mark scheme or hit an error, and ignores stray contextQuestionId when no markingContext exists yet', async () => {
+      const callGeminiSpy = jest.spyOn(ModelProvider, 'callGeminiText').mockResolvedValue({
+        content: 'Yes, I received your 20-page Biology paper (0610_s26_qp_41.pdf) and can see your handwriting clearly!',
+        usageTokens: 50,
+        inputTokens: 40,
+        outputTokens: 10
+      } as any);
+
+      jest.spyOn(FirestoreService, 'getUnifiedSession').mockResolvedValue({
+        id: 'sub-1795306008867-fupb3v',
+        userId: 'user-bio-1',
+        messages: [
+          {
+            id: 'user-1',
+            role: 'user',
+            content: 'Okay so this is my solved paper I will send the mark scheme but first confirm if u can see the handwriting',
+            pdfContexts: [{ originalFileName: '0610_s26_qp_41.pdf', fileSize: 123456 }]
+          },
+          {
+            id: 'ai-1',
+            role: 'assistant',
+            content: '📋 **Marking Scheme Required (Biology):** AI Marking includes built-in official past paper mark schemes...',
+            requiresMarkingScheme: true,
+            detectedSubjectName: 'Biology',
+            hasDetectedHandwriting: true,
+            uploadedPageCount: 20,
+            paperCodeHint: '0610/41'
+          },
+          {
+            id: 'user-2',
+            role: 'user',
+            content: 'I skipped question 5 except the first part',
+            contextQuestionId: '5'
+          },
+          {
+            id: 'ai-2',
+            role: 'assistant',
+            content: 'No problem at all!'
+          },
+          {
+            id: 'user-3',
+            role: 'user',
+            content: 'Here!',
+            pdfContexts: [
+              { originalFileName: '0610_s26_qp_41.pdf', fileSize: 123456 },
+              { originalFileName: '0610_s26_ms_41.pdf', fileSize: 65432 }
+            ]
+          },
+          {
+            id: 'ai-3',
+            role: 'assistant',
+            content: 'This PDF ("0610_s26_qp_41.pdf") contains **duplicate question numbers** (Q3)...',
+            errorCode: 'COMBINED_MULTI_PAPER_PDF_NOT_SUPPORTED',
+            canMarkAnyway: true
+          }
+        ]
+      } as any);
+      jest.spyOn(FirestoreService, 'addMessageToUnifiedSession').mockResolvedValue(undefined as any);
+
+      const res = await invokeChatRoute(
+        {
+          message: 'Wait what happened I am confused, did you get my solved paper?',
+          model: 'gemini-2.5-flash',
+          sessionId: 'sub-1795306008867-fupb3v',
+          contextQuestionId: '5' // Stray ContextQ: 5 from earlier message!
+        },
+        { uid: 'user-bio-1', email: 'kavyam1066@gmail.com' }
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(callGeminiSpy).toHaveBeenCalledTimes(1);
+      const [systemPromptUsed, userPromptUsed] = callGeminiSpy.mock.calls[0];
+      expect(systemPromptUsed).toContain('AI Biology tutor');
+      expect(userPromptUsed).toContain('Session Uploaded Files & Grading Status');
+      expect(userPromptUsed).toContain('"0610_s26_qp_41.pdf"');
+      expect(userPromptUsed).toContain('"0610_s26_ms_41.pdf"');
+      expect(userPromptUsed).toContain('Handwriting and printed questions ARE received and visible');
+      expect(userPromptUsed).toContain('duplicate question numbers');
+    });
+
+    it('includes deep details for ALL referenced questions when student asks about multiple questions (e.g. Question 1c and Question 3a) and strips all [SHOW_WORK_Q:X] tags', async () => {
+      const callGeminiSpy = jest.spyOn(ModelProvider, 'callGeminiText').mockResolvedValue({
+        content:
+          'Here is why you lost marks:\n\n### **Question 1(c)** [SHOW_WORK_Q:1]\nWater potential explanation.\n\n---\n\n### **Question 3(a)** [SHOW_WORK_Q:3]\nTranslocation explanation.',
+        usageTokens: 80,
+        inputTokens: 60,
+        outputTokens: 20
+      } as any);
+
+      jest.spyOn(FirestoreService, 'getUnifiedSession').mockResolvedValue({
+        id: 'sub-1795361906171-387qqp',
+        userId: 'user-bio-2',
+        messages: [
+          {
+            id: 'ai-marked-1',
+            role: 'assistant',
+            content: 'Marked Biology Paper',
+            markingContext: {
+              sessionType: 'Marking',
+              detectedSubject: 'UNIVERSAL_BYOMS',
+              examInfo: {
+                examBoard: 'CIE',
+                subject: 'Biology',
+                examCode: '0610/41',
+                examSeries: 'May/June 2026',
+                tier: 'Extended',
+                totalMarks: 80
+              },
+              totalQuestionsMarked: 2,
+              overallScore: { awarded: 18, total: 26, percentage: 69, scoreText: '18/26' },
+              questionResults: [
+                {
+                  number: '1',
+                  text: 'Substances travel across cell membranes.',
+                  scheme: '[1c] B1: water potential gradient',
+                  totalMarks: 13,
+                  earnedMarks: 8,
+                  hasScheme: true,
+                  parts: [
+                    {
+                      part: '1c',
+                      marks: [{ code: 'B0', icon: 'cross', reasoning: 'Missing: water potential & membrane', lineId: '1', work: 'salt concentration inside was higher' }]
+                    }
+                  ]
+                },
+                {
+                  number: '3',
+                  text: 'Ringing involves removing a circle of outer tissues.',
+                  scheme: '[3ai] B1: 14CO2 absorbed by diffusion and used in photosynthesis',
+                  totalMarks: 13,
+                  earnedMarks: 10,
+                  hasScheme: true,
+                  parts: [
+                    {
+                      part: '3ai',
+                      marks: [{ code: 'B0', icon: 'cross', reasoning: 'Missing: 14CO2 used in photosynthesis', lineId: '2', work: 'phloem was removed' }]
+                    }
+                  ]
+                }
+              ],
+              followUpHistory: []
+            }
+          }
+        ]
+      } as any);
+
+      const addedMessages: any[] = [];
+      jest.spyOn(FirestoreService, 'addMessageToUnifiedSession').mockImplementation((async (_sid: any, msg: any) => {
+        addedMessages.push(msg);
+      }) as any);
+
+      const res = await invokeChatRoute(
+        {
+          message: 'Why did I lose marks on Question 1c and Question 3a?',
+          model: 'gemini-2.5-flash',
+          sessionId: 'sub-1795361906171-387qqp',
+          contextQuestionId: '1'
+        },
+        { uid: 'user-bio-2', email: 'student@example.com' }
+      );
+
+      expect(res.status).toBe(200);
+      expect(callGeminiSpy).toHaveBeenCalledTimes(1);
+      const [, userPromptUsed] = callGeminiSpy.mock.calls[0];
+      // Both Question 1 and Question 3 must be included in Deep Focus!
+      expect(userPromptUsed).toContain('## Deep Focus: Question 1, Question 3');
+      expect(userPromptUsed).toContain('### Question 1: Substances travel across cell membranes.');
+      expect(userPromptUsed).toContain('### Question 3: Ringing involves removing a circle of outer tissues.');
+      expect(userPromptUsed).toContain('[3ai] B1: 14CO2 absorbed by diffusion and used in photosynthesis');
+
+      const savedAiMsg = addedMessages.find(m => m?.role === 'assistant');
+      expect(savedAiMsg).toBeDefined();
+      expect(savedAiMsg.content).not.toContain('[SHOW_WORK_Q:');
+      expect(savedAiMsg.contextQuestionId).toBe('1');
+    });
   });
 });

@@ -6,7 +6,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom';
 import './ChatMessage.css';
 import YourWorkSection from './YourWorkSection';
-import { Brain, ChevronDown, ChevronUp, FileText, Lock, Paperclip, Sparkles, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { Brain, ChevronDown, ChevronUp, FileText, Lock, Paperclip, RefreshCw, Sparkles, ThumbsUp, ThumbsDown } from 'lucide-react';
 import MarkingFeedbackModal from '../modals/MarkingFeedbackModal';
 import EventManager, { EVENT_TYPES } from '../../utils/eventManager';
 import { useAuth } from '../../contexts/AuthContext';
@@ -374,7 +374,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
   const { getAuthToken, user } = useAuth();
   const navigate = useNavigate();
   const { logEvent } = useTelemetry();
-  const { activeQuestionId, setActiveQuestionId, isContextFilterActive, isNegative, setShowCreditsModal, attachMarkingSchemeAndRetry, gradeWithGeneralRubric, gradeSelectedPaperGroup, remarkWithOfficialPaper, onRatingChange } = useMarkingPage();
+  const { activeQuestionId, setActiveQuestionId, isContextFilterActive, isNegative, setShowCreditsModal, attachMarkingSchemeAndRetry, gradeWithGeneralRubric, markPaperAnyway, retryFailedUpload, startMarkingFromPreCheck, gradeSelectedPaperGroup, remarkWithOfficialPaper, onRatingChange } = useMarkingPage();
   const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
   const [showFeedbackToast, setShowFeedbackToast] = useState<boolean>(false);
 
@@ -841,7 +841,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
           )}
 
           {!isUser && !(message.isProcessing && !message.progressData?.isComplete) && content && ensureStringContent(content).trim() !== '' && (() => {
-            let processedContent = ensureStringContent(content);
+            let processedContent = ensureStringContent(content).replace(/\s*\[SHOW_WORK_Q:\s*\d+\]/gi, '');
             const questionSections = processedContent.split(/^(###\s+Question\s+\d+[^\n]*)/gim);
 
             for (let i = 1; i < questionSections.length; i += 2) {
@@ -1012,6 +1012,73 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
                               Upgrade to Pro
                             </button>
                           </div>
+                        )}
+                      </div>
+                    )}
+                    {!isUser && (Boolean((message as any).canMarkAnyway) || Boolean((message as any).canRetryUpload) || Boolean((message as any).canStartMarkingFromPreCheck)) && (
+                      <div className="limit-actions-row">
+                        {Boolean((message as any).canStartMarkingFromPreCheck) && (() => {
+                          const totalPages = Number((message as any).uploadedPageCount || 1);
+                          const hwPages = Number((message as any).handwrittenPageCount || 0);
+                          const hasPartialUnattemptedPages = totalPages > 1 && hwPages > 0 && hwPages < totalPages;
+                          return (
+                            <>
+                              {hasPartialUnattemptedPages && (
+                                <button
+                                  type="button"
+                                  className="detected-paper-grade-btn"
+                                  disabled={isAnyMessageProcessing}
+                                  onClick={() => {
+                                    logEvent('telemetry_events', { event: 'precheck_mark_attempted_only_clicked' });
+                                    startMarkingFromPreCheck?.('attempted_only');
+                                  }}
+                                >
+                                  <Sparkles size={15} />
+                                  <span>Mark Attempted Questions Only</span>
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="detected-paper-grade-btn"
+                                disabled={isAnyMessageProcessing}
+                                onClick={() => {
+                                  logEvent('telemetry_events', { event: 'precheck_mark_full_paper_clicked' });
+                                  startMarkingFromPreCheck?.('full_paper');
+                                }}
+                              >
+                                <Sparkles size={15} />
+                                <span>Mark Full Paper</span>
+                              </button>
+                            </>
+                          );
+                        })()}
+                        {Boolean((message as any).canMarkAnyway) && (
+                          <button
+                            type="button"
+                            className="detected-paper-grade-btn"
+                            disabled={isAnyMessageProcessing}
+                            onClick={() => {
+                              logEvent('telemetry_events', { event: 'mark_paper_anyway_clicked' });
+                              markPaperAnyway?.();
+                            }}
+                          >
+                            <Sparkles size={15} />
+                            <span>Mark Paper Anyway</span>
+                          </button>
+                        )}
+                        {Boolean((message as any).canRetryUpload) && (
+                          <button
+                            type="button"
+                            className="detected-paper-grade-btn"
+                            disabled={isAnyMessageProcessing}
+                            onClick={() => {
+                              logEvent('telemetry_events', { event: 'retry_failed_upload_clicked' });
+                              retryFailedUpload?.();
+                            }}
+                          >
+                            <RefreshCw size={15} />
+                            <span>Retry</span>
+                          </button>
                         )}
                       </div>
                     )}

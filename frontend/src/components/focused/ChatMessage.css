@@ -1266,12 +1266,17 @@ html.dark .skeleton-label {
 .limit-actions-row {
   margin-top: 16px;
   padding-top: 14px;
+  padding-bottom: 4px;
   border-top: 1px solid var(--border-subtle);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 10px;
+}
+
+.limit-actions-row > .detected-paper-grade-btn {
+  flex: 1 1 auto;
 }
 
 .detected-paper-groups-list {
@@ -1394,7 +1399,7 @@ html.dark .skeleton-label {
 
   .detected-paper-grade-btn {
     width: 100%;
-    justify-content: space-between;
+    justify-content: center;
     min-height: 44px;
     padding: 10px 14px;
   }

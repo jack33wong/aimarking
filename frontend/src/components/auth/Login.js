@@ -5,9 +5,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
-import { AlertCircle, Chrome, Facebook, Mail, Lock, Eye, EyeOff, X } from 'lucide-react';
+import { AlertCircle, Chrome, Mail, Lock, Eye, EyeOff, X, Loader2 } from 'lucide-react';
 import { signInWithPopup } from 'firebase/auth';
-import { auth, googleProvider, facebookProvider } from '../../config/firebase';
+import { auth, googleProvider } from '../../config/firebase';
 import { getAdditionalUserInfo } from 'firebase/auth';
 import './Login.css';
 import '../common/LoadingSpinner.css';
@@ -26,7 +26,8 @@ const Login = () => {
   const location = useLocation();
   const emailInputRef = React.useRef(null);
 
-  const [isLoading, setIsLoading] = useState(false);
+  const [loadingMethod, setLoadingMethod] = useState(null); // 'google' | 'email' | null
+  const isLoading = loadingMethod !== null;
   const [firebaseError, setFirebaseError] = useState(null);
   const [currentPage, setCurrentPage] = useState('main'); // 'main', 'email-signin', 'email-signup'
   const [showPassword, setShowPassword] = useState(false);
@@ -49,7 +50,7 @@ const Login = () => {
       document.documentElement.classList.remove('dark');
     }
 
-    if (!auth || !googleProvider || !facebookProvider) {
+    if (!auth || !googleProvider) {
       console.error('Firebase not properly configured.');
       setFirebaseError('Firebase configuration issue detected.');
     }
@@ -81,19 +82,16 @@ const Login = () => {
 
   const handleSocialLogin = async (provider, { skipCtaTracking = false } = {}) => {
     if (!skipCtaTracking) {
-      markAuthWallCtaClicked(
-        'auth_modal',
-        provider === 'google' ? 'continue_with_google' : 'continue_with_facebook'
-      );
+      markAuthWallCtaClicked('auth_modal', 'continue_with_google');
     }
-    if (!auth || !googleProvider || !facebookProvider) {
+    if (!auth || !googleProvider) {
       setFirebaseError('Firebase not available. Please refresh and try again.');
       return;
     }
-    setIsLoading(true);
+    setLoadingMethod('google');
     setFirebaseError(null);
     try {
-      const authProvider = provider === 'google' ? googleProvider : facebookProvider;
+      const authProvider = googleProvider;
       // 👇 CAPTURE THE RESULT OF THE POPUP
       const result = await signInWithPopup(auth, authProvider);
 
@@ -121,7 +119,7 @@ const Login = () => {
         setFirebaseError(`Failed to start ${provider} login.`);
       }
     } finally {
-      setIsLoading(false);
+      setLoadingMethod(null);
     }
   };
 
@@ -132,7 +130,7 @@ const Login = () => {
 
   const handleEmailPasswordSubmit = async (e) => {
     e.preventDefault();
-    setIsLoading(true);
+    setLoadingMethod('email');
     setFirebaseError(null);
     try {
       const isSignUp = currentPage === 'email-signup';
@@ -156,13 +154,13 @@ const Login = () => {
       console.error('Email/password auth error:', error);
       setFirebaseError(error.message || 'Authentication failed');
     } finally {
-      setIsLoading(false);
+      setLoadingMethod(null);
     }
   };
 
   const checkUserExists = async (email) => {
     try {
-      setIsLoading(true);
+      setLoadingMethod('email');
       const response = await fetch('/api/auth/check-user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -174,7 +172,7 @@ const Login = () => {
       console.error('Error checking user existence:', error);
       return false; // Assume user doesn't exist on error
     } finally {
-      setIsLoading(false);
+      setLoadingMethod(null);
     }
   };
 
@@ -228,13 +226,14 @@ const Login = () => {
         {firebaseError && <div className="auth-error"><AlertCircle size={16} /><span>{firebaseError}</span></div>}
         {authError && <div className="auth-error"><AlertCircle size={16} /><span>{authError}</span></div>}
         <div className="social-login-section">
-          {(googleProvider && facebookProvider) ? (
+          {googleProvider ? (
             <div className="social-buttons">
               <button type="button" className="social-button google" onClick={() => handleSocialLogin('google')} disabled={isLoading}>
-                <Chrome size={20} /><span>Continue with Google</span>
-              </button>
-              <button type="button" className="social-button facebook" onClick={() => handleSocialLogin('facebook')} disabled={isLoading}>
-                <Facebook size={20} /><span>Continue with Facebook</span>
+                {loadingMethod === 'google' ? (
+                  <><Loader2 size={18} className="auth-btn-spinner" /><span>Signing in with Google...</span></>
+                ) : (
+                  <><Chrome size={20} /><span>Continue with Google</span></>
+                )}
               </button>
             </div>
           ) : (
@@ -256,7 +255,7 @@ const Login = () => {
             />
           </div>
           <button type="submit" className="auth-submit-button compact" disabled={isLoading}>
-            {isLoading ? <div className="loading-spinner loading-spinner-small"><div className="spinner spinner-white" /></div> : 'Continue'}
+            {loadingMethod === 'email' ? <Loader2 size={18} className="auth-btn-spinner" /> : 'Continue'}
           </button>
         </form>
       </div>
@@ -284,7 +283,7 @@ const Login = () => {
             </div>
           </div>
           <button type="submit" className="auth-submit-button" disabled={isLoading}>
-            {isLoading ? <div className="loading-spinner loading-spinner-small"><div className="spinner spinner-white" /></div> : 'Continue'}
+            {loadingMethod === 'email' ? <Loader2 size={18} className="auth-btn-spinner" /> : 'Continue'}
           </button>
         </form>
         <button type="button" className="auth-back-button" onClick={handleBack}>← Back</button>

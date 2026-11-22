@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import crypto from 'crypto';
 import { Request, Response } from 'express';
 import type { ModelType, MarkingTask, EnrichedAnnotation, MathBlock } from '../../types/index.js';
 import PdfProcessingService from '../pdf/PdfProcessingService.js';
@@ -29,7 +30,8 @@ import {
     getSuggestedFollowUps,
     calculateOverallScore,
     collapseCompatibleSubjectAliases,
-    hasUnofficialPaperIndicators
+    hasUnofficialPaperIndicators,
+    hasVerifiedUnofficialGeometryFlag
 } from './MarkingHelpers.js';
 import { withPerformanceLogging } from '../../utils/markingRouterHelpers.js';
 import UsageTracker from '../../utils/UsageTracker.js';
@@ -71,7 +73,9 @@ import { ModeSplitService } from './ModeSplitService.js';
 import {
     parseMarkingScope,
     applyScopeAndBlankPageHandling,
-    hasValidMappedQuestions
+    hasValidMappedQuestions,
+    resolveUploadInstructionIntent,
+    type UploadIntentGeometrySummary
 } from './MarkingScopeUtils.js';
 import { SessionManagementService } from '../sessionManagementService.js';
 import { createUserMessage, createAIMessage } from '../../utils/messageUtils.js';
@@ -1636,6 +1640,31 @@ export class MarkingPipelineService {
             }
             logValidation();
 
+            // 🛡️ [DUPLICATE FILE DEDUPLICATION]:
+            // If a user re-selects the student paper alongside the mark scheme (or attaches the same file twice),
+            // deduplicate files with identical originalname + binary content in-place so the student paper is never rasterized or graded twice.
+            if (files.length > 1) {
+                const seenFileSignatures = new Set<string>();
+                const dedupedFiles: Express.Multer.File[] = [];
+                for (const file of files) {
+                    const cleanName = (file?.originalname || '').trim().toLowerCase();
+                    const contentHash = file?.buffer && file.buffer.length > 0
+                        ? crypto.createHash('sha256').update(file.buffer).digest('hex')
+                        : `${file?.size || 0}`;
+                    const sig = `${cleanName}::${contentHash}`;
+                    if (seenFileSignatures.has(sig)) {
+                        console.log(`🧹 [DEDUP-FILES] Dropping duplicate uploaded file "${file?.originalname}" (${file?.size || 0} bytes).`);
+                        continue;
+                    }
+                    seenFileSignatures.add(sig);
+                    dedupedFiles.push(file);
+                }
+                if (dedupedFiles.length > 0 && dedupedFiles.length < files.length) {
+                    files.length = 0;
+                    files.push(...dedupedFiles);
+                }
+            }
+
             // Sanitize and detect actual file types from binary magic bytes (protects against misnamed uploads / canvas exports)
             files.forEach(file => {
                 if (file.buffer && file.buffer.length >= 4) {
@@ -1666,15 +1695,15 @@ export class MarkingPipelineService {
 
             // Determine Input Type
             const firstMime = files[0].mimetype;
-            const isPdf = files.length === 1 && firstMime === 'application/pdf';
-            const isMultiplePdfs = files.length > 1 && files.every(f => f.mimetype === 'application/pdf');
-            const isSingleImage = files.length === 1 && !isPdf && firstMime.startsWith('image/');
-            const isMultipleImages = files.length > 1 && files.every(f => f.mimetype?.startsWith('image/'));
-            const isMixedUpload = files.length > 1 && !isMultiplePdfs && !isMultipleImages && files.every(f =>
+            let isPdf = files.length === 1 && firstMime === 'application/pdf';
+            let isMultiplePdfs = files.length > 1 && files.every(f => f.mimetype === 'application/pdf');
+            let isSingleImage = files.length === 1 && !isPdf && firstMime.startsWith('image/');
+            let isMultipleImages = files.length > 1 && files.every(f => f.mimetype?.startsWith('image/'));
+            let isMixedUpload = files.length > 1 && !isMultiplePdfs && !isMultipleImages && files.every(f =>
                 f.mimetype === 'application/pdf' || f.mimetype?.startsWith('image/')
             );
 
-            const inputType = isPdf
+            let inputType = isPdf
                 ? 'PDF'
                 : isMultiplePdfs
                     ? 'Multiple PDFs'
@@ -1729,6 +1758,7 @@ export class MarkingPipelineService {
             let pageDimensionsMap = new Map<number, { width: number; height: number }>();
             const earlyMarkingScope = parseMarkingScope(options.customText);
             let earlyPrunedPdfMarkingScope: ReturnType<typeof parseMarkingScope> = null;
+            let resolvedLlmMarkingScope: ReturnType<typeof parseMarkingScope> = null;
             const sseThumbnailCache = new Map<number, string>();
             const MARK_SCHEME_FILENAME_REGEX = /(^|[-_\s.])(rms|ms|mark[-_\s]?scheme|marking[-_\s]?scheme)([-_\s.]|$)/i;
             // Zero-API-cost PDF page 1-2 text peek via Ghostscript (~15-40ms in parallel)
@@ -1756,8 +1786,115 @@ export class MarkingPipelineService {
                 // Scanned PDF with no text layer: fall back to filename pattern
                 return MARK_SCHEME_FILENAME_REGEX.test((f.originalname || '').replace(/\.pdf$/i, ''));
             };
-            const hasNonSchemeStudentFiles = files.some(f => !isExplicitMarkSchemePdfFile(f));
+            let hasNonSchemeStudentFiles = files.some(f => !isExplicitMarkSchemePdfFile(f));
             const deferredSchemePdfFiles: Express.Multer.File[] = [];
+
+            // 🛡️ [SESSION-CONTEXT AUTO-MERGE FOR MARK SCHEME FOLLOW-UP]:
+            // If the student uploaded ONLY a Mark Scheme PDF via the bottom chat bar in an existing session
+            // that already has an unmarked uploaded student paper (paused or awaiting mark scheme),
+            // automatically fetch and merge the earlier student file(s) from the session so we grade them together!
+            if (!preFlightBucket && !hasNonSchemeStudentFiles && files.length > 0 && options.sessionId && !String(options.sessionId).startsWith('temp-')) {
+                try {
+                    const { FirestoreService } = await import('../firestoreService.js');
+                    const existingSession = await FirestoreService.getUnifiedSession(options.sessionId);
+                    const sessionMsgs = Array.isArray(existingSession?.messages) ? existingSession!.messages : [];
+                    const hasAlreadyMarkedPaper = sessionMsgs.some((m: any) => m?.role === 'assistant' && Boolean(m?.markingContext));
+                    if (!hasAlreadyMarkedPaper && sessionMsgs.length > 0) {
+                        const prevStudentUserMsg = [...sessionMsgs].reverse().find((m: any) =>
+                            m?.role === 'user' &&
+                            (
+                                (Array.isArray(m.pdfContexts) && m.pdfContexts.length > 0) ||
+                                (Array.isArray(m.imageDataArray) && m.imageDataArray.length > 0) ||
+                                Boolean(m.imageLink)
+                            )
+                        ) as any;
+
+                        if (prevStudentUserMsg) {
+                            const recoveredFiles: Express.Multer.File[] = [];
+                            const downloadAsMulterFile = async (url: string, fallbackName: string, fallbackMime: string) => {
+                                if (!url || !/^https?:\/\//i.test(url)) return null;
+                                try {
+                                    const resp = await axios.get<ArrayBuffer>(url, { responseType: 'arraybuffer', timeout: 20000 });
+                                    const buf = Buffer.from(resp.data);
+                                    if (!buf || buf.length === 0) return null;
+                                    const mime = (resp.headers?.['content-type'] as string) || fallbackMime;
+                                    return {
+                                        fieldname: 'files',
+                                        originalname: fallbackName,
+                                        encoding: '7bit',
+                                        mimetype: mime.split(';')[0].trim(),
+                                        buffer: buf,
+                                        size: buf.length
+                                    } as Express.Multer.File;
+                                } catch (dlErr) {
+                                    console.warn(`⚠️ [SESSION-MERGE] Failed to fetch prior student file "${fallbackName}":`, dlErr instanceof Error ? dlErr.message : String(dlErr));
+                                    return null;
+                                }
+                            };
+
+                            if (Array.isArray(prevStudentUserMsg.pdfContexts) && prevStudentUserMsg.pdfContexts.length > 0) {
+                                for (let i = 0; i < prevStudentUserMsg.pdfContexts.length; i++) {
+                                    const pdf = prevStudentUserMsg.pdfContexts[i];
+                                    const url = pdf?.url || prevStudentUserMsg.originalPdfLink || prevStudentUserMsg.imageLink;
+                                    const name = pdf?.originalFileName || `student-paper-${i + 1}.pdf`;
+                                    const f = await downloadAsMulterFile(url, name, 'application/pdf');
+                                    if (f) recoveredFiles.push(f);
+                                }
+                            } else if (Array.isArray(prevStudentUserMsg.imageDataArray) && prevStudentUserMsg.imageDataArray.length > 0) {
+                                for (let i = 0; i < prevStudentUserMsg.imageDataArray.length; i++) {
+                                    const item = prevStudentUserMsg.imageDataArray[i];
+                                    const url = typeof item === 'string' ? item : item?.url;
+                                    const name = (typeof item === 'object' && item?.originalFileName) || `student-page-${i + 1}.jpg`;
+                                    const f = await downloadAsMulterFile(url, name, 'image/jpeg');
+                                    if (f) recoveredFiles.push(f);
+                                }
+                            } else if (prevStudentUserMsg.imageLink) {
+                                const name = prevStudentUserMsg.originalFileName || prevStudentUserMsg.fileName || 'student-paper.jpg';
+                                const mime = /\.pdf$/i.test(name) ? 'application/pdf' : 'image/jpeg';
+                                const f = await downloadAsMulterFile(prevStudentUserMsg.imageLink, name, mime);
+                                if (f) recoveredFiles.push(f);
+                            }
+
+                            if (recoveredFiles.length > 0) {
+                                // Peek recovered PDFs so isExplicitMarkSchemePdfFile knows they are student papers
+                                await Promise.all(
+                                    recoveredFiles
+                                        .filter(f => f.mimetype === 'application/pdf' && f.buffer)
+                                        .map(async (f) => {
+                                            const peek = await PdfProcessingService.peekPdfMarkSchemeMetadata(f.buffer);
+                                            pdfHeaderPeekMap.set(f, peek);
+                                        })
+                                );
+                                files.unshift(...recoveredFiles);
+                                hasNonSchemeStudentFiles = files.some(f => !isExplicitMarkSchemePdfFile(f));
+                                console.log(`🔗 [SESSION-MERGE] Automatically paired ${recoveredFiles.length} previously uploaded student file(s) from session ${options.sessionId} with the newly uploaded Mark Scheme!`);
+                            }
+                        }
+                    }
+                } catch (mergeErr) {
+                    console.warn('⚠️ [SESSION-MERGE] Non-fatal error while checking session for prior student files:', mergeErr instanceof Error ? mergeErr.message : String(mergeErr));
+                }
+            }
+
+            // Recompute input type flags in case SESSION-MERGE added student file(s)
+            isPdf = files.length === 1 && files[0].mimetype === 'application/pdf';
+            isMultiplePdfs = files.length > 1 && files.every(f => f.mimetype === 'application/pdf');
+            isSingleImage = files.length === 1 && !isPdf && files[0].mimetype?.startsWith('image/');
+            isMultipleImages = files.length > 1 && files.every(f => f.mimetype?.startsWith('image/'));
+            isMixedUpload = files.length > 1 && !isMultiplePdfs && !isMultipleImages && files.every(f =>
+                f.mimetype === 'application/pdf' || f.mimetype?.startsWith('image/')
+            );
+            inputType = isPdf
+                ? 'PDF'
+                : isMultiplePdfs
+                    ? 'Multiple PDFs'
+                    : isSingleImage
+                        ? 'Single Image'
+                        : isMultipleImages
+                            ? 'Multiple Images'
+                            : isMixedUpload
+                                ? 'Mixed (Images + PDFs)'
+                                : 'Unknown';
 
             if (preFlightBucket) {
                 standardizedPages = preFlightBucket.standardizedPages || [];
@@ -2655,6 +2792,200 @@ export class MarkingPipelineService {
                 );
             }
 
+            // 🧠 [LLM UPLOAD INSTRUCTION INTENT & PRE-CHECK PAUSE]:
+            // Interpret natural student instructions (e.g. "check hand written only", "first confirm if u can see the handwriting",
+            // "only mark the questions I answered", "I skipped question 5 except for the first part") using a fast structured LLM call + deterministic fallback.
+            // Also recover any pre-marking text instructions sent by the student earlier in the same session (e.g. between uploading
+            // their paper and attaching the mark scheme) when the current upload has no explicit instruction or only a system wrapper.
+            const bypassPreCheckPause = Boolean(
+                (options as any).bypassPreCheckPause ||
+                req.body?.bypassPreCheckPause === true ||
+                req.body?.bypassPreCheckPause === 'true'
+            );
+            let effectiveIntentCustomText = (options.customText || '').trim();
+            let effectiveBypassPreCheckPause = bypassPreCheckPause;
+            const isSystemOrEmptyCustomText =
+                !effectiveIntentCustomText ||
+                /^(?:attached\s+marking\s+scheme|marking\s+with\s+ai|grading\s+|retrying\s+upload|mark\s+paper\s+anyway|i\s+have\s+uploaded\s+\d+\s+file)/i.test(effectiveIntentCustomText);
+
+            if (!preFlightBucket && isSystemOrEmptyCustomText && options.sessionId && !String(options.sessionId).startsWith('temp-')) {
+                try {
+                    const { FirestoreService } = await import('../firestoreService.js');
+                    const existingSessionForInstructions = await FirestoreService.getUnifiedSession(options.sessionId);
+                    const sessionMsgs = Array.isArray(existingSessionForInstructions?.messages)
+                        ? existingSessionForInstructions!.messages
+                        : [];
+                    const hasAlreadyMarked = sessionMsgs.some((m: any) => m?.role === 'assistant' && Boolean(m?.markingContext));
+                    if (!hasAlreadyMarked && sessionMsgs.length > 0) {
+                        // Collect text-only user chat turns sent before marking started (ignoring pure file-upload messages)
+                        const priorChatInstructions = sessionMsgs
+                            .filter((m: any) =>
+                                m?.role === 'user' &&
+                                typeof m.content === 'string' &&
+                                m.content.trim().length >= 5 &&
+                                !(Array.isArray(m.pdfContexts) && m.pdfContexts.length > 0) &&
+                                !(Array.isArray(m.imageDataArray) && m.imageDataArray.length > 0) &&
+                                !m.imageLink &&
+                                !/^(?:attached\s+marking\s+scheme|marking\s+with\s+ai|grading\s+|retrying\s+upload|mark\s+paper\s+anyway|i\s+have\s+uploaded\s+\d+\s+file)/i.test(m.content.trim())
+                            )
+                            .map((m: any) => m.content.trim());
+
+                        if (priorChatInstructions.length > 0) {
+                            effectiveIntentCustomText = priorChatInstructions.join('\n');
+                            // Do not pause again for pre-check when the user is now submitting the mark scheme / starting grading
+                            effectiveBypassPreCheckPause = true;
+                            console.log(`🧠 [SESSION-INSTRUCTIONS] Carrying forward ${priorChatInstructions.length} prior pre-marking chat instruction(s) from session ${options.sessionId} into grading scope.`);
+                        }
+                    }
+                } catch (instErr) {
+                    console.warn('⚠️ [SESSION-INSTRUCTIONS] Failed to read prior session chat instructions:', instErr instanceof Error ? instErr.message : String(instErr));
+                }
+            }
+
+            if (!preFlightBucket && effectiveIntentCustomText.length >= 3) {
+                const nonSchemeGeoEntries = geometryResults
+                    .map((g, idx) => ({ g, oneBasedPage: idx + 1 }))
+                    .filter(({ g }) => Boolean(g && !g.is_marking_scheme && g.is_acceptable_quality !== false));
+                const handwrittenPages = nonSchemeGeoEntries
+                    .filter(({ g }) => g?.has_handwriting === true)
+                    .map(({ oneBasedPage }) => oneBasedPage);
+                const detectedSubjLabel = distinctUnsupportedSubjects.length > 0
+                    ? distinctUnsupportedSubjects.join(' & ')
+                    : (nonSchemeGeoEntries.some(({ g }) => g?.detected_subject === 'ENGLISH_LANGUAGE')
+                        ? 'GCSE English Language'
+                        : 'Mathematics');
+                const detectedCodeHint = nonSchemeGeoEntries.map(({ g }) => g?.paper_code_hint).find(Boolean);
+                const detectedBoardHint = nonSchemeGeoEntries.map(({ g }) => g?.exam_board).find(Boolean);
+                const requiresExternalMs = unsupportedPageResults.length > 0 && !hasUploadedMarkingScheme && !allowGenericSubject;
+
+                const geoIntentSummary: UploadIntentGeometrySummary = {
+                    totalPages: nonSchemeGeoEntries.length || standardizedPages.length,
+                    handwrittenPageCount: handwrittenPages.length,
+                    handwrittenOneBasedPages: handwrittenPages,
+                    acceptableQualityPageCount: nonSchemeGeoEntries.length,
+                    detectedSubjectName: detectedSubjLabel,
+                    paperCodeHint: detectedCodeHint,
+                    examBoardHint: detectedBoardHint,
+                    fileNames: files.map(f => f?.originalname || '').filter(Boolean),
+                    hasUploadedMarkingScheme,
+                    requiresExternalMarkingScheme: requiresExternalMs
+                };
+
+                const intentResult = await resolveUploadInstructionIntent({
+                    customText: effectiveIntentCustomText,
+                    geometrySummary: geoIntentSummary,
+                    bypassPreCheckPause: effectiveBypassPreCheckPause,
+                    tracker: usageTracker
+                });
+
+                if (intentResult.scope) {
+                    resolvedLlmMarkingScope = intentResult.scope;
+                    console.log(`🧠 [INTENT-SCOPE] Resolved marking scope from instruction: ${intentResult.scope.label} (type=${intentResult.scope.type})`);
+                }
+
+                if (intentResult.action === 'PAUSE_FOR_CHECK' && intentResult.checkReply) {
+                    console.log(`⏸️ [PRE-CHECK PAUSE] User instruction requested pre-marking check (${intentResult.checkType || 'HANDWRITING_READABILITY'}). Pausing before OCR/Marking with 0 credits charged.`);
+                    progressCallback(createProgressData(2, 'Handwriting & file check complete.', MULTI_IMAGE_STEPS));
+
+                    const uploadResult = await SessionManagementService.uploadOriginalFiles(
+                        files,
+                        userId || 'anonymous',
+                        submissionId,
+                        !!userId,
+                        pdfContext
+                    );
+                    const { structuredImageDataArray, structuredPdfContexts } = SessionManagementService.createStructuredData(
+                        files,
+                        isPdf,
+                        isMultiplePdfs || isMixedUpload,
+                        pdfContext
+                    );
+                    const userMessage = SessionManagementService.createUserMessageForDatabase(
+                        {
+                            content: options.customText,
+                            files,
+                            isPdf,
+                            isMultiplePdfs: isMultiplePdfs || isMixedUpload,
+                            sessionId: options.sessionId || submissionId,
+                            model: actualModel,
+                            pdfContext
+                        },
+                        structuredImageDataArray,
+                        structuredPdfContexts,
+                        uploadResult.originalImageLinks
+                    );
+
+                    const aiMessage: any = createAIMessage({
+                        content: intentResult.checkReply,
+                        messageId: req.body?.aiMessageId
+                    });
+                    aiMessage.isPreCheckPause = true;
+                    aiMessage.detectedSubjectName = detectedSubjLabel;
+                    aiMessage.hasDetectedHandwriting = handwrittenPages.length > 0;
+                    aiMessage.handwrittenPageCount = handwrittenPages.length;
+                    aiMessage.uploadedPageCount = geoIntentSummary.totalPages;
+                    if (detectedCodeHint) {
+                        aiMessage.paperCodeHint = detectedCodeHint;
+                    }
+                    if (requiresExternalMs) {
+                        aiMessage.requiresMarkingScheme = true;
+                    } else {
+                        aiMessage.canStartMarkingFromPreCheck = true;
+                    }
+
+                    const markingContext: MarkingSessionContext = {
+                        req,
+                        submissionId,
+                        startTime,
+                        userMessage,
+                        aiMessage,
+                        questionDetection: options.markingScheme,
+                        globalQuestionText: options.customText || (files && files[0] ? files[0].originalname : 'File Check'),
+                        mode: 'Question',
+                        allQuestionResults: [],
+                        files,
+                        usageTokens: usageTracker.getTotalTokens(),
+                        apiRequests: usageTracker.getTotalRequests(),
+                        model: actualModel,
+                        mathpixCallCount: 0,
+                        totalCost: usageTracker.calculateCost(actualModel).total,
+                        detectionResults: []
+                    };
+
+                    const sessionResult = await SessionManagementService.persistMarkingSession(markingContext);
+                    const finalOutput = {
+                        success: true,
+                        submissionId,
+                        mode: 'Question',
+                        sessionId: sessionResult.sessionId,
+                        sessionTitle: sessionResult.sessionTitle,
+                        unifiedSession: sessionResult.unifiedSession,
+                        aiMessage,
+                        requiresMarkingScheme: requiresExternalMs,
+                        canStartMarkingFromPreCheck: !requiresExternalMs,
+                        annotatedOutput: [],
+                        results: [],
+                        warning: 'CONTENT_REJECTED', // Exempts from credit deduction in MarkingController
+                        processingStats: {
+                            totalLLMTokens: usageTracker.getTotalTokens(),
+                            mathpixCalls: 0
+                        },
+                        ...(pdfContext && {
+                            originalFileType: pdfContext.originalFileType,
+                            originalPdfLink: pdfContext.originalPdfLink,
+                            originalPdfDataUrl: pdfContext.originalPdfDataUrl,
+                            originalFileName: pdfContext.originalFileName,
+                            ...(pdfContext.pdfContexts && {
+                                pdfContexts: pdfContext.pdfContexts
+                            })
+                        })
+                    };
+
+                    progressCallback({ type: 'complete', result: finalOutput });
+                    return finalOutput;
+                }
+            }
+
             if (!hasUploadedMarkingScheme && !allowGenericSubject && isMultiPageUpload && (unsupportedPageResults.length >= 2 || unsupportedRatio >= 0.4)) {
                 const primaryUnsupported = unsupportedPageResults.find(g => g.rejection_reason && g.rejection_reason.trim()) || unsupportedPageResults[0];
                 const combinedSubjLabel = distinctUnsupportedSubjects.join(' & ');
@@ -2956,12 +3287,22 @@ export class MarkingPipelineService {
                         uploadResult.originalImageLinks
                     );
                     
+                    const hasDetectedHandwritingOnUpload = geometryResults.some(g => g?.has_handwriting === true);
+                    const detectedPaperCodeHints = Array.from(
+                        new Set(geometryResults.map(g => g?.paper_code_hint).filter(Boolean))
+                    );
                     const aiMessage: any = createAIMessage({
                         content: guidedRejectionReason || 'The uploaded image could not be processed because it is blurry, unreadable, or does not contain educational content.',
                         messageId: req.body?.aiMessageId
                     });
                     if (isUnsupportedWithoutScheme) {
                         aiMessage.requiresMarkingScheme = true;
+                        aiMessage.detectedSubjectName = detectedAcademicSubjectName;
+                        aiMessage.hasDetectedHandwriting = hasDetectedHandwritingOnUpload;
+                        aiMessage.uploadedPageCount = standardizedPages.length;
+                        if (detectedPaperCodeHints.length > 0) {
+                            aiMessage.paperCodeHint = detectedPaperCodeHints[0];
+                        }
                     }
 
                     const markingContext: MarkingSessionContext = {
@@ -3050,6 +3391,12 @@ export class MarkingPipelineService {
             ).size;
             console.log(`📊 [PAGE GATING] User ${userId || 'anonymous'} (${userPlan}): ${studentRawPageCount} student page(s) to grade (${standardizedPages.length} post-split page(s), ${interceptedSchemeImages.length} mark scheme page(s) exempted).`);
 
+            const bypassDuplicateQuestionGuard = Boolean(
+                (options as any).bypassDuplicateQuestionGuard ||
+                req.body?.bypassDuplicateQuestionGuard === true ||
+                req.body?.bypassDuplicateQuestionGuard === 'true'
+            );
+
             // Pre-gate duplicate-question check for >50-page single-bucket uploads (before FREE_PAGE_LIMIT_EXCEEDED offers 25-page split buttons)
             const willTriggerOver50Gate =
                 (isFreeUser && studentRawPageCount > MAX_FREE_PAGES) ||
@@ -3081,7 +3428,9 @@ export class MarkingPipelineService {
                     PaperSplitterService.assertNoDuplicateQuestionsInMapperResults(sampleMapperResults, {
                         isPdf: standardizedPages.length > 0 && standardizedPages.every(p => /\.pdf$/i.test(p.originalFileName || '')),
                         pageCount: studentRawPageCount,
-                        fileName: standardizedPages[0]?.originalFileName
+                        fileName: standardizedPages[0]?.originalFileName,
+                        hasUploadedMarkingScheme,
+                        bypassDuplicateQuestionGuard
                     });
                 }
             }
@@ -3359,7 +3708,7 @@ export class MarkingPipelineService {
 
             // Parse explicit user marking scope from Student Input early so Stage-2 Classification
             // can skip out-of-scope pages/questions ($0 Stage-2 LLM cost) before meta-page filtering.
-            const markingScope = earlyPrunedPdfMarkingScope || parseMarkingScope(options.customText);
+            const markingScope = earlyPrunedPdfMarkingScope || resolvedLlmMarkingScope || parseMarkingScope(options.customText);
             if (markingScope) {
                 console.log(`🎯 [MARKING-SCOPE] Parsed explicit user scope: ${markingScope.label}`);
             }
@@ -3629,11 +3978,25 @@ export class MarkingPipelineService {
                 }
             }
 
+            const hasMarkingSchemeForGuard = Boolean(
+                deferredSchemePdfFiles.length > 0 ||
+                interceptedSchemeImages.length > 0 ||
+                geometryResults.some(g => g?.is_marking_scheme === true) ||
+                Boolean(inputMarkingScheme)
+            );
+            const bypassDupGuardForClassification = Boolean(
+                (options as any).bypassDuplicateQuestionGuard ||
+                req.body?.bypassDuplicateQuestionGuard === true ||
+                req.body?.bypassDuplicateQuestionGuard === 'true'
+            );
+
             PaperSplitterService.assertSinglePaperClassification(allClassificationResults, {
                 isPdf: standardizedPages.length > 0 && standardizedPages.every(p => /\.pdf$/i.test(p.originalFileName || '')),
                 pageCount: standardizedPages.length,
                 fileName: standardizedPages[0]?.originalFileName,
-                isUserSelectedPageChunk
+                isUserSelectedPageChunk,
+                hasUploadedMarkingScheme: hasMarkingSchemeForGuard,
+                bypassDuplicateQuestionGuard: bypassDupGuardForClassification
             });
 
             // Apply explicit user marking scope (parsed above) and blank-page preservation before meta-page filtering
@@ -3722,7 +4085,7 @@ export class MarkingPipelineService {
             );
             const studentWorkPages = nonMetadataPages.filter(r => r.result?.category === 'questionAnswer');
 
-            const hasQuestionOnlyToOverride = allClassificationResults.some(r => r.result?.category === 'questionOnly');
+            const hasQuestionOnlyToOverride = !markingScope && allClassificationResults.some(r => r.result?.category === 'questionOnly');
             if (hasQuestionOnlyToOverride && nonMetadataPages.length > 5 && (studentWorkPages.length / nonMetadataPages.length) >= 0.9) {
                 console.log(`🚀 [OVERRIDE] 90% Rule Triggered: ${studentWorkPages.length}/${nonMetadataPages.length} pages have student work. Overriding questionOnly pages with questions to questionAnswer for consistency.`);
                 allClassificationResults.forEach(r => {
@@ -4385,7 +4748,7 @@ export class MarkingPipelineService {
             // ⚡ [FAST DB PRE-CHECK FOR UPLOADED MARKING SCHEMES]:
             // If the user uploaded a Marking Scheme alongside an exam paper that ALREADY exists in our Firestore DB,
             // verify against our in-memory DB cache (~15ms) first. If found, skip the 30s LLM scheme extraction (and deferred PDF rasterization) completely!
-            const hasGeometryUnofficialFlag = geometryResults.some(g => g?.is_unofficial_or_practice_paper === true);
+            const hasGeometryUnofficialFlag = hasVerifiedUnofficialGeometryFlag(geometryResults);
             const preCheckGeoEvidence = [
                 ...geometryResults.map(g => g?.paper_code_hint || ''),
                 ...geometryResults.map(g => g?.evidence_text_snippet || ''),
@@ -5407,6 +5770,11 @@ export class MarkingPipelineService {
                     allClassificationResults,
                     metaPageIndices
                 );
+                if (markingScope) {
+                    markingTasks.forEach(t => {
+                        (t as any).isScopedMarking = true;
+                    });
+                }
             } catch (error) {
                 console.error('❌ createMarkingTasksFromClassification failed:', error);
                 throw error;

@@ -731,4 +731,215 @@ describe('PaperSplitterService & Multi-PDF Aggregation', () => {
         expect(getBaseQuestionNumber('P1·12a')).toBe('12');
         expect(getBaseQuestionNumber('P2·4')).toBe('4');
     });
+
+    it('Cambridge IGCSE 0610_s26_qp_41 Q3 reproduction: 3(a) intro/diagram on Page 5 continuing to 3(a)(i), 3(a)(ii) on Page 6 does NOT trigger duplicate-question rejection', () => {
+        const classificationResults = [
+            {
+                pageIndex: 5,
+                result: {
+                    category: 'questionOnly',
+                    questions: [
+                        {
+                            questionNumber: '3',
+                            text: 'Ringing involves removing a circle of the outer tissues from a plant stem. This removes the phloem but not the xylem.',
+                            subQuestions: [
+                                {
+                                    part: 'a',
+                                    text: 'A scientist investigated the effect of ringing in one species of plant. Plant A was ringed and plant B was not ringed. Figure 3.1 is a diagram of the investigation and shows the results.'
+                                }
+                            ]
+                        }
+                    ]
+                }
+            },
+            {
+                pageIndex: 6,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [
+                        {
+                            questionNumber: '3',
+                            text: null,
+                            subQuestions: [
+                                {
+                                    part: 'a',
+                                    subQuestions: [
+                                        {
+                                            part: 'i',
+                                            text: 'Explain why radioactive carbon (14C) was found in the roots but not in the top of the stem in plant A.'
+                                        },
+                                        {
+                                            part: 'ii',
+                                            text: 'Explain the purpose of plant B in Figure 3.1.'
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            },
+            {
+                pageIndex: 7,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [
+                        {
+                            questionNumber: '3',
+                            text: null,
+                            subQuestions: [
+                                { part: 'b', text: 'Explain the effect on the rate of transpiration of removing leaves from a plant.' },
+                                { part: 'c', text: 'Suggest the effect on the rate of transpiration of ringing a plant.' }
+                            ]
+                        }
+                    ]
+                }
+            }
+        ];
+
+        expect(() =>
+            PaperSplitterService.assertSinglePaperClassification(classificationResults, {
+                isPdf: true,
+                pageCount: 20,
+                fileName: '0610_s26_qp_41.pdf'
+            })
+        ).not.toThrow();
+
+        // Also test when Page 6 emits part: "i" and "ii" directly under questionNumber: "3" or "3a"
+        const flattenedVariant = [
+            classificationResults[0],
+            {
+                pageIndex: 6,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [
+                        {
+                            questionNumber: '3',
+                            text: null,
+                            subQuestions: [
+                                {
+                                    part: 'i',
+                                    text: 'Explain why radioactive carbon (14C) was found in the roots but not in the top of the stem in plant A.'
+                                },
+                                {
+                                    part: 'ii',
+                                    text: 'Explain the purpose of plant B in Figure 3.1.'
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        ];
+
+        expect(() =>
+            PaperSplitterService.assertSinglePaperClassification(flattenedVariant, {
+                isPdf: true,
+                pageCount: 20,
+                fileName: '0610_s26_qp_41.pdf'
+            })
+        ).not.toThrow();
+    });
+
+    it('Auto-proceeds on low-risk isolated single-question reset inside a multi-question paper or when hasUploadedMarkingScheme is true, and respects bypassDuplicateQuestionGuard', () => {
+        const multiQuestionWithOneReset = [
+            {
+                pageIndex: 1,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [{ questionNumber: '1', subQuestions: [{ part: 'a', text: 'State the name of the process shown in Figure 1.1.' }] }]
+                }
+            },
+            {
+                pageIndex: 3,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [{ questionNumber: '2', subQuestions: [{ part: 'a', text: 'Complete Table 2.1 about enzymes and substrates.' }] }]
+                }
+            },
+            {
+                pageIndex: 5,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [{ questionNumber: '3', subQuestions: [{ part: 'a', text: 'First page of question three with opening part a stem.' }] }]
+                }
+            },
+            {
+                pageIndex: 6,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [{ questionNumber: '3', subQuestions: [{ part: 'a', text: 'Second page of question three where AI repeated part a label.' }] }]
+                }
+            },
+            {
+                pageIndex: 9,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [{ questionNumber: '4', subQuestions: [{ part: 'a', text: 'Describe the adaptations of veins in mammals.' }] }]
+                }
+            }
+        ];
+
+        // 1. Multi-question paper (>= 3 distinct base questions) with 1 isolated question conflict auto-proceeds
+        expect(() =>
+            PaperSplitterService.assertSinglePaperClassification(multiQuestionWithOneReset, {
+                isPdf: true,
+                pageCount: 20,
+                fileName: '0610_s26_qp_41.pdf'
+            })
+        ).not.toThrow();
+
+        // 2. Single-question conflict with hasUploadedMarkingScheme: true auto-proceeds even if < 3 questions
+        const twoPageWithMs = multiQuestionWithOneReset.slice(2, 4);
+        expect(() =>
+            PaperSplitterService.assertSinglePaperClassification(twoPageWithMs, {
+                isPdf: true,
+                pageCount: 2,
+                fileName: '0610_s26_qp_41.pdf',
+                hasUploadedMarkingScheme: true
+            })
+        ).not.toThrow();
+
+        // 3. True multi-paper pack (conflicts on Q1 AND Q2) still throws unless bypassDuplicateQuestionGuard is true
+        const trueMultiPaper = [
+            {
+                pageIndex: 0,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [
+                        { questionNumber: '1', text: 'Write 84 as a product of its prime factors in index form.' },
+                        { questionNumber: '2', text: 'Reflect triangle T in the line x = -1 and label the new triangle R.' }
+                    ]
+                }
+            },
+            {
+                pageIndex: 20,
+                result: {
+                    category: 'questionAnswer',
+                    questions: [
+                        { questionNumber: '1', text: 'Expand and simplify the expression 4(2x - 3) + 5(x + 2) completely.' },
+                        { questionNumber: '2', text: 'A train travels 240 kilometres in 3 hours and 20 minutes. Calculate its average speed.' }
+                    ]
+                }
+            }
+        ];
+
+        expect(() =>
+            PaperSplitterService.assertSinglePaperClassification(trueMultiPaper, {
+                isPdf: true,
+                pageCount: 40,
+                fileName: 'combined.pdf',
+                hasUploadedMarkingScheme: true
+            })
+        ).toThrow(UserFacingError);
+
+        expect(() =>
+            PaperSplitterService.assertSinglePaperClassification(trueMultiPaper, {
+                isPdf: true,
+                pageCount: 40,
+                fileName: 'combined.pdf',
+                bypassDuplicateQuestionGuard: true
+            })
+        ).not.toThrow();
+    });
 });

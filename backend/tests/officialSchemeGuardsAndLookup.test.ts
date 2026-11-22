@@ -2,7 +2,11 @@ import { jest } from '@jest/globals';
 import {
     collapseCompatibleSubjectAliases,
     hasUnofficialPaperIndicators,
-    areSubjectsCompatible
+    areSubjectsCompatible,
+    isWhitelistedOfficialExamBoard,
+    isArchiveHostWatermarkOnly,
+    sanitizeUnofficialPaperFlag,
+    hasVerifiedUnofficialGeometryFlag
 } from '../services/marking/MarkingHelpers.js';
 import { MarkingSchemeParserService, mergeParsedSchemeChunks } from '../services/marking/MarkingSchemeParserService.js';
 import { QuestionDetectionService } from '../services/marking/questionDetectionService.js';
@@ -78,13 +82,63 @@ describe('Official scheme guards, subject alias collapsing, and 3-segment paper 
             expect(hasUnofficialPaperIndicators('MarkMe GCSE Biology Mock Paper')).toBe(true);
         });
 
-        it('does not false-positive on genuine official past paper text', () => {
+        it('does not false-positive on genuine official past paper text or archive host watermarks (PapaCambridge, GCE Guide, PMT)', () => {
             expect(
                 hasUnofficialPaperIndicators(
                     'AQA GCSE COMBINED SCIENCE: TRILOGY 8464/B/1F Foundation Tier Biology Paper 1F June 2024'
                 )
             ).toBe(false);
             expect(hasUnofficialPaperIndicators('Based on Table 1, describe good farming practice.')).toBe(false);
+            expect(
+                hasUnofficialPaperIndicators(
+                    'PapaCambridge · papacambridge.com | 0610/41 Question Paper June 2026 © Cambridge University Press & Assessment 2026'
+                )
+            ).toBe(false);
+            expect(hasUnofficialPaperIndicators('Downloaded from GCE Guide (gceguide.com) / Dynamic Papers')).toBe(false);
+            expect(hasUnofficialPaperIndicators('Physics & Maths Tutor (pmt.education) — AQA 8461/1H')).toBe(false);
+            // However, if an archive host distributes a Predicted / Guess / Practice paper, it MUST be blocked:
+            expect(hasUnofficialPaperIndicators('PapaCambridge Guess Paper June 2026 0610/41')).toBe(true);
+            expect(hasUnofficialPaperIndicators('Physics & Maths Tutor Predicted Paper June 2025')).toBe(true);
+        });
+
+        it('whitelists official exam boards and exempts archive-host watermarks from unofficial flags', () => {
+            expect(isWhitelistedOfficialExamBoard('CIE')).toBe(true);
+            expect(isWhitelistedOfficialExamBoard('Cambridge Assessment International Education')).toBe(true);
+            expect(isWhitelistedOfficialExamBoard('AQA')).toBe(true);
+            expect(isWhitelistedOfficialExamBoard('Pearson Edexcel')).toBe(true);
+            expect(isWhitelistedOfficialExamBoard('OCR')).toBe(true);
+            expect(isWhitelistedOfficialExamBoard('Custom')).toBe(false);
+
+            expect(isArchiveHostWatermarkOnly('PapaCambridge · papacambridge.com')).toBe(true);
+            expect(isArchiveHostWatermarkOnly('GCE Guide')).toBe(true);
+            expect(isArchiveHostWatermarkOnly('Physics & Maths Tutor')).toBe(true);
+            expect(isArchiveHostWatermarkOnly('MarkMe Practice Paper')).toBe(false);
+            expect(isArchiveHostWatermarkOnly('PapaCambridge Guess Paper')).toBe(false);
+
+            expect(
+                sanitizeUnofficialPaperFlag(true, 'PapaCambridge · papacambridge.com')
+            ).toEqual({ isUnofficial: false, reason: undefined });
+            expect(
+                sanitizeUnofficialPaperFlag(true, 'MarkMe Practice Paper')
+            ).toEqual({ isUnofficial: true, reason: 'MarkMe Practice Paper' });
+
+            // 20-page official CIE paper where 3 pages were flagged by LLM due to PapaCambridge watermark
+            // and 1 page had an empty-reason false positive -> should NOT be flagged as unofficial
+            const twentyPagesWithPapaCambridge = [
+                { is_unofficial_or_practice_paper: true, unofficial_reason: 'PapaCambridge · papacambridge.com' },
+                { is_unofficial_or_practice_paper: true, unofficial_reason: 'papacambridge.com' },
+                { is_unofficial_or_practice_paper: true, unofficial_reason: '' },
+                ...Array.from({ length: 17 }, () => ({ is_unofficial_or_practice_paper: false, unofficial_reason: '' }))
+            ];
+            expect(hasVerifiedUnofficialGeometryFlag(twentyPagesWithPapaCambridge)).toBe(false);
+
+            // Real practice paper with explicit non-archive reason -> flagged as unofficial
+            expect(
+                hasVerifiedUnofficialGeometryFlag([
+                    { is_unofficial_or_practice_paper: true, unofficial_reason: '13.1 Applied Test' },
+                    { is_unofficial_or_practice_paper: false, unofficial_reason: '' }
+                ])
+            ).toBe(true);
         });
     });
 

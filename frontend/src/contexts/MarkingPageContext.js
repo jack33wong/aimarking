@@ -821,11 +821,42 @@ export const MarkingPageProvider = ({
       startProcessing(targetSessionId);
 
       const explicitQuestionId = extractQuestionNumber(trimmedText);
-      const effectiveQuestionId = explicitQuestionId || activeQuestionId;
+      const sessionMessages = liveSession?.messages || chatMessages || [];
+      const latestMarkingMsg = [...sessionMessages].reverse().find(m => m.markingContext);
+      const gradedQuestionNumbers = Array.isArray(latestMarkingMsg?.markingContext?.questionResults)
+        ? latestMarkingMsg.markingContext.questionResults.map(q => String(q?.number || '').trim()).filter(Boolean)
+        : [];
+      const hasGradedQuestionsInSession = gradedQuestionNumbers.length > 0;
+      const isValidExplicitQuestion = Boolean(
+        explicitQuestionId &&
+        hasGradedQuestionsInSession &&
+        gradedQuestionNumbers.includes(String(explicitQuestionId))
+      );
 
-      // If user explicitly mentioned a question, update the focus automatically
-      if (explicitQuestionId && explicitQuestionId !== activeQuestionId) {
-        dispatch({ type: 'SET_ACTIVE_QUESTION_ID', payload: explicitQuestionId });
+      const effectiveQuestionId = isValidExplicitQuestion
+        ? explicitQuestionId
+        : (hasGradedQuestionsInSession ? activeQuestionId : null);
+
+      // Only auto-focus activeQuestionId (and sync split-mode activeImageIndex) when the session actually has graded question results matching that question
+      if (isValidExplicitQuestion) {
+        if (explicitQuestionId !== activeQuestionId) {
+          dispatch({ type: 'SET_ACTIVE_QUESTION_ID', payload: explicitQuestionId });
+        }
+        const matchedQResult = Array.isArray(latestMarkingMsg?.markingContext?.questionResults)
+          ? latestMarkingMsg.markingContext.questionResults.find(q => String(q?.number || '').trim() === String(explicitQuestionId))
+          : null;
+        if (matchedQResult && typeof matchedQResult.pageIndex === 'number' && splitModeImages && splitModeImages.length > 0) {
+          const targetPageIdx = matchedQResult.pageIndex;
+          const viewerIdx = splitModeImages.findIndex(
+            (img, idx) => (img?.pageIndex ?? idx) === targetPageIdx && (img?.messageRole === 'assistant' || img?.messageType === 'marking_annotated')
+          );
+          const resolvedViewerIdx = viewerIdx !== -1
+            ? viewerIdx
+            : (targetPageIdx >= 0 && targetPageIdx < splitModeImages.length ? targetPageIdx : -1);
+          if (resolvedViewerIdx !== -1 && resolvedViewerIdx !== activeImageIndex) {
+            dispatch({ type: 'SET_ACTIVE_IMAGE_INDEX', payload: resolvedViewerIdx });
+          }
+        }
       }
 
       const userMessageId = `user-${Date.now()}`;
@@ -919,8 +950,8 @@ export const MarkingPageProvider = ({
       return false;
     }
   }, [
-    user, isNegative, checkNegativeCredits, getAuthToken, currentSession, selectedModel,
-    activeQuestionId, isModelAnswerMode, isMarkingSchemeMode,
+    user, isNegative, checkNegativeCredits, getAuthToken, currentSession, chatMessages, selectedModel,
+    activeQuestionId, activeImageIndex, splitModeImages, isModelAnswerMode, isMarkingSchemeMode,
     addMessage, clearSession, startAIThinking, stopAIThinking, stopProcessing, handleError, startProcessing
   ]);
 
@@ -1476,9 +1507,36 @@ export const MarkingPageProvider = ({
 
   const handleMultiImageAnalysis = useCallback(async (files = [], customText = null, extraParams = null) => {
     if (!files || files.length === 0) return;
-    if (!extraParams?.isPaperGroupSubset) {
-      lastUploadedStudentFilesRef.current = Array.from(files);
+    const liveSessionBeforeMerge = simpleSessionService.getCurrentSession() || currentSession;
+    const sessionMsgsBeforeMerge = liveSessionBeforeMerge?.messages || chatMessages || [];
+    const hasCompletedMarkingBeforeMerge = sessionMsgsBeforeMerge.some(m => m?.role === 'assistant' && Boolean(m?.markingContext));
+    const hasPendingUnmarkedPaper =
+      !extraParams?.skipSessionMerge &&
+      !extraParams?.isPaperGroupSubset &&
+      !hasCompletedMarkingBeforeMerge &&
+      sessionMsgsBeforeMerge.some(
+        m => m?.role === 'assistant' && (m?.requiresMarkingScheme === true || m?.isPreCheckPause === true || m?.canStartMarkingFromPreCheck === true)
+      );
+
+    // If the student already uploaded an unmarked paper in this session (e.g. paused / awaiting mark scheme)
+    // and now uploads the Mark Scheme via the bottom chat bar, automatically pair it with the stashed student paper!
+    let effectiveFiles = Array.from(files);
+    if (hasPendingUnmarkedPaper && lastUploadedStudentFilesRef.current && lastUploadedStudentFilesRef.current.length > 0) {
+      const combined = [...lastUploadedStudentFilesRef.current, ...effectiveFiles];
+      const seenKeys = new Set();
+      effectiveFiles = combined.filter(f => {
+        if (!f) return false;
+        const key = `${(f.name || '').trim().toLowerCase()}::${f.size || 0}`;
+        if (seenKeys.has(key)) return false;
+        seenKeys.add(key);
+        return true;
+      });
     }
+
+    if (!extraParams?.isPaperGroupSubset) {
+      lastUploadedStudentFilesRef.current = effectiveFiles;
+    }
+    files = effectiveFiles;
 
     trackFunnelEvent('upload_initiated', {
       mode: 'multi',
@@ -1701,7 +1759,7 @@ export const MarkingPageProvider = ({
       stopProcessing();
       return false;
     }
-  }, [user, isNegative, checkNegativeCredits, selectedModel, routeSessionId, navigate, addMessage, clearSession, startProcessing, stopProcessing, startAIThinking, stopAIThinking, processMultiImageAPI, clearFile, handleError, registerJob, updateJobProgress, completeJob, failJob, startPollingJob, refreshCredits]);
+  }, [user, isNegative, checkNegativeCredits, currentSession, chatMessages, selectedModel, routeSessionId, navigate, addMessage, clearSession, startProcessing, stopProcessing, startAIThinking, stopAIThinking, processMultiImageAPI, clearFile, handleError, registerJob, updateJobProgress, completeJob, failJob, startPollingJob, refreshCredits]);
 
   // Handle files passed from Landing Pages (SEO Phase 2)
   const handoverProcessedRef = useRef(false);
@@ -1981,7 +2039,15 @@ export const MarkingPageProvider = ({
 
     // Fallback ONLY for early-exit unsupported subjects (where student pages were never OCR'd)
     const studentFiles = await reconstructStudentFiles();
-    const mergedFiles = [...studentFiles, ...schemeFiles];
+    const rawMergedFiles = [...studentFiles, ...schemeFiles];
+    const seenKeys = new Set();
+    const mergedFiles = rawMergedFiles.filter(f => {
+      if (!f) return false;
+      const key = `${(f.name || '').trim().toLowerCase()}::${f.size || 0}`;
+      if (seenKeys.has(key)) return false;
+      seenKeys.add(key);
+      return true;
+    });
     return handleMultiImageAnalysis(
       mergedFiles,
       `Attached Marking Scheme (${schemeFiles.map(f => f.name).join(', ')}) for grading.`
@@ -1991,7 +2057,15 @@ export const MarkingPageProvider = ({
   const reconstructStudentFiles = useCallback(async () => {
     let studentFiles = lastUploadedStudentFilesRef.current || [];
     if (studentFiles.length === 0 && Array.isArray(chatMessages)) {
-      const lastUserMsg = [...chatMessages].reverse().find(m => m.role === 'user');
+      const lastUserMsg = [...chatMessages].reverse().find(
+        m =>
+          m.role === 'user' &&
+          (
+            (Array.isArray(m.pdfContexts) && m.pdfContexts.length > 0) ||
+            (Array.isArray(m.imageDataArray) && m.imageDataArray.length > 0) ||
+            Boolean(m.imageData)
+          )
+      );
       const dataUrlToFile = (dataUrl, name) => {
         try {
           if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) return null;
@@ -2126,6 +2200,51 @@ export const MarkingPageProvider = ({
     );
   }, [reconstructStudentFiles, handleMultiImageAnalysis]);
 
+  const markPaperAnyway = useCallback(async () => {
+    const studentFiles = await reconstructStudentFiles();
+    if (studentFiles.length === 0) {
+      console.warn('No student files available to mark anyway.');
+      return false;
+    }
+
+    return handleMultiImageAnalysis(
+      studentFiles,
+      'Mark Paper Anyway.',
+      { bypassDuplicateQuestionGuard: true }
+    );
+  }, [reconstructStudentFiles, handleMultiImageAnalysis]);
+
+  const retryFailedUpload = useCallback(async () => {
+    const studentFiles = await reconstructStudentFiles();
+    if (studentFiles.length === 0) {
+      console.warn('No student files available to retry.');
+      return false;
+    }
+
+    return handleMultiImageAnalysis(
+      studentFiles,
+      'Retrying upload.'
+    );
+  }, [reconstructStudentFiles, handleMultiImageAnalysis]);
+
+  const startMarkingFromPreCheck = useCallback(async (mode = 'attempted_only') => {
+    const studentFiles = await reconstructStudentFiles();
+    if (studentFiles.length === 0) {
+      console.warn('No student files available to start marking from pre-check.');
+      return false;
+    }
+
+    const customText = mode === 'attempted_only'
+      ? 'Only mark attempted questions'
+      : 'Mark Full Paper';
+
+    return handleMultiImageAnalysis(
+      studentFiles,
+      customText,
+      { bypassPreCheckPause: true }
+    );
+  }, [reconstructStudentFiles, handleMultiImageAnalysis]);
+
   const value = useMemo(() => ({
     user, pageMode, selectedFile, selectedModel, showInfoDropdown, hoveredRating,
     handleFileSelect, clearFile, handleModelChange, onModelChange: handleModelChange,
@@ -2152,6 +2271,9 @@ export const MarkingPageProvider = ({
     onFollowUpMultiImage: handleMultiImageAnalysis,
     attachMarkingSchemeAndRetry,
     gradeWithGeneralRubric,
+    markPaperAnyway,
+    retryFailedUpload,
+    startMarkingFromPreCheck,
     gradeSelectedPaperGroup,
     remarkWithOfficialPaper,
     getImageSrc,
@@ -2184,7 +2306,7 @@ export const MarkingPageProvider = ({
     onSendMessage, addMessage, chatContainerRef,
     isHistoryLoading,
     scrollToBottom, showScrollButton, hasNewResponse, scrollToNewResponse, scrollToMessage,
-    handleMultiImageAnalysis, attachMarkingSchemeAndRetry, gradeWithGeneralRubric, gradeSelectedPaperGroup, remarkWithOfficialPaper, progressProps, getImageSrc, startAIThinking,
+    handleMultiImageAnalysis, attachMarkingSchemeAndRetry, gradeWithGeneralRubric, markPaperAnyway, retryFailedUpload, startMarkingFromPreCheck, gradeSelectedPaperGroup, remarkWithOfficialPaper, progressProps, getImageSrc, startAIThinking,
     splitModeImages, activeImageIndex, enterSplitMode, exitSplitMode, setActiveImageIndex,
     activeQuestionId, setActiveQuestionId, isQuestionTableVisible, setQuestionTableVisibility,
     isContextFilterActive, setContextFilterActive,

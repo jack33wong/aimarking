@@ -459,7 +459,7 @@ export async function executeMarkingForQuestion(
       semanticZones
     ).filter((anno: any) => (anno.text || '').trim() !== '' || anno.action === 'not_attempted' || anno.isUnattempted);
 
-    const enrichedAnnotations = normalizeUnattemptedSubQuestionAnnotations(
+    let enrichedAnnotations = normalizeUnattemptedSubQuestionAnnotations(
       enrichedAnnotationsRaw,
       stepsDataForMapping,
       semanticZones,
@@ -467,6 +467,19 @@ export async function executeMarkingForQuestion(
       task.pageDimensions,
       defaultPageIndex
     );
+
+    const skippedSubQuestionsInScopedMode = new Set<string>();
+    if ((task as any).isScopedMarking) {
+      enrichedAnnotations.forEach((anno: any) => {
+        if (anno.action === 'not_attempted' || anno.isUnattempted) {
+          const sqKey = String(anno.subQuestion || '').replace(/[()\s]/g, '').toLowerCase();
+          if (sqKey) skippedSubQuestionsInScopedMode.add(sqKey);
+        }
+      });
+      enrichedAnnotations = enrichedAnnotations.filter(
+        (anno: any) => anno.action !== 'not_attempted' && !anno.isUnattempted
+      );
+    }
 
     // Final UI placement patch
     enrichedAnnotations.forEach(anno => {
@@ -531,6 +544,38 @@ export async function executeMarkingForQuestion(
         (parsedScore as any)._authoritativeGenericScore = true;
       }
       finalAnnotationsForSorting = reconciled.annotations;
+
+      // Scoped Marking Sub-Question Denominator Adjustment:
+      // If a question has partially attempted sub-questions (e.g. student answered 5ai and skipped 5aii, 5bi, 5bii, 5c)
+      // and markingScope is active, subtract the skipped sub-questions' max marks from this question's denominator
+      // so the total reflects ONLY the attempted/marked sub-questions (e.g. 2/2 instead of 2/14).
+      if ((task as any).isScopedMarking && skippedSubQuestionsInScopedMode.size > 0 && task.markingScheme) {
+        const rawSubMaxScores: Record<string, number> =
+          (task.markingScheme as any).subQuestionMaxScores ||
+          (task.markingScheme as any).questionMarks?.subQuestionMaxScores ||
+          {};
+        let deductedSkippedMarks = 0;
+        const normKey = (k: string) => String(k || '').replace(/^q/i, '').replace(/[()\s]/g, '').toLowerCase();
+        for (const [rawKey, rawVal] of Object.entries(rawSubMaxScores)) {
+          const nk = normKey(rawKey);
+          const maxVal = Number(rawVal) || 0;
+          if (maxVal > 0 && skippedSubQuestionsInScopedMode.has(nk)) {
+            deductedSkippedMarks += maxVal;
+          }
+        }
+        if (deductedSkippedMarks > 0 && parsedScore.totalMarks > deductedSkippedMarks) {
+          const adjustedTotal = Math.max(parsedScore.awardedMarks, parsedScore.totalMarks - deductedSkippedMarks);
+          console.log(
+            `✂️ [SCOPED-DENOMINATOR] Q${questionId}: Excluded ${skippedSubQuestionsInScopedMode.size} skipped sub-question(s) (-${deductedSkippedMarks} marks). Adjusted denominator: ${parsedScore.awardedMarks}/${adjustedTotal} (was ${parsedScore.awardedMarks}/${parsedScore.totalMarks}).`
+          );
+          parsedScore.totalMarks = adjustedTotal;
+          parsedScore.scoreText = `${parsedScore.awardedMarks}/${adjustedTotal}`;
+          if (task.markingScheme) {
+            (task.markingScheme as any).totalMarks = adjustedTotal;
+            (task.markingScheme as any).parentQuestionMarks = adjustedTotal;
+          }
+        }
+      }
     }
 
     const cleanMarkingScheme: Record<string, any> = {};

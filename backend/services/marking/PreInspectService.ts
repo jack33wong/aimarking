@@ -6,6 +6,7 @@ import { ImageUtils } from '../../utils/ImageUtils.js';
 import { UsageTracker } from '../../utils/UsageTracker.js';
 import { AdminAlertService } from '../AdminAlertService.js';
 import { UserFacingError } from '../../utils/UserFacingError.js';
+import { hasVerifiedUnofficialGeometryFlag } from './MarkingHelpers.js';
 import {
   resolvePageLimits,
   checkRawCombinedPageLimit,
@@ -616,7 +617,7 @@ export class PreInspectService {
     const contentGeos = geos.filter((g) => !g.is_cover_page && !g.is_marking_scheme && g.is_acceptable_quality !== false && g.detected_subject !== 'NON_ACADEMIC');
     const hasPrintedQuestions = contentGeos.length === 0 ? true : contentGeos.some((g) => g.has_printed_questions !== false);
     const requiresMarkScheme = filterAcademicUnsupportedPages(geos).length > 0;
-    const isUnofficialPaper = geos.some((g) => g.is_unofficial_or_practice_paper === true);
+    const isUnofficialPaper = hasVerifiedUnofficialGeometryFlag(geos);
 
     let role: PreInspectFileRole = 'question_paper';
     if (schemeCount > 0 && schemeCount >= Math.ceil(geos.length / 2)) {
@@ -691,7 +692,7 @@ export class PreInspectService {
     const hasHandwriting = nonSchemeGeos.some((g) => g.has_handwriting === true && !g.is_cover_page);
     const contentNonSchemeGeos = nonSchemeGeos.filter((g) => !g.is_cover_page && g.is_acceptable_quality !== false && g.detected_subject !== 'NON_ACADEMIC');
     const hasPrintedQuestions = contentNonSchemeGeos.some((g) => g.has_printed_questions !== false);
-    const isUnofficialPaper = nonSchemeGeos.some((g) => g.is_unofficial_or_practice_paper === true);
+    const isUnofficialPaper = hasVerifiedUnofficialGeometryFlag(nonSchemeGeos);
 
     const labelPrefix = [examBoard, paperCode, subject].filter(Boolean).join(' · ') || 'Uploaded file';
 

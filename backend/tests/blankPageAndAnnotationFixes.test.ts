@@ -1,7 +1,10 @@
 import {
   parseMarkingScope,
-  applyScopeAndBlankPageHandling
+  applyScopeAndBlankPageHandling,
+  isDeterministicPreCheckPauseIntent,
+  resolveUploadInstructionIntent
 } from '../services/marking/MarkingScopeUtils.js';
+import { ModelProvider } from '../utils/ModelProvider.js';
 import { calculateOverallScore, extractQuestionsFromClassification } from '../services/marking/MarkingHelpers.js';
 import {
   buildUnattemptedQuestionResult,
@@ -123,6 +126,97 @@ describe('1. Scope-Aware Blank Question Page Handling', () => {
 
     expect(preservedBlankQuestionPageIndices).toEqual([]);
     expect(allClassificationResults.every(r => r.result.category === 'questionOnly')).toBe(true);
+  });
+
+  it('scoped marking (attempted_only, question exclusion, or page/question range) excludes blank questions from denominator and suppresses Not attempted annotations', () => {
+    const attemptedScope = parseMarkingScope('Only mark attempted questions')!;
+    expect(attemptedScope).toEqual({
+      type: 'attempted_only',
+      label: 'Attempted Questions Only'
+    });
+
+    const excludeScope = parseMarkingScope('skip question 5')!;
+    expect(excludeScope).toEqual({
+      type: 'questions',
+      excludedQuestionNumbers: new Set([5]),
+      label: 'Excluding Q5'
+    });
+
+    const allClassificationResults: any[] = [
+      { pageIndex: 0, result: { category: 'questionAnswer', questions: [{ questionNumber: '1', studentWork: 'x = 4' }] } },
+      { pageIndex: 1, result: { category: 'questionOnly', questions: [{ questionNumber: '2', text: 'Blank Q2' }] } },
+      {
+        pageIndex: 2,
+        result: {
+          category: 'questionAnswer',
+          questions: [
+            { questionNumber: '3', studentWork: 'y = 10' },
+            { questionNumber: '4', text: 'Blank Q4 on shared page', studentWork: '', studentWorkLines: [] }
+          ]
+        }
+      }
+    ];
+
+    const { excludedPageIndices, preservedBlankQuestionPageIndices } = applyScopeAndBlankPageHandling({
+      allClassificationResults,
+      markingScope: attemptedScope,
+      hasAnyStudentWork: true,
+      ejectedPureReferenceFiles: false
+    });
+
+    // Blank page 1 (Q2) is excluded as metadata (NOT promoted to questionAnswer with isUnattempted)
+    expect(excludedPageIndices).toEqual([1]);
+    expect(preservedBlankQuestionPageIndices).toEqual([]);
+    expect(allClassificationResults[1].result.category).toBe('metadata');
+    expect(allClassificationResults[1].result.questions).toEqual([]);
+    // Shared page 2 keeps attempted Q3 and strips unattempted Q4
+    expect(allClassificationResults[2].result.questions.map((q: any) => q.questionNumber)).toEqual(['3']);
+  });
+
+  it('detects pre-check pause intent ("check hand written only" / "first confirm if u can see the handwriting") and resolves LLM intent with CTA reply without starting marking', async () => {
+    expect(isDeterministicPreCheckPauseIntent('check hand written only')).toBe(true);
+    expect(
+      isDeterministicPreCheckPauseIntent(
+        'Okay so this is my solved paper I will send the mark scheme but first confirm if u can see the handwriting'
+      )
+    ).toBe(true);
+    expect(isDeterministicPreCheckPauseIntent('only mark Q1 to Q4')).toBe(false);
+
+    const spy = jest.spyOn(ModelProvider, 'callGeminiText').mockResolvedValue({
+      content: JSON.stringify({
+        action: 'PAUSE_FOR_CHECK',
+        checkType: 'HANDWRITING_READABILITY',
+        checkReply: '✅ Your handwriting is clearly visible across 14 of 20 pages on 0610_s26_qp_41.pdf (Cambridge IGCSE Biology 0610/41). Marking is paused — click below when ready!',
+        scopeMode: 'FULL_PAPER',
+        includePages: [],
+        includeQuestions: [],
+        excludeQuestions: [],
+        scopeLabel: ''
+      }),
+      usageTokens: 120
+    } as any);
+
+    const res = await resolveUploadInstructionIntent({
+      customText: 'check hand written only',
+      geometrySummary: {
+        totalPages: 20,
+        handwrittenPageCount: 14,
+        handwrittenOneBasedPages: [2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 14, 15, 17, 18],
+        acceptableQualityPageCount: 20,
+        detectedSubjectName: 'Biology',
+        paperCodeHint: '0610/41',
+        examBoardHint: 'CIE',
+        fileNames: ['0610_s26_qp_41.pdf'],
+        hasUploadedMarkingScheme: false,
+        requiresExternalMarkingScheme: true
+      }
+    });
+
+    expect(res.action).toBe('PAUSE_FOR_CHECK');
+    expect(res.checkReply).toContain('14 of 20 pages');
+
+    // When bypassPreCheckPause is true (user clicked CTA button), it proceeds with MARK_NOW
+    spy.mockRestore();
   });
 });
 

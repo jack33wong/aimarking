@@ -272,6 +272,14 @@ router.post('/chat', optionalAuth, async (req, res) => {
     let finalProgressData: any = null;
     let contextualResult: any = null;
     let contextSummary: string | undefined = undefined; // Declare at function scope
+    let pendingPreMarkingState: {
+      requiresMarkingScheme: boolean;
+      canStartMarkingFromPreCheck: boolean;
+      detectedSubjectName?: string;
+      paperCodeHint?: string;
+      uploadedPageCount?: number;
+      handwrittenPageCount?: number;
+    } | undefined = undefined;
     const startTime = Date.now();
 
     // Auto-resolve follow-up mode from message text if mode is missing or 'chat'
@@ -359,20 +367,49 @@ router.post('/chat', optionalAuth, async (req, res) => {
           try {
             const existingSession = await FirestoreService.getUnifiedSession(currentSessionId);
             if (existingSession?.messages) {
+              const { ChatContextBuilder } = await import('../services/marking/ChatContextBuilder.js');
+              const { resolveSubjectProfile } = await import('../config/subjectProfiles.js');
+
+              // INJECT: Find rich marking context from the assistant's marking result
+              const lastMarkingMessage = [...existingSession.messages].reverse().find(msg => (msg as any).markingContext);
+              const hasActiveMarkingContext = Boolean(lastMarkingMessage && (lastMarkingMessage as any).markingContext);
+
+              // Extract any question numbers explicitly mentioned in the student's message (e.g. "Why did I lose marks on Question 1c and Question 3a?" -> ["1", "3"])
+              const referencedQuestionIds = hasActiveMarkingContext
+                ? ChatContextBuilder.extractReferencedQuestionNumbers(message)
+                : [];
+              const targetContextQuestionIds = hasActiveMarkingContext
+                ? (referencedQuestionIds.length > 0
+                    ? Array.from(new Set([...referencedQuestionIds, ...(contextQuestionId ? [String(contextQuestionId)] : [])]))
+                    : (contextQuestionId ? [String(contextQuestionId)] : []))
+                : [];
+
+              // Only filter chatHistory by contextQuestionId when the session actually has graded question results
+              // matching that question — and NEVER filter out upload/error/requiresMarkingScheme messages!
+              const effectiveContextQuestionId = targetContextQuestionIds.length === 1
+                ? targetContextQuestionIds[0]
+                : (targetContextQuestionIds.length > 1 ? targetContextQuestionIds[0] : undefined);
+
               chatHistory = existingSession.messages
                 .filter(msg => {
-                  // If no context provided in request, show all.
-                  // If context provided, show only specific question context or messages WITHOUT context (system).
-                  // We truncate the "all-questions" summary message below to keep AI focused.
-                  if (!contextQuestionId) return true;
-                  return String((msg as any).contextQuestionId) === String(contextQuestionId) || msg.role === 'system' || (msg as any).markingContext;
+                  if (targetContextQuestionIds.length === 0) return true;
+                  const isUploadOrSystemEvent =
+                    msg.role === 'system' ||
+                    Boolean((msg as any).markingContext) ||
+                    Boolean((msg as any).requiresMarkingScheme) ||
+                    Boolean((msg as any).errorCode) ||
+                    Boolean((msg as any).canMarkAnyway) ||
+                    Boolean((msg as any).canRetryUpload) ||
+                    (Array.isArray((msg as any).pdfContexts) && (msg as any).pdfContexts.length > 0) ||
+                    Boolean((msg as any).originalFileName);
+                  return targetContextQuestionIds.includes(String((msg as any).contextQuestionId)) || isUploadOrSystemEvent;
                 })
                 .map(msg => {
                   let content = msg.content;
                   // If we have a specific context, and this message is the "all questions" marking context,
                   // truncate it to just a placeholder to prevent AI from seeing details of OTHER questions.
-                  if (contextQuestionId && (msg as any).markingContext && !msg.role.startsWith('user')) {
-                    content = `[Marking report for all questions - Follow specific context prompt for Question ${contextQuestionId} details]`;
+                  if (targetContextQuestionIds.length > 0 && (msg as any).markingContext && !msg.role.startsWith('user')) {
+                    content = `[Marking report for all questions - Follow specific context prompt for Question ${targetContextQuestionIds.join(', ')} details]`;
                   }
                   return {
                     role: msg.role,
@@ -380,12 +417,15 @@ router.post('/chat', optionalAuth, async (req, res) => {
                   };
                 });
 
-              // INJECT: Find rich marking context from the assistant's marking result
-              // Look for the last message that has markingContext (usually the initial marking response)
-              const lastMarkingMessage = [...existingSession.messages].reverse().find(msg => (msg as any).markingContext);
+              const {
+                inventoryPrompt,
+                detectedSubjectHint,
+                paperCodeHint,
+                pendingPreMarkingState: detectedPendingState
+              } = ChatContextBuilder.formatSessionUploadInventory(existingSession.messages);
+              pendingPreMarkingState = detectedPendingState;
 
               if (lastMarkingMessage && (lastMarkingMessage as any).markingContext) {
-                const { ChatContextBuilder } = await import('../services/marking/ChatContextBuilder.js');
                 const markingContext = (lastMarkingMessage as any).markingContext;
 
                 // Populate followUpHistory from the recent chat history
@@ -395,8 +435,17 @@ router.post('/chat', optionalAuth, async (req, res) => {
 
                 for (let i = 0; i < msgs.length - 1; i++) {
                   if (msgs[i].role === 'user' && msgs[i + 1]?.role === 'assistant') {
-                    // Filter history for context injection too
-                    if (!contextQuestionId || (msgs[i] as any).contextQuestionId === contextQuestionId) {
+                    // Always include upload/error/requiresMarkingScheme turns OR turns matching targetContextQuestionIds
+                    const isImportantTurn =
+                      Boolean((msgs[i + 1] as any).requiresMarkingScheme) ||
+                      Boolean((msgs[i + 1] as any).errorCode) ||
+                      Boolean((msgs[i + 1] as any).canMarkAnyway) ||
+                      Boolean((msgs[i + 1] as any).canRetryUpload);
+                    if (
+                      targetContextQuestionIds.length === 0 ||
+                      targetContextQuestionIds.includes(String((msgs[i] as any).contextQuestionId)) ||
+                      isImportantTurn
+                    ) {
                       followUpHistory.push({
                         userMessage: msgs[i].content,
                         aiResponse: msgs[i + 1].content,
@@ -409,12 +458,33 @@ router.post('/chat', optionalAuth, async (req, res) => {
                 // Update the context object (in memory only) with recent history
                 markingContext.followUpHistory = followUpHistory;
 
-                // Generate the full prompt including marking details + history (filtered by question if active)
-                contextSummary = ChatContextBuilder.formatContextAsPrompt(markingContext, contextQuestionId);
-                resolvedSubjectProfile = ChatContextBuilder.resolveSubjectProfile(markingContext, contextQuestionId);
+                // Generate the full prompt including upload inventory + marking details + history
+                const promptContextSelector = targetContextQuestionIds.length > 1
+                  ? targetContextQuestionIds
+                  : effectiveContextQuestionId;
+                const formattedMarkingContext = ChatContextBuilder.formatContextAsPrompt(markingContext, promptContextSelector);
+                contextSummary = inventoryPrompt
+                  ? `${inventoryPrompt}${formattedMarkingContext}`
+                  : formattedMarkingContext;
+                resolvedSubjectProfile = ChatContextBuilder.resolveSubjectProfile(markingContext, promptContextSelector);
 
                 // Update progress tracker to indicate context mode
                 progressTracker.updateStepDescription('generating_response', 'Thinking with marking context...');
+              } else if (inventoryPrompt) {
+                // Session has uploaded file(s) awaiting a mark scheme or stopped by a validation/system error
+                const recentChatLines = chatHistory
+                  .slice(-6)
+                  .map(item => `${item.role}: ${item.content}`)
+                  .join('\n');
+                contextSummary = recentChatLines
+                  ? `${inventoryPrompt}## Recent Conversation History\n${recentChatLines}`
+                  : inventoryPrompt;
+                if (detectedSubjectHint || paperCodeHint) {
+                  resolvedSubjectProfile = resolveSubjectProfile({
+                    subject: detectedSubjectHint,
+                    paperCode: paperCodeHint
+                  });
+                }
               }
             }
           } catch (error) {
@@ -427,8 +497,12 @@ router.post('/chat', optionalAuth, async (req, res) => {
         if (!contextSummary && !isAuthenticated && req.body.markingContext) {
           try {
             const { ChatContextBuilder } = await import('../services/marking/ChatContextBuilder.js');
-            contextSummary = ChatContextBuilder.formatContextAsPrompt(req.body.markingContext, contextQuestionId);
-            resolvedSubjectProfile = ChatContextBuilder.resolveSubjectProfile(req.body.markingContext, contextQuestionId);
+            const guestRefIds = ChatContextBuilder.extractReferencedQuestionNumbers(message);
+            const guestContextSelector = guestRefIds.length > 0
+              ? Array.from(new Set([...guestRefIds, ...(contextQuestionId ? [String(contextQuestionId)] : [])]))
+              : contextQuestionId;
+            contextSummary = ChatContextBuilder.formatContextAsPrompt(req.body.markingContext, guestContextSelector);
+            resolvedSubjectProfile = ChatContextBuilder.resolveSubjectProfile(req.body.markingContext, guestContextSelector);
 
             if (progressTracker) {
               progressTracker.updateStepDescription('generating_response', 'Thinking with provided context...');
@@ -475,7 +549,7 @@ router.post('/chat', optionalAuth, async (req, res) => {
           turnType: 'FOLLOW_UP_CHAT',
           userId: isAuthenticated ? userId : `guest:${userIP}`,
           userEmail: req.user?.email,
-          userAgent: req.get('user-agent') || undefined,
+          userAgent: (typeof req.get === 'function' ? req.get('user-agent') : req.headers?.['user-agent']) || undefined,
           model: resolvedModel,
           error,
           userInput: message || (imageData ? '[Image uploaded]' : ''),
@@ -486,50 +560,60 @@ router.post('/chat', optionalAuth, async (req, res) => {
       throw error;
     }
 
-    // Prepend "Your Work" section if applicable
+    // Prepend "Your Work" section if applicable and strip all [SHOW_WORK_Q: X] tags cleanly
     let finalResponse = aiResponse;
-    if (aiResponse && contextSummary) {
-      // Detect explicit tag from AI response
-      const qMatch = aiResponse.match(/\[SHOW_WORK_Q:\s*(\d+)\]/i);
-      if (qMatch && qMatch[1]) {
-        const questionNumber = qMatch[1];
-        
-        // Remove the hidden tag from the text so the user doesn't see it
-        aiResponse = aiResponse.replace(qMatch[0], '').trim();
-        finalResponse = aiResponse;
-
-        // Get marking context from last marking message or request
-        const currentMarkingContext = !isAuthenticated && req.body.markingContext ? req.body.markingContext : null;
-
-        let lastMarkingMsg = null;
-        if (isAuthenticated) {
-          const existingSession = await FirestoreService.getUnifiedSession(currentSessionId);
-          lastMarkingMsg = [...(existingSession?.messages || [])].reverse().find(m => (m as any).markingContext);
+    const showWorkQuestionNumbers: string[] = [];
+    if (aiResponse) {
+      const allShowWorkMatches = Array.from(aiResponse.matchAll(/\[SHOW_WORK_Q:\s*(\d+)\]/gi));
+      for (const m of allShowWorkMatches) {
+        const qNum = String(m[1] || '').trim();
+        if (qNum && !showWorkQuestionNumbers.includes(qNum)) {
+          showWorkQuestionNumbers.push(qNum);
         }
+      }
+      if (allShowWorkMatches.length > 0) {
+        aiResponse = aiResponse.replace(/\s*\[SHOW_WORK_Q:\s*\d+\]/gi, '').trim();
+        finalResponse = aiResponse;
+      }
+    }
 
-        const markingContextToUse = currentMarkingContext || (lastMarkingMsg ? (lastMarkingMsg as any).markingContext : null);
+    if (aiResponse && contextSummary && showWorkQuestionNumbers.length > 0) {
+      const questionNumber = showWorkQuestionNumbers[0];
 
-        if (markingContextToUse) {
-          const yourWorkSection = formatYourWork(markingContextToUse, questionNumber);
+      // Get marking context from last marking message or request
+      const currentMarkingContext = !isAuthenticated && req.body.markingContext ? req.body.markingContext : null;
 
-          // Check if AI response already contains :::your-work (prevent duplicates)
-          if (yourWorkSection && !aiResponse.includes(':::your-work')) {
-            // Find where to insert Your Work section (after first paragraph/question header)
-            // Look for first double newline which usually separates header from content
-            const firstParagraphEnd = aiResponse.indexOf('\n\n');
+      let lastMarkingMsg = null;
+      if (isAuthenticated) {
+        const existingSession = await FirestoreService.getUnifiedSession(currentSessionId);
+        lastMarkingMsg = [...(existingSession?.messages || [])].reverse().find(m => (m as any).markingContext);
+      }
 
-            if (firstParagraphEnd !== -1) {
-              // Insert Your Work right after the question header paragraph
-              const beforeYourWork = aiResponse.substring(0, firstParagraphEnd + 2);
-              const afterYourWork = aiResponse.substring(firstParagraphEnd + 2);
-              finalResponse = beforeYourWork + yourWorkSection + '\n' + afterYourWork;
-            } else {
-              // Fallback: prepend if no double newline found
-              finalResponse = yourWorkSection + '\n' + aiResponse;
-            }
-          } else if (aiResponse.includes(':::your-work')) {
-            finalResponse = aiResponse; // Use AI response as-is
+      const markingContextToUse = currentMarkingContext || (lastMarkingMsg ? (lastMarkingMsg as any).markingContext : null);
+
+      if (markingContextToUse) {
+        const yourWorkSection = showWorkQuestionNumbers
+          .map(qNum => formatYourWork(markingContextToUse, qNum))
+          .filter(Boolean)
+          .join('\n');
+
+        // Check if AI response already contains :::your-work (prevent duplicates)
+        if (yourWorkSection && !aiResponse.includes(':::your-work')) {
+          // Find where to insert Your Work section (after first paragraph/question header)
+          // Look for first double newline which usually separates header from content
+          const firstParagraphEnd = aiResponse.indexOf('\n\n');
+
+          if (firstParagraphEnd !== -1) {
+            // Insert Your Work right after the question header paragraph
+            const beforeYourWork = aiResponse.substring(0, firstParagraphEnd + 2);
+            const afterYourWork = aiResponse.substring(firstParagraphEnd + 2);
+            finalResponse = beforeYourWork + yourWorkSection + '\n' + afterYourWork;
+          } else {
+            // Fallback: prepend if no double newline found
+            finalResponse = yourWorkSection + '\n' + aiResponse;
           }
+        } else if (aiResponse.includes(':::your-work')) {
+          finalResponse = aiResponse; // Use AI response as-is
         }
       }
     }
@@ -548,15 +632,8 @@ router.post('/chat', optionalAuth, async (req, res) => {
     // Create AI message using factory
     const resolvedAIMessageId = handleAIMessageIdForEndpoint(req.body, aiResponse, 'chat');
 
-    // Use the explicitly provided context ID, or the one extracted from [SHOW_WORK_Q: X] if applicable
-    let aiContextQuestionId = contextQuestionId;
-    // We already extracted questionNumber from [SHOW_WORK_Q: X] tag earlier if it existed
-    if (aiResponse && aiResponse.match(/\[SHOW_WORK_Q:\s*(\d+)\]/i)) {
-      const match = aiResponse.match(/\[SHOW_WORK_Q:\s*(\d+)\]/i);
-      if (match && match[1]) {
-        aiContextQuestionId = match[1];
-      }
-    }
+    // Use the first extracted [SHOW_WORK_Q: X] question number, or the explicitly provided context ID
+    const aiContextQuestionId = showWorkQuestionNumbers[0] || contextQuestionId;
 
     // --- NEW: Increment Guest Usage ---
     if (!isAuthenticated) {
@@ -564,7 +641,7 @@ router.post('/chat', optionalAuth, async (req, res) => {
       await GuestUsageService.incrementUsage(userIP);
     }
 
-    const aiMessage = createAIMessage({
+    const aiMessage: any = createAIMessage({
       content: finalResponse, // Use finalResponse here
       messageId: resolvedAIMessageId,
       imageData: !isAuthenticated && imageData ? imageData : undefined, // Include imageData for unauthenticated users
@@ -588,6 +665,28 @@ router.post('/chat', optionalAuth, async (req, res) => {
       },
       contextQuestionId: aiContextQuestionId // Use the detected or passed context
     });
+
+    // Carry forward pre-marking CTA flags onto the latest follow-up reply so the student always sees
+    // actionable buttons ([ Attach Marking Scheme ] / [ Mark with AI ] or [ Mark Full Paper ]) right below the AI's reply
+    if (pendingPreMarkingState) {
+      if (pendingPreMarkingState.requiresMarkingScheme) {
+        aiMessage.requiresMarkingScheme = true;
+      } else if (pendingPreMarkingState.canStartMarkingFromPreCheck) {
+        aiMessage.canStartMarkingFromPreCheck = true;
+      }
+      if (pendingPreMarkingState.detectedSubjectName) {
+        aiMessage.detectedSubjectName = pendingPreMarkingState.detectedSubjectName;
+      }
+      if (pendingPreMarkingState.paperCodeHint) {
+        aiMessage.paperCodeHint = pendingPreMarkingState.paperCodeHint;
+      }
+      if (pendingPreMarkingState.uploadedPageCount !== undefined) {
+        aiMessage.uploadedPageCount = pendingPreMarkingState.uploadedPageCount;
+      }
+      if (pendingPreMarkingState.handwrittenPageCount !== undefined) {
+        aiMessage.handwrittenPageCount = pendingPreMarkingState.handwrittenPageCount;
+      }
+    }
 
 
     // Handle session creation and message storage - only for authenticated users
@@ -741,7 +840,7 @@ router.post('/chat', optionalAuth, async (req, res) => {
         turnType: 'FOLLOW_UP_CHAT',
         userId: isAuthenticated ? userId : `guest:${userIP}`,
         userEmail: req.user?.email,
-        userAgent: req.get('user-agent') || undefined,
+        userAgent: (typeof req.get === 'function' ? req.get('user-agent') : req.headers?.['user-agent']) || undefined,
         sessionTitle: sessionData?.title || sessionTitle,
         model: resolvedModel,
         userInput: message || (imageData ? '[Image uploaded]' : ''),

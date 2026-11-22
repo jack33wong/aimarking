@@ -220,8 +220,8 @@ export const FollowUpRectificationPanel: React.FC<FollowUpRectificationPanelProp
 
       {/* CASE 1: Other Subject Requiring a Marking Scheme */}
       {requiresMarkingScheme && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', width: '100%' }}>
-          {/* Button on LEFT: Mark with AI (General Rubric) */}
+        <div className="limit-actions-row">
+          {/* Button 1: Mark with AI (General Rubric) */}
           <button
             type="button"
             className="detected-paper-grade-btn"
@@ -232,13 +232,12 @@ export const FollowUpRectificationPanel: React.FC<FollowUpRectificationPanelProp
             <span>Mark with AI (General Mark Scheme)</span>
           </button>
 
-          {/* Button on RIGHT: Attach Marking Scheme */}
+          {/* Button 2: Attach Marking Scheme */}
           <button
             type="button"
             className="detected-paper-grade-btn"
             disabled={isProcessing}
             onClick={() => fileInputRef.current?.click()}
-            style={{ marginLeft: 'auto' }}
           >
             <Paperclip size={15} />
             <span>Attach Marking Scheme</span>

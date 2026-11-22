@@ -338,6 +338,18 @@ body.login-page .auth-container {
   box-shadow: var(--shadow-md);
 }
 
+.social-button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.auth-btn-spinner {
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
 
 
 .social-icon {
