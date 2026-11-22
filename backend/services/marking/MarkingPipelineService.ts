@@ -3324,15 +3324,19 @@ export class MarkingPipelineService {
                 .map(g => g?.unsupported_subject_name)
                 .find(Boolean);
             const customSchemeSubject = (inputMarkingScheme as any)?.examDetails?.subject || geoUnsupportedSubjName;
-            const bucketGeoHints = geometryResults
-                .filter(g => g?.is_cover_page && g?.paper_code_hint)
-                .map(g => g?.paper_code_hint)
-                .filter(Boolean);
+            const bucketGeoHints = [...new Set(
+                geometryResults
+                    .filter(g => g?.is_cover_page && g?.paper_code_hint)
+                    .map(g => String(g?.paper_code_hint).trim())
+                    .filter(Boolean)
+            )];
             const geoPaperCodeHint = preFlightBucket?.paperCodeHint
-                || (bucketGeoHints.length > 0 ? bucketGeoHints.join(' ') : geometryResults
-                    .map(g => g?.paper_code_hint)
-                    .filter((h): h is string => Boolean(h) && !/^P\d{5}A\d*$/i.test(String(h).trim()))
-                    .join(' '));
+                || (bucketGeoHints.length > 0 ? bucketGeoHints.join(' ') : [...new Set(
+                    geometryResults
+                        .map(g => g?.paper_code_hint)
+                        .filter((h): h is string => Boolean(h) && !/^P\d{5}A\d*$/i.test(String(h).trim()))
+                        .map(h => String(h).trim())
+                )].join(' '));
             const bucketFileNames = standardizedPages
                 .map(p => p?.originalFileName || '')
                 .filter(Boolean);
@@ -3718,14 +3722,15 @@ export class MarkingPipelineService {
             );
             const studentWorkPages = nonMetadataPages.filter(r => r.result?.category === 'questionAnswer');
 
-            if (nonMetadataPages.length > 5 && (studentWorkPages.length / nonMetadataPages.length) >= 0.9) {
+            const hasQuestionOnlyToOverride = allClassificationResults.some(r => r.result?.category === 'questionOnly');
+            if (hasQuestionOnlyToOverride && nonMetadataPages.length > 5 && (studentWorkPages.length / nonMetadataPages.length) >= 0.9) {
                 console.log(`🚀 [OVERRIDE] 90% Rule Triggered: ${studentWorkPages.length}/${nonMetadataPages.length} pages have student work. Overriding questionOnly pages with questions to questionAnswer for consistency.`);
                 allClassificationResults.forEach(r => {
                     if (r.result?.category === 'questionOnly') {
                         r.result.category = hasPageQuestions(r) ? 'questionAnswer' : 'metadata';
                     }
                 });
-            } else if (nonMetadataPages.length > 2 && (studentWorkPages.length / nonMetadataPages.length) > 0.5) {
+            } else if (hasQuestionOnlyToOverride && nonMetadataPages.length > 2 && (studentWorkPages.length / nonMetadataPages.length) > 0.5) {
                 // NEW: 50% Safety Rule
                 console.log(`🚀 [OVERRIDE] 50% Rule Triggered: ${studentWorkPages.length}/${nonMetadataPages.length} pages have student work. Overriding questionOnly pages with questions to questionAnswer for consistency.`);
                 allClassificationResults.forEach(r => {
@@ -3961,6 +3966,12 @@ export class MarkingPipelineService {
                             if (hasInstanceStudentWork(subQ) && (!existing.studentWorkLines || existing.studentWorkLines.length === 0)) {
                                 existing.pageIndex = pIdx;
                             }
+                            if (hasInstanceStudentWork(subQ)) {
+                                const existingIndices: number[] = Array.isArray(existing.sourceImageIndices)
+                                    ? existing.sourceImageIndices
+                                    : (existing.pageIndex !== undefined ? [existing.pageIndex] : []);
+                                existing.sourceImageIndices = [...new Set([...existingIndices, pIdx])].sort((a, b) => a - b);
+                            }
 
                             if (subQ.text && subQ.text !== 'null' && !existing.text) {
                                 existing.text = subQ.text;
@@ -4022,14 +4033,34 @@ export class MarkingPipelineService {
                         }
                     });
 
-                    // Only include pages that actually contain student work in `sourceImageIndices` if at least one exists
+                    // Only include pages that actually contain student work in `sourceImageIndices` if at least one exists,
+                    // EXCEPT always preserve pages containing distinct unattempted sub-questions (e.g. Q19b blank on its own page
+                    // while Q19a is answered on another page) so the AI sees the blank sub-question image and marks it Not attempted.
+                    const unattemptedSubQuestionPageIndices = new Set<number>();
+                    const collectUnattemptedSubPages = (subQsMap: Map<string, any>) => {
+                        subQsMap.forEach((subQ: any) => {
+                            if (subQ.subQuestionsMap && subQ.subQuestionsMap.size > 0) {
+                                collectUnattemptedSubPages(subQ.subQuestionsMap);
+                            } else if (!hasInstanceStudentWork(subQ) && typeof subQ.pageIndex === 'number') {
+                                unattemptedSubQuestionPageIndices.add(subQ.pageIndex);
+                            }
+                        });
+                    };
+                    collectUnattemptedSubPages(mergedSubQuestionsMap);
+
                     const workPageIndices = questionInstances
                         .filter(inst => hasInstanceStudentWork(inst.question))
                         .map(inst => inst.pageIndex);
                     const basePageIndices = workPageIndices.length > 0
                         ? workPageIndices
                         : questionInstances.map(({ pageIndex }) => pageIndex);
-                    const allPageIndices = [...new Set([...basePageIndices, ...Array.from(subQuestionPageIndices)])].sort((a, b) => a - b);
+                    const allPageIndices = [
+                        ...new Set([
+                            ...basePageIndices,
+                            ...Array.from(subQuestionPageIndices),
+                            ...Array.from(unattemptedSubQuestionPageIndices)
+                        ])
+                    ].sort((a, b) => a - b);
 
                     const merged = {
                         ...pageWithText.question,
@@ -4169,7 +4200,7 @@ export class MarkingPipelineService {
                 ? `${fileNamePaperHintMatch[1].toUpperCase()}/${fileNamePaperHintMatch[2].toUpperCase()}`
                 : undefined;
             const extractedGeoPaperCode = geoPaperCodeHint
-                ? geoPaperCodeHint.match(/\b([0-9A-Z]{4,6}\/[0-9A-Z]{1,3}|8700\/[12]|8300\/[123][FH]|1MA1\/[123][FH]|J560\/0[1-6])\b/i)?.[1]
+                ? geoPaperCodeHint.match(/\b([0-9A-Z]{4,6}\/[0-9A-Z]{1,3}|[A-Z]\d{3}[A-Z]\d{2}-\d|8700\/[12]|8300\/[123][FH]|1MA1\/[123][FH]|J560\/0[1-6])\b/i)?.[1]
                 : undefined;
             const cleanGeoPaperHint = extractedGeoPaperCode || fileNamePaperHint;
             const validatedCustomHint = isValidExamPaperHint(options.customText) ? options.customText!.trim() : undefined;

@@ -299,24 +299,37 @@ export class MarkingSchemeOrchestrationService {
       return effectiveResult;
     };
 
+    // Pre-compute condensed anchors for all groups so we know totalNonEmptyGroups upfront
+    // for fail-fast threshold: min 5 non-empty questions, or at least half when > 5.
+    const precomputedAnchors = new Map<string, string>();
+    let totalNonEmptyGroups = 0;
     for (const [baseNum, group] of questionGroups.entries()) {
-      // IMPROVED GROUP ANCHOR: Combine all unique question text fragments into one dense query
       const uniqueFragments = new Set<string>();
       group.forEach(q => { if (q.text) uniqueFragments.add(q.text.trim()); });
-
       const fragments = Array.from(uniqueFragments);
-      // Filter out redundant fragments that are already contained within other (larger) fragments
-      // to keep the prompt clean while preserving the natural document order.
       const condensedFragments = fragments.filter((f, idx) => {
         if (f.length < 5) return false;
         return !fragments.some((other, otherIdx) =>
           idx !== otherIdx &&
-          other.length >= f.length && // If lengths are equal and one includes another, they are identical or very similar
+          other.length >= f.length &&
           other.toLowerCase().includes(f.toLowerCase())
         );
       });
+      const anchor = condensedFragments.join('\n\n');
+      precomputedAnchors.set(baseNum, anchor);
+      if (anchor.trim().length > 0 && !anchor.includes('MANUAL_REVIEW_REQUIRED_JSON_ERROR')) {
+        totalNonEmptyGroups++;
+      }
+    }
 
-      const combinedAnchor = condensedFragments.join('\n\n');
+    const failFastMinChecks = Math.max(5, Math.ceil(totalNonEmptyGroups / 2));
+    let checkedNonEmptyGroups = 0;
+    let matchedGroupsCount = 0;
+    let sawGlobalSearch = false;
+    let failFastTriggered = false;
+
+    for (const [baseNum, group] of questionGroups.entries()) {
+      const combinedAnchor = precomputedAnchors.get(baseNum) || '';
       groupCombinedAnchors.set(baseNum, combinedAnchor);
 
       // 👇 THE CLEAN INTERCEPTION SWITCH 👇
@@ -386,6 +399,14 @@ export class MarkingSchemeOrchestrationService {
           // If the AI parsing completely failed, do NOT attempt to find a marking scheme
           // because searching the error message will lead to random/false positive matches.
           groupDetectionResult = { found: false };
+        } else if (failFastTriggered) {
+          groupDetectionResult = {
+            found: false,
+            message: `Fail-fast: 0/${checkedNonEmptyGroups} non-empty questions matched in Global Search`,
+            hintMetadata: detectionStats.hintInfo
+              ? { ...detectionStats.hintInfo, auditTrail: [] }
+              : undefined
+          };
         } else {
           groupDetectionResult = await questionDetectionService.detectQuestion(
             combinedAnchor,
@@ -393,6 +414,27 @@ export class MarkingSchemeOrchestrationService {
             examPaperHint,
             { allowCroppedQ1Exemption: individualQuestions.length <= 1, subjectGateKey }
           );
+
+          if (groupDetectionResult.found) {
+            matchedGroupsCount++;
+          }
+          if (groupDetectionResult.hintMetadata?.deepSearchActive) {
+            sawGlobalSearch = true;
+          }
+          if (combinedAnchor.trim().length > 0) {
+            checkedNonEmptyGroups++;
+            if (
+              sawGlobalSearch &&
+              matchedGroupsCount === 0 &&
+              checkedNonEmptyGroups >= failFastMinChecks &&
+              checkedNonEmptyGroups < totalNonEmptyGroups
+            ) {
+              failFastTriggered = true;
+              console.log(
+                `⚡ [DETECTION FAIL-FAST] 0/${checkedNonEmptyGroups} non-empty questions matched in Global Search (threshold: ${failFastMinChecks}/${totalNonEmptyGroups}). Skipping remaining ${totalNonEmptyGroups - checkedNonEmptyGroups} non-empty group(s).`
+              );
+            }
+          }
         }
       }
       // 👆 END OF INTERCEPTION SWITCH 👆
@@ -606,13 +648,13 @@ export class MarkingSchemeOrchestrationService {
     // --- STEP 3 RECOVERY FALLBACK (Only if examPaperHint was a weak footer guess, NOT an explicit paper code or generic rubric mode) ---
     const hasExplicitPaperCodeInHint = Boolean(
       examPaperHint &&
-      (/\b([0-9A-Z]{4,6}\/[0-9A-Z]{1,3}|8700|8300|8461|8462|8463|8464|1MA1|J560|J351|1EN0|9MA0|7357)\b/i.test(examPaperHint) ||
+      (/\b([0-9A-Z]{4,6}\/[0-9A-Z]{1,3}|[A-Z]\d{3}[A-Z]\d{2}-\d|8700|8300|8461|8462|8463|8464|1MA1|J560|J351|1EN0|9MA0|7357)\b/i.test(examPaperHint) ||
        /general\s+rubric|no\s+official\s+marking\s+scheme|generic\s+mode/i.test(examPaperHint))
     );
     const isExplicitFullPaperSelection = hasExplicitPaperCodeInHint;
 
     const hintInfo = detectionStats.hintInfo;
-    if (hintInfo && Boolean(examPaperHint) && !isExplicitFullPaperSelection) {
+    if (hintInfo && !hintInfo.deepSearchActive && Boolean(examPaperHint) && !isExplicitFullPaperSelection) {
       const matchedPapersCount = hintInfo.matchedPapersCount || 0;
       const detectedCount = detectionStats.detected;
       const totalCount = detectionStats.totalQuestions;

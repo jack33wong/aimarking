@@ -305,6 +305,17 @@ export class QuestionDetectionService {
         return { found: false, message: 'No exam papers found in database', hintMetadata };
       }
 
+      // ⚡ [EMPTY-TEXT FAST-SKIP]: Without text, textScore is always 0 (< minimumTextScore 0.25),
+      // so scanning all papers in Global Search can never produce a match.
+      // (Blank stubs on a known dominant paper are already handled by the isRescueMode direct lookup above.)
+      if (cleanText.length === 0 && !isRescueMode) {
+        return {
+          found: false,
+          message: 'No question text provided (skipped global search)',
+          hintMetadata
+        };
+      }
+
       const evaluatePool = (pool: any[], narrow: boolean, rescue: boolean) => {
         let poolCandidates: MatchCandidate[] = [];
         for (const paper of pool) {

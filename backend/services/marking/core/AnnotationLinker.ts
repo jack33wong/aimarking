@@ -318,7 +318,8 @@ export class AnnotationLinker {
                 }
             }
 
-            // Iron Dome Page Snap
+            // Iron Dome Page Snap (Never snap neutral not_attempted pills off their blank sub-question page!)
+            const isNotAttempted = anno.action === 'not_attempted' || anno.isUnattempted === true;
             const subQ = anno.subQuestion;
             let validZones = (semanticZones && semanticZones[subQ]) || [];
 
@@ -333,7 +334,7 @@ export class AnnotationLinker {
             }
             const validPageIndices = validZones.map((z: any) => z.pageIndex);
 
-            if (validPageIndices.length > 0 && !validPageIndices.includes(anno.pageIndex ?? 1000)) {
+            if (!isNotAttempted && validPageIndices.length > 0 && !validPageIndices.includes(anno.pageIndex ?? 1000)) {
                 // 🚨 [PARENT-AWARE FIX]: Extract base parent question (handles both "12a" -> "12" and "1.2" -> "1")
                 const getParentQuestion = (label: string) => {
                     const m = String(label || '').trim().match(/^(\d+)/);

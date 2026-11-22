@@ -394,16 +394,16 @@ describe('4. Margin Clamping, Cover-Page Offset & Row-End Anchoring', () => {
   });
 });
 
-describe('5. Annotation Comment Readability', () => {
-  it('renders comments at 1.2%-1.4% page height, on rgba(255, 255, 255, 0.88) pill, wrapped within <= 30% page width', () => {
+describe('5. Annotation Comment Readability, Unified Handwritten Font & Collision-Free Layout', () => {
+  it('renders comments at 1.2%-1.4% page height on rgba(255, 255, 255, 0.75) pill, single-line when space is open, clamped within <= 90% width', () => {
     const actualWidth = 1650;
     const actualHeight = 2339;
     const annotations: any[] = [
       {
         action: 'cross',
-        text: 'A0',
-        reasoning: 'Divide by 1000 to convert grams to kilograms; Ans: 56',
-        bbox: [200, 900, 400, 42]
+        text: 'B0',
+        reasoning: 'Subtracted wrong way; Ans: 5',
+        bbox: [200, 900, 350, 42]
       }
     ];
 
@@ -414,21 +414,123 @@ describe('5. Annotation Comment Readability', () => {
       { width: actualWidth, height: actualHeight }
     ) as string;
 
-    // White semi-transparent pill backdrop
-    const pillMatch = svg.match(/<rect x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)" rx="[^"]+" fill="rgba\(255, 255, 255, 0\.88\)" \/>/);
+    // Subtle translucent white pill backdrop
+    const pillMatch = svg.match(/<rect x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)" rx="[^"]+" fill="rgba\(255, 255, 255, 0\.75\)" \/>/);
     expect(pillMatch).not.toBeNull();
     const pillX = Number(pillMatch![1]);
     const pillW = Number(pillMatch![3]);
-    expect(pillW).toBeLessThanOrEqual(Math.round(actualWidth * 0.30));
     expect(pillX + pillW).toBeLessThanOrEqual(Math.round(actualWidth * 0.90));
 
+    // Entire short comment stays on 1 single line when open space is available (no orphan wrap)
+    expect(svg).toContain('>Subtracted wrong way; Ans: 5</text>');
+
     // Font size within 1.2%–1.4% of page height
-    const textFontMatch = svg.match(/font-size="(\d+)" font-weight="bold">Divide by 1000/);
+    const textFontMatch = svg.match(/font-size="(\d+)" font-weight="bold">Subtracted wrong way; Ans: 5/);
     expect(textFontMatch).not.toBeNull();
     const fontSize = Number(textFontMatch![1]);
     const pctHeight = fontSize / actualHeight;
     expect(pctHeight).toBeGreaterThanOrEqual(0.012);
     expect(pctHeight).toBeLessThanOrEqual(0.0141);
+  });
+
+  it('wraps or shifts comments cleanly when right-hand space is blocked by ink', () => {
+    const actualWidth = 1650;
+    const actualHeight = 2339;
+    const annotations: any[] = [
+      {
+        action: 'cross',
+        text: 'A0',
+        reasoning: 'Divide by 1000 to convert grams to kilograms; Ans: 56',
+        bbox: [200, 900, 400, 42]
+      }
+    ];
+    // Simulate heavy printed ink across the right side of the same row (x >= 950, y around 860..960)
+    const blockedRightInkMap = {
+      getInkDensity: (px: number, py: number, pw: number, ph: number) => {
+        const overlapsRightBlock = px + pw > 950 && py < 960 && py + ph > 860;
+        return overlapsRightBlock ? 0.35 : 0;
+      }
+    };
+
+    const svg = (SVGOverlayService as any).createSVGOverlay(
+      annotations,
+      actualWidth,
+      actualHeight,
+      { width: actualWidth, height: actualHeight },
+      undefined,
+      undefined,
+      false,
+      [],
+      false,
+      blockedRightInkMap
+    ) as string;
+
+    const pillMatch = svg.match(/<rect x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)" rx="[^"]+" fill="rgba\(255, 255, 255, 0\.75\)" \/>/);
+    expect(pillMatch).not.toBeNull();
+    const pillX = Number(pillMatch![1]);
+    const pillY = Number(pillMatch![2]);
+    const pillW = Number(pillMatch![3]);
+    const pillH = Number(pillMatch![4]);
+    // Chosen pill must avoid the high-ink right-side obstacle
+    expect(blockedRightInkMap.getInkDensity(pillX, pillY, pillW, pillH)).toBe(0);
+    expect(pillX + pillW).toBeLessThanOrEqual(Math.round(actualWidth * 0.90));
+  });
+
+  it('moves 6-char top-left total score (51/108) away from high-ink top-left printed question text', () => {
+    const actualWidth = 1650;
+    const actualHeight = 2339;
+    // Simulate tightly cropped top-left "1. (a) Calculate each of the following." at x: 40..720, y: 20..180
+    const topLeftInkMap = {
+      getInkDensity: (px: number, py: number, pw: number, ph: number) => {
+        const overlapsTopLeftHeader = px < 720 && px + pw > 40 && py < 180 && py + ph > 20;
+        return overlapsTopLeftHeader ? 0.25 : 0;
+      }
+    };
+
+    const svg = (SVGOverlayService as any).createSVGOverlay(
+      [],
+      actualWidth,
+      actualHeight,
+      { width: actualWidth, height: actualHeight },
+      [{ scoreText: '5/7' }],
+      '51/108',
+      false,
+      [],
+      false,
+      topLeftInkMap
+    ) as string;
+
+    const match = svg.match(/<text x="([^"]+)" y="([^"]+)"[^>]*>51\/108<\/text>/);
+    expect(match).not.toBeNull();
+    const scoreX = Number(match![1]);
+    // Must shift right past the top-left ink region (x >= 720) into open header space
+    expect(scoreX).toBeGreaterThanOrEqual(720);
+    expect(svg).toContain('transform="rotate(-2.5,');
+  });
+
+  it('uses unified Kalam handwritten font family across scores, badges, ticks, comments, and Not attempted pills', () => {
+    const annotations: any[] = [
+      { action: 'tick', text: 'B1', bbox: [200, 400, 200, 40] },
+      { action: 'cross', text: 'B0', reasoning: 'Subtracted wrong way; Ans: 5', bbox: [200, 800, 250, 40] },
+      { action: 'not_attempted', text: 'Not attempted', bbox: [400, 1600, 200, 40] }
+    ];
+
+    const svg = (SVGOverlayService as any).createSVGOverlay(
+      annotations,
+      1650,
+      2339,
+      { width: 1650, height: 2339 },
+      [{ scoreText: '5/7' }],
+      '51/108',
+      false
+    ) as string;
+
+    const textFontFamilies = [...svg.matchAll(/<text[^>]*font-family="([^"]+)"/g)].map(m => m[1]);
+    expect(textFontFamilies.length).toBeGreaterThanOrEqual(6);
+    for (const ff of textFontFamilies) {
+      expect(ff).toContain("'Kalam'");
+      expect(ff).not.toBe('Arial, sans-serif');
+    }
   });
 });
 
@@ -495,5 +597,43 @@ describe('7. Blank Trailing Stubs (Q22-Q24) & Shared-Page Blank Short-Circuit (Q
     expect(result.usageTokens).toBe(0);
     expect(result.annotations).toHaveLength(1);
     expect(result.annotations[0].action).toBe('not_attempted');
+  });
+
+  it('Iron Dome never snaps a blank sub-question not_attempted pill (Q19b on P20) back onto an answered sibling page (Q19a on P18)', () => {
+    const annotations: any[] = [
+      {
+        action: 'not_attempted',
+        text: 'Not attempted',
+        subQuestion: '19b',
+        pageIndex: 20,
+        isPhysicalPage: true,
+        line_id: null,
+        ocr_match_status: 'VISUAL',
+        visual_position: { x: 50, y: 60, width: 10, height: 5 }
+      }
+    ];
+    const task: any = {
+      questionNumber: '19',
+      sourcePages: [18, 19, 20]
+    };
+    // Blank P20 skipped OCR, so semanticZones['19b'] fell back to P18
+    const semanticZones = {
+      '19a': [{ pageIndex: 18, x: 100, startY: 100, width: 1400, endY: 2000 }],
+      '19b': [{ pageIndex: 18, x: 100, startY: 100, width: 1400, endY: 2000 }]
+    };
+
+    const processed = AnnotationLinker.postProcess(
+      annotations,
+      [],
+      task,
+      semanticZones,
+      new Map([
+        [18, { width: 1650, height: 2339 }],
+        [19, { width: 1650, height: 2339 }],
+        [20, { width: 1650, height: 2339 }]
+      ])
+    );
+
+    expect(processed[0].pageIndex).toBe(20);
   });
 });

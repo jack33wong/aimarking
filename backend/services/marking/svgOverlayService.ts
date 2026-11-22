@@ -75,7 +75,7 @@ export interface RubricStampItem {
 export class SVGOverlayService {
 
   private static CONFIG: SVGOverlayConfig = {
-    fontFamily: "'Lucida Handwriting','Comic Neue', 'Comic Sans MS', cursive, Arial, sans-serif",
+    fontFamily: "'Kalam', 'Comic Neue', 'Comic Sans MS', 'DejaVu Sans', cursive, sans-serif",
     baseFontSizes: {
       reasoning: 34,
       tick: 50,
@@ -412,7 +412,7 @@ export class SVGOverlayService {
     );
 
     if (totalScoreText && !isSingleScoreDuplicate) {
-      svg += this.createTotalScoreWithDoubleUnderline(totalScoreText, actualWidth, actualHeight, hasMetaPage);
+      svg += this.createTotalScoreWithDoubleUnderline(totalScoreText, actualWidth, actualHeight, hasMetaPage, inkMap, occupiedRects);
     }
 
     // --- DENSITY ERROR WARNING ---
@@ -642,7 +642,7 @@ export class SVGOverlayService {
       `<rect x="${pillX}" y="${pillY}" width="${pillW}" height="${pillH}" rx="${rx}" ` +
       `fill="rgba(243, 244, 246, 0.94)" stroke="#9CA3AF" stroke-width="${strokeW}" />` +
       `<text x="${pillX + padX}" y="${textY}" text-anchor="start" fill="#6B7280" ` +
-      `font-family="Arial, sans-serif" font-size="${fontSize}" font-weight="600">${this.escapeXml(pillLabel)}</text>`
+      `font-family="${this.CONFIG.fontFamily}" font-size="${fontSize}" font-weight="600">${this.escapeXml(pillLabel)}</text>`
     );
   }
 
@@ -698,7 +698,7 @@ export class SVGOverlayService {
 
     const textSize = isEnglishAoBadge ? Math.max(7, Math.round(baseTextSize * 0.50)) : baseTextSize;
     const symbolSize = isEnglishAoBadge ? Math.max(8, Math.round(baseSymbolSize * 0.54)) : baseSymbolSize;
-    const badgeFontFamily = isEnglishAoBadge ? "Arial, sans-serif" : this.CONFIG.fontFamily;
+    const badgeFontFamily = this.CONFIG.fontFamily;
     const classificationSize = Math.max(7, Math.round(textSize * 0.8));
 
     const markingCodeWidth = compactCodeText ? this.estimateTextWidth(compactCodeText, textSize) : 0;
@@ -1027,10 +1027,12 @@ export class SVGOverlayService {
     const lineHeight = Math.max(10, Math.round(reasoningSize * 1.24));
     const edgeMargin = Math.max(6, Math.round(30 * fontScaleFactor));
     const maxBottomY = actualHeight - Math.max(16, Math.round(80 * fontScaleFactor));
-    const bgPadX = Math.max(4, Math.round(8 * fontScaleFactor));
-    const bgPadY = Math.max(3, Math.round(5 * fontScaleFactor));
-    // Enforce max comment width of 25–30% of page width before right-edge clamping
+    const bgPadX = Math.max(4, Math.round(6 * fontScaleFactor));
+    const bgPadY = Math.max(2, Math.round(4 * fontScaleFactor));
+    // Wrapped comment max width (28% of page width), while unwrapped single-line comments may expand
+    // up to 52% of page width whenever open blank space is available (still clamped inside 90% right margin).
     const maxCommentWidthPx = Math.round(actualWidth * 0.28);
+    const maxSingleLineWidthPx = Math.round(actualWidth * 0.52);
     const printableRightLimit = Math.round(actualWidth * 0.90);
 
     const { symbolRect, studentRect, reasoningText, subQuestion } = item;
@@ -1069,8 +1071,9 @@ export class SVGOverlayService {
       )
     );
 
-    // Evaluate wrap profiles: 24 (clean natural margin phrasing) and 20 (compact)
-    const charLimits = isEnglishPositiveAoComment ? [24, 20] : [32, 22];
+    // Evaluate wrap profiles: single-line-first (72 chars up to 52% width) when empty space is available,
+    // falling back to compact wrapped profiles (32, 22 chars within 28% width) when blocked by ink/margin.
+    const charLimits = isEnglishPositiveAoComment ? [24, 20] : [72, 32, 22];
     let bestCandidate: {
       x: number;
       y: number;
@@ -1085,9 +1088,12 @@ export class SVGOverlayService {
 
     const evaluateCandidates = (yStart: number, yEnd: number, limits: number[]) => {
       for (const charLimit of limits) {
-        const lines = this.breakTextToMaxWidth(reasoningText, reasoningSize, maxCommentWidthPx - bgPadX * 2, charLimit);
+        const effectiveMaxWidthPx = (!isEnglishPositiveAoComment && charLimit >= 60)
+          ? maxSingleLineWidthPx
+          : maxCommentWidthPx;
+        const lines = this.breakTextToMaxWidth(reasoningText, reasoningSize, effectiveMaxWidthPx - bgPadX * 2, charLimit);
         const maxLineW = Math.max(...lines.map(l => this.estimateTextWidth(l, reasoningSize)));
-        const boxW = Math.min(maxCommentWidthPx, maxLineW + bgPadX * 2);
+        const boxW = Math.min(effectiveMaxWidthPx, maxLineW + bgPadX * 2);
         const boxH = lines.length * lineHeight + bgPadY * 2;
 
         const minX = edgeMargin;
@@ -1107,28 +1113,30 @@ export class SVGOverlayService {
         const flushRightBelowCandidate: [number, number] = [maxX, symbolRect.y + symbolRect.h + 6 * fontScaleFactor];
         const belowStudentWorkCandidate: [number, number] = [rightAnchorX, belowStudentWorkY];
 
-        // Build candidate list: for A0/B0 final-answer marks near the page bottom, prioritize above-symbol first to avoid footer/total-mark line collisions
+        // Build candidate list:
+        // - For A0/B0 near page bottom: prioritize above-symbol first to avoid footer collisions
+        // - Otherwise: prioritize inline right-of-symbol (Priority 1) when open space exists, then below-symbol (Priority 2), then left-shift fallback (Priority 3)
         const candidates: Array<[number, number]> = preferAboveSymbol
           ? [
               aboveSymbolCandidate,
+              rightOfSymbolCandidate,
               belowSymbolCandidate,
               leftOfSymbolCandidate,
-              rightOfSymbolCandidate,
               flushRightBelowCandidate,
               belowStudentWorkCandidate
             ]
           : hasMultiLineContinuationBelowSymbol
             ? [
-                belowStudentWorkCandidate,
                 rightOfSymbolCandidate,
+                belowStudentWorkCandidate,
                 flushRightBelowCandidate,
                 belowSymbolCandidate,
                 aboveSymbolCandidate,
                 leftOfSymbolCandidate
               ]
             : [
-                belowSymbolCandidate,
                 rightOfSymbolCandidate,
+                belowSymbolCandidate,
                 flushRightBelowCandidate,
                 belowStudentWorkCandidate,
                 aboveSymbolCandidate,
@@ -1196,8 +1204,10 @@ export class SVGOverlayService {
               }
             }
           }
-          // Wrap penalty only for standard mode, not English compact margin
-          const wrapPenalty = (charLimit <= 22) && !isEnglishPositiveAoComment ? 14 : 0;
+          // Prefer single-line layout whenever open space is available (avoid unnecessary orphan wraps)
+          const wrapPenalty = !isEnglishPositiveAoComment
+            ? (lines.length > 1 ? 18 + (lines.length - 1) * 10 : 0)
+            : 0;
           // Strict penalty if overlapping another placed symbol or reasoning block (NEVER allow smothering a badge)
           const placedCollisionPenalty = overlapsPlaced ? 100000 : 0;
 
@@ -1264,9 +1274,9 @@ export class SVGOverlayService {
       outSvg += `<line x1="${Math.round(sx)}" y1="${Math.round(sy)}" x2="${Math.round(tx)}" y2="${Math.round(ty)}" stroke="${textColor}" stroke-width="${strokeW}" stroke-dasharray="${dash}" opacity="0.70" stroke-linecap="round" />`;
     }
 
-    // Semi-transparent white background pill with light padding behind ALL comment text for readability
-    const pillRx = Math.max(4, Math.round(8 * fontScaleFactor));
-    outSvg += `<rect x="${chosenRect.x}" y="${chosenRect.y}" width="${chosenRect.w}" height="${chosenRect.h}" rx="${pillRx}" fill="rgba(255, 255, 255, 0.88)" />`;
+    // Subtle translucent white background pill with tight padding so comments blend naturally onto the paper
+    const pillRx = Math.max(4, Math.round(7 * fontScaleFactor));
+    outSvg += `<rect x="${chosenRect.x}" y="${chosenRect.y}" width="${chosenRect.w}" height="${chosenRect.h}" rx="${pillRx}" fill="rgba(255, 255, 255, 0.75)" />`;
 
     const firstBaselineY = bestCandidate.y + bgPadY + reasoningSize * 0.88;
     bestCandidate.lines.forEach((line, i) => {
@@ -1516,13 +1526,20 @@ export class SVGOverlayService {
 
       const circle = `<circle cx="${circleX}" cy="${circleY}" r="${circleRadius}" fill="rgba(255, 255, 255, 0.90)" stroke="#ff0000" stroke-width="${strokeWidth}" opacity="0.9"/>`;
       const textYAdjust = scoreFontSize * 0.35;
-      const text = `<text x="${circleX}" y="${circleY + textYAdjust}" text-anchor="middle" dominant-baseline="middle" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${scoreFontSize}" font-weight="bold">${scoreText}</text>`;
+      const text = `<text x="${circleX}" y="${circleY + textYAdjust}" text-anchor="middle" dominant-baseline="middle" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${scoreFontSize}" font-weight="bold" transform="rotate(-2.5, ${circleX}, ${circleY})">${scoreText}</text>`;
       svg += circle + text;
     });
     return svg;
   }
 
-  private static createTotalScoreWithDoubleUnderline(totalScoreText: string, imageWidth: number, imageHeight: number, hasMetaPage?: boolean): string {
+  private static createTotalScoreWithDoubleUnderline(
+    totalScoreText: string,
+    imageWidth: number,
+    imageHeight: number,
+    hasMetaPage?: boolean,
+    inkMap?: InkDensityMap,
+    occupiedRects?: Rect2D[]
+  ): string {
     const scaleFactor = Math.min(
       imageHeight / this.CONFIG.baseReferenceHeight,
       imageWidth / 1650
@@ -1530,7 +1547,7 @@ export class SVGOverlayService {
     const config = this.CONFIG.totalScore;
     // Scale font slightly down for scoped labels like "26/38 (Pages 1–8)" so it fits cleanly in the header
     const lengthScale = totalScoreText.length > 10 ? Math.max(0.68, 10 / totalScoreText.length) : 1.0;
-    const fontSize = Math.max(12, Math.round(config.baseFontSize * scaleFactor * lengthScale));
+    let fontSize = Math.max(12, Math.round(config.baseFontSize * scaleFactor * lengthScale));
     const strokeWidth = Math.max(1.5, Number((config.baseStrokeWidth * scaleFactor).toFixed(1)));
 
     const isTopLeft = hasMetaPage === false;
@@ -1539,7 +1556,7 @@ export class SVGOverlayService {
     const marginRight = isTopLeft
       ? Math.max(10, Math.round(config.marginRight * scaleFactor))
       : Math.max(20, Math.round(Math.max(145 * scaleFactor, imageWidth * 0.10)));
-    const marginTop = isTopLeft
+    let marginTop = isTopLeft
       ? Math.max(10, Math.round(config.marginTop * scaleFactor))
       : Math.max(8, Math.round(36 * scaleFactor));
 
@@ -1550,6 +1567,68 @@ export class SVGOverlayService {
     } else {
       textX = imageWidth - marginRight;
       textAnchor = "end";
+    }
+
+    const underlineOffset = Math.max(3, Math.round(config.underlineOffset * scaleFactor));
+    const underlineSpacing = Math.max(2, Math.round(config.underlineSpacing * scaleFactor));
+
+    // Collision-free top-left placement: check inkMap & occupiedRects so wider scores (e.g. "51/108")
+    // do not overlap printed Q1 header text on tightly cropped pages.
+    if (isTopLeft && (inkMap || (occupiedRects && occupiedRects.length > 0))) {
+      const computeScoreRect = (x: number, topY: number, fSize: number): Rect2D => {
+        const w = this.estimateTextWidth(totalScoreText, fSize);
+        const h = fSize + underlineOffset + underlineSpacing + strokeWidth;
+        return { x, y: topY, w, h };
+      };
+
+      const scoreCandidateCost = (x: number, topY: number, fSize: number, sizePenalty: number): number => {
+        const rect = computeScoreRect(x, topY, fSize);
+        const ink = inkMap ? inkMap.getInkDensity(rect.x, rect.y, rect.w, rect.h) : 0;
+        const overlapsOccupied = occupiedRects
+          ? occupiedRects.some(r => this.rectsOverlap(rect, r, Math.round(8 * scaleFactor)))
+          : false;
+        const distPenalty = (Math.abs(x - marginRight) / Math.max(1, imageWidth)) * 40 +
+          (Math.abs(topY - marginTop) / Math.max(1, imageHeight)) * 30;
+        return (overlapsOccupied ? 10000 : 0) + (ink > 0.06 ? 1500 + ink * 2000 : ink * 800) + sizePenalty + distPenalty;
+      };
+
+      const defaultRect = computeScoreRect(textX, marginTop, fontSize);
+      const defaultInk = inkMap ? inkMap.getInkDensity(defaultRect.x, defaultRect.y, defaultRect.w, defaultRect.h) : 0;
+      const defaultCollides = occupiedRects
+        ? occupiedRects.some(r => this.rectsOverlap(defaultRect, r, Math.round(8 * scaleFactor)))
+        : false;
+
+      if (defaultInk > 0.06 || defaultCollides) {
+        let best = { x: textX, topY: marginTop, fSize: fontSize, cost: scoreCandidateCost(textX, marginTop, fontSize, 0) };
+        const fontSizesToTry: Array<{ fSize: number; penalty: number }> = [
+          { fSize: fontSize, penalty: 0 },
+          { fSize: Math.max(12, Math.round(fontSize * 0.85)), penalty: 12 }
+        ];
+        const topYsToTry = [
+          Math.max(6, Math.round(marginTop * 0.45)),
+          marginTop,
+          Math.round(marginTop * 1.35)
+        ];
+        // Scan across top header up to 68% width (leaving top-right clear for the page score circle)
+        const maxHeaderX = Math.round(imageWidth * 0.68);
+        const stepX = Math.max(20, Math.round(60 * scaleFactor));
+
+        for (const { fSize, penalty } of fontSizesToTry) {
+          const estW = this.estimateTextWidth(totalScoreText, fSize);
+          for (const ty of topYsToTry) {
+            for (let cx = Math.max(8, Math.round(marginRight * 0.5)); cx + estW <= maxHeaderX; cx += stepX) {
+              const cost = scoreCandidateCost(cx, ty, fSize, penalty);
+              if (cost < best.cost) {
+                best = { x: cx, topY: ty, fSize, cost };
+              }
+            }
+          }
+        }
+
+        textX = best.x;
+        marginTop = best.topY;
+        fontSize = best.fSize;
+      }
     }
 
     const textY = marginTop + fontSize;
@@ -1564,16 +1643,26 @@ export class SVGOverlayService {
       underlineEndX = textX;
     }
 
-    const underlineOffset = Math.max(3, Math.round(config.underlineOffset * scaleFactor));
-    const underlineSpacing = Math.max(2, Math.round(config.underlineSpacing * scaleFactor));
     const underlineY1 = textY + underlineOffset;
     const underlineY2 = textY + underlineOffset + underlineSpacing;
+
+    if (occupiedRects) {
+      occupiedRects.push({
+        x: underlineStartX,
+        y: marginTop,
+        w: estimatedTextWidth,
+        h: fontSize + underlineOffset + underlineSpacing + strokeWidth
+      });
+    }
+
+    const pivotX = Math.round((underlineStartX + underlineEndX) / 2);
+    const pivotY = Math.round(marginTop + fontSize * 0.5);
 
     const text = `<text x="${textX}" y="${textY}" text-anchor="${textAnchor}" dominant-baseline="baseline" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${fontSize}" font-weight="bold">${this.escapeXml(totalScoreText)}</text>`;
     const underline1 = `<line x1="${underlineStartX}" y1="${underlineY1}" x2="${underlineEndX}" y2="${underlineY1}" stroke="#ff0000" stroke-width="${strokeWidth}" opacity="0.9"/>`;
     const underline2 = `<line x1="${underlineStartX}" y1="${underlineY2}" x2="${underlineEndX}" y2="${underlineY2}" stroke="#ff0000" stroke-width="${strokeWidth}" opacity="0.9"/>`;
 
-    return text + underline1 + underline2;
+    return `<g transform="rotate(-2.5, ${pivotX}, ${pivotY})">${text}${underline1}${underline2}</g>`;
   }
 
   private static createRubricStampsSVG(
@@ -1695,7 +1784,7 @@ export class SVGOverlayService {
       svg += `<rect x="${boxX}" y="${boxY}" width="${boxW}" height="${boxH}" rx="${rx}" fill="rgba(255, 250, 240, 0.94)" stroke="#b91c1c" stroke-width="${strokeW}" />`;
       lines.forEach((line, lIdx) => {
         const textY = boxY + padY + fontSize * 0.85 + lIdx * lineHeight;
-        svg += `<text x="${boxX + padX}" y="${textY}" font-family="Arial, sans-serif" font-size="${fontSize}" font-weight="bold" fill="#991b1b">${this.escapeXml(line)}</text>`;
+        svg += `<text x="${boxX + padX}" y="${textY}" font-family="${this.CONFIG.fontFamily}" font-size="${fontSize}" font-weight="bold" fill="#991b1b">${this.escapeXml(line)}</text>`;
       });
     });
 

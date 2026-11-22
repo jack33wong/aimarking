@@ -5,10 +5,12 @@ RUN apt-get update && apt-get install -y \
     graphicsmagick \
     imagemagick \
     ghostscript \
+    fonts-kalam \
     fonts-comic-neue \
     fonts-liberation \
     fonts-dejavu \
     fonts-noto-color-emoji \
+    && fc-cache -fv \
     && rm -rf /var/lib/apt/lists/*
 
 # Fix the security policy to explicitly allow PDF conversion
