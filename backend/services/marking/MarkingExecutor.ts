@@ -518,21 +518,19 @@ export async function executeMarkingForQuestion(
       parsedScore.scoreText = lorReconciled.scoreText;
       reconciledRubricEval = lorReconciled.rubricEvaluation;
     } else {
-      const strictResult = ScoreAuditor.enforceStrictBudget(enrichedAnnotations, task.markingScheme);
-      const schemeTotal = Number(task.markingScheme?.totalMarks || 0);
-      if (task.markingScheme?.isGeneric && strictResult.inferredTotalMarks && strictResult.inferredTotalMarks > schemeTotal) {
-        parsedScore.totalMarks = strictResult.inferredTotalMarks;
-      } else if (schemeTotal > 0) {
-        parsedScore.totalMarks = schemeTotal;
-      } else if (strictResult.inferredTotalMarks && strictResult.inferredTotalMarks > 0) {
-        parsedScore.totalMarks = strictResult.inferredTotalMarks;
+      const reconciled = ScoreAuditor.reconcilePointBasedScore({
+        enrichedAnnotations,
+        scheme: task.markingScheme,
+        studentScore: markingResult.studentScore,
+        meta: (markingResult as any).meta
+      });
+      parsedScore.awardedMarks = reconciled.awardedMarks;
+      parsedScore.totalMarks = reconciled.totalMarks;
+      parsedScore.scoreText = reconciled.scoreText;
+      if (reconciled._authoritativeGenericScore) {
+        (parsedScore as any)._authoritativeGenericScore = true;
       }
-      if (parsedScore.totalMarks < strictResult.awardedMarks) {
-        parsedScore.totalMarks = strictResult.awardedMarks;
-      }
-      parsedScore.awardedMarks = strictResult.awardedMarks;
-      parsedScore.scoreText = `${strictResult.awardedMarks}/${parsedScore.totalMarks}`;
-      finalAnnotationsForSorting = strictResult.annotations;
+      finalAnnotationsForSorting = reconciled.annotations;
     }
 
     const cleanMarkingScheme: Record<string, any> = {};
@@ -584,6 +582,7 @@ export async function executeMarkingForQuestion(
       rawAnnotations: rawAnnotationsFromAI,
       semanticZones: semanticZones,
       rubricEvaluation: reconciledRubricEval,
+      meta: (markingResult as any).meta,
       isError: (markingResult as any).isError,
       hasDensityError: (markingResult as any).hasDensityError,
       errorMessage: (markingResult as any).errorMessage

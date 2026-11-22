@@ -167,6 +167,85 @@ export class ScoreAuditor {
     }
 
     /**
+     * Reconciles point-based question scores after strict budget enforcement.
+     * In Generic Rubric Mode (or when no official scheme totalMarks exists),
+     * preserves the AI's printed/stated total (`meta.question_total_marks`, falling back
+     * to `studentScore.totalMarks`) whenever it is a valid positive integer,
+     * never replacing a valid denominator with the annotation count.
+     */
+    static reconcilePointBasedScore(params: {
+        enrichedAnnotations: any[];
+        scheme: any;
+        studentScore: any;
+        meta?: any;
+    }): {
+        annotations: any[];
+        awardedMarks: number;
+        totalMarks: number;
+        scoreText: string;
+        _authoritativeGenericScore?: boolean;
+    } {
+        const { enrichedAnnotations, scheme, studentScore, meta } = params;
+        const parsedScore = this.parseScore(studentScore);
+        const strictResult = this.enforceStrictBudget(enrichedAnnotations, scheme);
+
+        const isGeneric = Boolean(scheme?.isGeneric);
+        const schemeTotal = Number(scheme?.totalMarks || 0);
+        const metaTotalRaw = Number(meta?.question_total_marks || 0);
+        const scoreTotalRaw = Number(parsedScore.totalMarks || 0);
+
+        const aiAuthoritativeTotal =
+            (Number.isFinite(metaTotalRaw) && metaTotalRaw > 0)
+                ? Math.round(metaTotalRaw)
+                : ((Number.isFinite(scoreTotalRaw) && scoreTotalRaw > 0) ? Math.round(scoreTotalRaw) : 0);
+
+        let totalMarks = 0;
+        let isAuthoritativeGeneric = false;
+
+        if (isGeneric || schemeTotal <= 0) {
+            if (aiAuthoritativeTotal > 0) {
+                totalMarks = aiAuthoritativeTotal;
+                isAuthoritativeGeneric = isGeneric;
+            } else if (schemeTotal > 0) {
+                totalMarks = (isGeneric && strictResult.inferredTotalMarks && strictResult.inferredTotalMarks > schemeTotal)
+                    ? strictResult.inferredTotalMarks
+                    : schemeTotal;
+            } else {
+                totalMarks = Math.max(
+                    strictResult.awardedMarks,
+                    strictResult.inferredTotalMarks || 0,
+                    enrichedAnnotations.length
+                );
+            }
+        } else {
+            totalMarks = schemeTotal;
+        }
+
+        const awardedMarks = totalMarks > 0
+            ? Math.min(strictResult.awardedMarks, totalMarks)
+            : strictResult.awardedMarks;
+
+        const result: {
+            annotations: any[];
+            awardedMarks: number;
+            totalMarks: number;
+            scoreText: string;
+            _authoritativeGenericScore?: boolean;
+        } = {
+            annotations: strictResult.annotations,
+            awardedMarks,
+            totalMarks,
+            scoreText: `${awardedMarks}/${totalMarks}`
+        };
+
+        if (isAuthoritativeGeneric) {
+            result._authoritativeGenericScore = true;
+        }
+
+        return result;
+    }
+
+    /**
      * Level-of-Response (LoR) Score Integrity Guard (GCSE English Language & Literature).
      * Never sums integers from margin annotations (which are qualitative evidence badges like [AO2 L4]).
      * Instead, validates and reconciles the single-AO or dual-AO rubricEvaluation and emits

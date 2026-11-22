@@ -1181,6 +1181,7 @@ export class MarkingInstructionService {
       schemeTextForPrompt: schemeText,
       promptMarkingScheme: schemeText,
       studentScore: parsedResponse.studentScore || { totalMarks: 0, awardedMarks: 0, scoreText: '0/0' },
+      meta: parsedResponse.meta,
       visualObservation: parsedResponse.visualObservation,
       promptQuestionText: finalPromptText,
       taggedOcrBlocks: sanitizedBlocks, // [FIX] Propagate tagged blocks upstream

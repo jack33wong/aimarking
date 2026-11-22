@@ -1160,15 +1160,11 @@ function resolveQuestionTotalMarks(qr: QuestionResult): number {
     return resultTotal;
   }
 
-  // Identify if the System Scheme is just a placeholder (20, 40, etc.)
-  const isDefaultScheme = [20, 40, 100].includes(schemeTotal);
+  // In Generic Rubric Mode, the reconciled resultTotal (from AI meta.question_total_marks / studentScore.totalMarks) is authoritative
+  if (isGeneric && resultTotal > 0) {
+    return resultTotal;
+  }
 
-  if (isGeneric && isDefaultScheme && resultTotal > 0) {
-    return resultTotal;
-  }
-  if (isGeneric && resultTotal > schemeTotal) {
-    return resultTotal;
-  }
   return schemeTotal || resultTotal || 0;
 }
 
@@ -1325,16 +1321,7 @@ export function calculatePerPageScores(
     const baseQNum = getBaseQuestionNumber(String(qr.questionNumber || ''));
     const pageBaseQMap = pageBaseQuestionToTotalMarks.get(pageIndex)!;
     if (!pageBaseQMap.has(baseQNum)) {
-      // 🟢 [STAMP FIX 2] Apply "Total Trap" logic here too!
-      const isGeneric = qr.markingScheme?.isGeneric;
-      const schemeTotal = qr.markingScheme?.totalMarks || qr.markingScheme?.parentQuestionMarks || 0;
-      const resultTotal = qr.score?.totalMarks || 0;
-      const isDefaultScheme = [20, 40, 100].includes(schemeTotal);
-
-      const qTotalMarks = (isGeneric && isDefaultScheme && resultTotal > 0)
-        ? resultTotal
-        : (schemeTotal || resultTotal || 0);
-
+      const qTotalMarks = resolveQuestionTotalMarks(qr);
       pageBaseQMap.set(baseQNum, qTotalMarks);
     }
   });

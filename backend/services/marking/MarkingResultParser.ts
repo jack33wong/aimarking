@@ -248,8 +248,9 @@ export class MarkingResultParser {
             parsedResponse.annotations.forEach((anno: any) => {
                 const text = (anno.text || '').trim();
                 const action = (anno.action || '').toLowerCase();
+                const isUnattempted = action === 'not_attempted' || anno.isUnattempted === true;
 
-                const isPositive = text && (action === 'tick' || action === 'mark' || !action.includes('cross'));
+                const isPositive = !isUnattempted && text && (action === 'tick' || action === 'mark' || !action.includes('cross'));
 
                 if (isPositive) {
                     // CHECK 1: IS IT MATH/LATEX?
@@ -294,7 +295,8 @@ export class MarkingResultParser {
             });
 
             const systemMax = normalizedScheme?.totalMarks || 0;
-            const authoritativeTotal = this.resolveBudget(parsedResponse.meta, systemMax, inputQuestionNumber);
+            const aiScoreTotal = Number(parsedResponse.studentScore?.totalMarks || 0);
+            const authoritativeTotal = this.resolveBudget(parsedResponse.meta, systemMax, inputQuestionNumber, aiScoreTotal);
 
             awarded = Math.min(awarded, authoritativeTotal > 0 ? authoritativeTotal : (systemMax || 99));
 
@@ -369,9 +371,12 @@ export class MarkingResultParser {
         parsedResponse.annotations = validAnnos;
     }
 
-    private static resolveBudget(meta: any, systemMax: number, qNum: string): number {
+    private static resolveBudget(meta: any, systemMax: number, qNum: string, fallbackAiTotal: number = 0): number {
         const isAiEstimated = meta?.isTotalEstimated === true || String(meta?.isTotalEstimated) === 'true';
-        const aiTotal = meta?.question_total_marks || 0;
+        const metaTotal = Number(meta?.question_total_marks || 0);
+        const aiTotal = (Number.isFinite(metaTotal) && metaTotal > 0)
+            ? Math.round(metaTotal)
+            : ((Number.isFinite(fallbackAiTotal) && fallbackAiTotal > 0) ? Math.round(fallbackAiTotal) : 0);
         const isDefault = [0, 20, 40, 100].includes(systemMax);
 
         if (aiTotal > 0 && (!isAiEstimated || isDefault)) return aiTotal;

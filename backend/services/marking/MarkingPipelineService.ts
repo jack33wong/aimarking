@@ -795,36 +795,48 @@ export function recoverGenericTotalMarks(params: {
     } = params;
 
     const effectiveAiTotal = Math.max(aiReportedTotalMarks, aiStatedTotalMarks);
+    const officialSchemeTotal = !isGenericScheme ? Number(task?.markingScheme?.totalMarks || 0) : 0;
+
+    if (officialSchemeTotal > 0) {
+        result.score.totalMarks = officialSchemeTotal;
+        result.score.awardedMarks = Math.min(newAwarded, officialSchemeTotal);
+        (result as any).totalMarks = result.score.totalMarks;
+        (result as any).marks = result.score.totalMarks;
+        (result as any).awardedMarks = result.score.awardedMarks;
+        return;
+    }
 
     if (isGenericScheme || effectiveAiTotal > 0 || !result.score.totalMarks || result.score.totalMarks <= 0) {
-        const inferredTotalFromAnnotations = finalizedAnnotations.reduce((sum: number, a: any) => {
-            const text = (a.text || '').trim();
-            const isMath = /[\\{}=\^_\(\)]/.test(text) || text.includes('sqrt') || text.includes('frac');
-            if (!isMath) {
-                const clean = text.replace(/[^a-zA-Z0-9]/g, '');
-                const m = clean.match(/^([BMAPC])(\d+)$/i);
-                if (m) {
-                    const num = parseInt(m[2], 10);
-                    return sum + (num > 0 ? num : 1);
-                }
-            }
-            if (a.action === 'tick' || a.action === 'cross' || a.action === 'mark') {
-                return sum + 1;
-            }
-            return sum;
-        }, 0);
-
-        if (isGenericScheme) {
-            if (hasIncompleteBudgets && effectiveAiTotal >= inferredTotalFromAnnotations && effectiveAiTotal > 0) {
-                result.score.totalMarks = effectiveAiTotal;
-            } else {
-                result.score.totalMarks = Math.max(effectiveAiTotal, inferredTotalFromAnnotations, newAwarded);
-            }
+        if (effectiveAiTotal > 0) {
+            // Preserve valid positive AI totalMarks; never replace with annotation count
+            result.score.totalMarks = effectiveAiTotal;
         } else {
-            result.score.totalMarks = Math.max(effectiveAiTotal, inferredTotalFromAnnotations, newAwarded);
+            const inferredTotalFromAnnotations = finalizedAnnotations.reduce((sum: number, a: any) => {
+                const text = (a.text || '').trim();
+                const isMath = /[\\{}=\^_\(\)]/.test(text) || text.includes('sqrt') || text.includes('frac');
+                if (!isMath) {
+                    const clean = text.replace(/[^a-zA-Z0-9]/g, '');
+                    const m = clean.match(/^([BMAPC])(\d+)$/i);
+                    if (m) {
+                        const num = parseInt(m[2], 10);
+                        return sum + (num > 0 ? num : 1);
+                    }
+                }
+                if (a.action === 'tick' || a.action === 'cross' || a.action === 'mark') {
+                    return sum + 1;
+                }
+                return sum;
+            }, 0);
+
+            result.score.totalMarks = Math.max(newAwarded, inferredTotalFromAnnotations, finalizedAnnotations.length);
+        }
+
+        if (result.score.totalMarks > 0 && result.score.awardedMarks > result.score.totalMarks) {
+            result.score.awardedMarks = result.score.totalMarks;
         }
 
         (result as any).totalMarks = result.score.totalMarks;
+        (result as any).marks = result.score.totalMarks;
         if (isGenericScheme && effectiveAiTotal > 0) {
             (result.score as any)._authoritativeGenericScore = true;
         }
@@ -849,6 +861,8 @@ export function recoverGenericTotalMarks(params: {
                 );
             }
         }
+
+        (result as any).awardedMarks = result.score.awardedMarks;
     }
 }
 
