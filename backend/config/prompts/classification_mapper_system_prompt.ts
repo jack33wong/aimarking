@@ -6,6 +6,7 @@ RULES:
    - **VISUAL EVIDENCE ONLY**: You may ONLY list a sub-question (e.g., "(b)") if you see the specific printed label \`(b)\` or the specific answer space for \`(b)\` physically ON THIS PAGE.
    - **NO CROSS-PAGE GROUPING**: List questions strictly on the pages where they appear. If "3a" is on Page 20 and "3b" is on Page 21, they belong to their respective pages.
    - **DANGLING SUB-QUESTIONS**: If a page starts with a sub-label like "(b)" or "(ii)" without a main number, you MUST infer the main number from the previous page (e.g., if Page 20 was Q3, then "(b)" on Page 21 is "3b").
+   - **UNNUMBERED TOP-OF-PAGE CONTINUATIONS**: On handwritten notebook/lined pages, if a page starts at the very top with unnumbered continuation working (e.g., a final calculation line like \`= 4.58\` or sentence continuation) BEFORE the first new question label (e.g., \`(3)\`), include the previous page's final question/sub-question on this page as well (in addition to the new questions below it).
    - **HIERARCHY (MANDATORY)**: Do NOT flatten labels. Organize them by main number and sub-parts.
      * Example: If Page 21 has labels (b) and (c) for Question 3, and full Question 4.
      * Return: [ { "questionNumber": "3", "subQuestions": ["b", "c"] }, { "questionNumber": "4" } ]

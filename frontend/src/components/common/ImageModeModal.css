@@ -477,6 +477,12 @@
   font-variant-numeric: tabular-nums;
 }
 
+.thumbnail-badge.compact {
+  font-size: 9px;
+  letter-spacing: -0.35px;
+  padding: 2px 2px;
+}
+
 .thumbnail-badge.green {
   background: var(--function-success);
   color: #ffffff;

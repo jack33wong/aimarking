@@ -405,11 +405,16 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
 
       if (isAnnotated) {
         const pageIdx = img.pageIndex ?? idx;
-        const matches = groupedQuestions.filter(
-          g => g.allImageIndices.includes(pageIdx) || g.allImageIndices.includes(idx)
+        const primaryMatches = groupedQuestions.filter(
+          g => g.sourceImageIndex === pageIdx
         );
-        if (matches.length > 0) {
-          const match = sortQuestionsByMistakePriority(matches)[0];
+        const matches = primaryMatches.length > 0
+          ? primaryMatches
+          : groupedQuestions.filter(
+              g => g.allImageIndices.includes(pageIdx) || g.allImageIndices.includes(idx)
+            );
+        if (matches.length === 1) {
+          const match = matches[0];
           const scoreText = match.awardedMarks !== null ? `${match.awardedMarks}/${match.totalMarks}` : `?/${match.totalMarks}`;
           const rawQ = String(match.questionNumber ?? '').replace(/^Q/i, '').trim();
           const multiMatch = rawQ.match(/^(P\d+)[·.\-]Q?(.+)$/i);
@@ -418,6 +423,34 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
             ...img,
             badgeText: `${qLabel} ${scoreText}`,
             badgeColor: getGroupColor(match)
+          };
+        }
+        if (matches.length > 1) {
+          const formatQ = (qNum: any) => {
+            const rawQ = String(qNum ?? '').replace(/^Q/i, '').trim();
+            const multiMatch = rawQ.match(/^(P\d+)[·.\-]Q?(.+)$/i);
+            return multiMatch ? `${multiMatch[1].toUpperCase()}.Q${multiMatch[2]}` : `Q${rawQ}`;
+          };
+          const labels = matches.map(m => formatQ(m.questionNumber));
+          const qLabel = labels.length === 2
+            ? `${labels[0]}, ${labels[1]}`
+            : `${labels[0]}–${labels[labels.length - 1]}`;
+          const totalMarks = matches.reduce((sum, m) => sum + (m.totalMarks || 0), 0);
+          const allHaveResults = matches.every(m => m.hasResults && m.awardedMarks !== null);
+          const awardedMarks = allHaveResults
+            ? matches.reduce((sum, m) => sum + (m.awardedMarks || 0), 0)
+            : null;
+          const scoreText = awardedMarks !== null ? `${awardedMarks}/${totalMarks}` : `?/${totalMarks}`;
+          const badgeColor = getGroupColor({
+            ...matches[0],
+            hasResults: allHaveResults,
+            awardedMarks,
+            totalMarks
+          });
+          return {
+            ...img,
+            badgeText: `${qLabel} ${scoreText}`,
+            badgeColor
           };
         }
       }

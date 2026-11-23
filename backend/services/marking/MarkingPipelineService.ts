@@ -71,6 +71,7 @@ import { OCRService } from '../ocr/OCRService.js';
 import { ClassificationService } from './ClassificationService.js';
 import type { QuestionResult } from '../../types/marking.js';
 import { executeMarkingForQuestion, createMarkingTasksFromClassification } from './MarkingExecutor.js';
+import { rescueOrphanTopLineSpillover } from './PageSpilloverUtils.js';
 import { MarkingSchemeOrchestrationService } from './MarkingSchemeOrchestrationService.js';
 import { PaperSplitterService, type PaperBucket, type InterceptedSchemeImageMeta } from './PaperSplitterService.js';
 import { QuestionModeHandlerService } from './QuestionModeHandlerService.js';
@@ -5903,6 +5904,13 @@ export class MarkingPipelineService {
 
                 const metaPageIndices = pageSortMap.filter(p => p.isMeta).map(p => oldToNewIndex.get(p.originalIdx)!);
                 console.log(` 🕵️ [PIPELINE-META] Collected Meta Indices: ${metaPageIndices.join(', ')}`);
+
+                rescueOrphanTopLineSpillover({
+                    classificationResult,
+                    allPagesOcrData,
+                    pageDimensionsMap,
+                    metaPageIndices
+                });
 
                 markingTasks = createMarkingTasksFromClassification(
                     classificationResult,

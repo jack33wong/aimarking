@@ -574,7 +574,14 @@ const ImageViewer: React.FC<ImageViewerProps> = ({
                                     aria-label={`View image ${originalIndex + 1}`}
                                 >
                                     <img src={image.src} alt={image.alt} className="modal-thumbnail-image" draggable={false} />
-                                    {image.badgeText && <span className={`thumbnail-badge ${image.badgeColor || 'neutral'}`}>{image.badgeText}</span>}
+                                    {image.badgeText && (
+                                        <span
+                                            className={`thumbnail-badge ${image.badgeColor || 'neutral'}${image.badgeText.length > 8 ? ' compact' : ''}`}
+                                            title={image.badgeText}
+                                        >
+                                            {image.badgeText}
+                                        </span>
+                                    )}
                                 </button>
                             ))}
                         </div>
