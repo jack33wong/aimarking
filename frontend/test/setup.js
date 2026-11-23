@@ -83,7 +83,7 @@ function checkDependencies() {
 
 // Main setup check
 async function checkSetup() {
-  log('\n🔧 IntelliMark Test Environment Setup Check', 'bold');
+  log('\n🔧 AI Marking Test Environment Setup Check', 'bold');
   log('='.repeat(50));
 
   let allGood = true;

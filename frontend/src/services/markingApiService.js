@@ -1482,6 +1482,15 @@ class SimpleSessionService {
       throw error;
     }
   }
+
+  acknowledgeSessionViewed = async (sessionId) => {
+    if (!sessionId || String(sessionId).startsWith('temp-')) return;
+    try {
+      await apiClient.post(`/api/messages/session/${sessionId}/viewed`);
+    } catch {
+      // Non-fatal best-effort acknowledgment
+    }
+  }
 }
 
 export const simpleSessionService = new SimpleSessionService();

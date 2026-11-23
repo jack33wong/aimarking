@@ -142,7 +142,7 @@ app.get('/swagger', (_req, res) => {
 // API info endpoint
 app.get('/api', (_req, res) => {
   res.json({
-    name: 'IntelliMark API',
+    name: 'AI Marking API',
     version: '1.0.0',
     description: 'AI-powered homework marking and question detection API',
     documentation: {

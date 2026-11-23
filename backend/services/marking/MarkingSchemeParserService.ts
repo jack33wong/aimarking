@@ -629,6 +629,108 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
     }
 
     /**
+     * Computes a deterministic SHA-256 cache key directly from raw Mark Scheme PDF buffer(s),
+     * allowing cache hits BEFORE expensive PDF-to-image rasterization.
+     */
+    static computePdfBufferCacheKey(pdfBuffers: Buffer[]): string {
+        const hash = crypto.createHash('sha256');
+        hash.update(`pdf_v1:${pdfBuffers.length}:`);
+        for (const buf of pdfBuffers) {
+            hash.update(`${buf.length}:`);
+            hash.update(buf);
+            hash.update('|');
+        }
+        return hash.digest('hex');
+    }
+
+    /**
+     * Looks up a previously parsed marking scheme in memory + Firestore `parsedMarkingSchemesCache`
+     * using the SHA-256 digest of the raw PDF buffer(s), avoiding PDF rasterization on cache hits.
+     */
+    static async getCachedSchemeByPdfBuffers(
+        pdfBuffers: Buffer[],
+        sourceFileName?: string
+    ): Promise<{ cacheKey: string; parsedScheme: any | null }> {
+        if (!pdfBuffers || pdfBuffers.length === 0) {
+            return { cacheKey: '', parsedScheme: null };
+        }
+
+        const cacheKey = this.computePdfBufferCacheKey(pdfBuffers);
+
+        // 1. Check fast in-memory cache
+        const memCached = this.memoryCache.get(cacheKey);
+        if (memCached && memCached.questions && Object.keys(memCached.questions).length > 0) {
+            console.log(`⚡ [MarkingSchemeParser] Pre-rasterization in-memory PDF cache HIT (${cacheKey.slice(0, 12)}) for ${pdfBuffers.length} PDF(s).`);
+            const canonicalMem = this.canonicalizeParsedScheme(JSON.parse(JSON.stringify(memCached)));
+            assertNoDuplicateQuestionsInMarkScheme(canonicalMem, sourceFileName);
+            return { cacheKey, parsedScheme: canonicalMem };
+        }
+
+        // 2. Check Firestore persistent cache (`parsedMarkingSchemesCache`)
+        try {
+            const db = getFirestore();
+            if (db) {
+                const docSnap = await db.collection('parsedMarkingSchemesCache').doc(cacheKey).get();
+                if (docSnap.exists) {
+                    const data = docSnap.data();
+                    if (data?.parsedScheme && data.parsedScheme.questions && Object.keys(data.parsedScheme.questions).length > 0) {
+                        console.log(`⚡ [MarkingSchemeParser] Pre-rasterization Firestore PDF cache HIT (${cacheKey.slice(0, 12)}) for ${pdfBuffers.length} PDF(s).`);
+                        const canonicalCached = this.canonicalizeParsedScheme(JSON.parse(JSON.stringify(data.parsedScheme)));
+                        assertNoDuplicateQuestionsInMarkScheme(canonicalCached, sourceFileName);
+                        if (this.memoryCache.size > 100) {
+                            const firstKey = this.memoryCache.keys().next().value;
+                            if (firstKey) this.memoryCache.delete(firstKey);
+                        }
+                        this.memoryCache.set(cacheKey, canonicalCached);
+                        return { cacheKey, parsedScheme: JSON.parse(JSON.stringify(canonicalCached)) };
+                    }
+                }
+            }
+        } catch (cacheReadErr) {
+            if (cacheReadErr instanceof UserFacingError) throw cacheReadErr;
+            // Non-fatal: proceed to PDF rasterization + LLM extraction
+        }
+
+        return { cacheKey, parsedScheme: null };
+    }
+
+    /**
+     * Stores a parsed marking scheme under its raw-PDF SHA-256 key in both in-memory cache
+     * and Firestore `parsedMarkingSchemesCache` so future uploads skip rasterization entirely.
+     */
+    static async cacheSchemeByPdfBuffers(
+        cacheKey: string,
+        parsedObj: any,
+        pageCount?: number
+    ): Promise<void> {
+        if (!cacheKey || !parsedObj || !parsedObj.questions || Object.keys(parsedObj.questions).length === 0) {
+            return;
+        }
+        if (parsedObj.documentCompleteness?.isComplete === false) {
+            return;
+        }
+
+        if (this.memoryCache.size > 100) {
+            const firstKey = this.memoryCache.keys().next().value;
+            if (firstKey) this.memoryCache.delete(firstKey);
+        }
+        this.memoryCache.set(cacheKey, parsedObj);
+
+        try {
+            const db = getFirestore();
+            if (db) {
+                void db.collection('parsedMarkingSchemesCache').doc(cacheKey).set({
+                    parsedScheme: parsedObj,
+                    pageCount: pageCount ?? null,
+                    examDetails: parsedObj.examDetails || null,
+                    cacheType: 'raw_pdf_sha256',
+                    createdAt: new Date().toISOString()
+                }).catch(() => {});
+            }
+        } catch {}
+    }
+
+    /**
      * Parses an array of raw base64 images of a marking scheme into a custom scheme object.
      * Uses SHA-256 fingerprint caching (in-memory + Firestore) and 1200px lightweight copies for speed.
      */
@@ -711,7 +813,7 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
             } else {
                 const CHUNK_SIZE = 12;
                 const OVERLAP = 1;
-                const MAX_CONCURRENT_CHUNKS = 3;
+                const MAX_CONCURRENT_CHUNKS = 6;
                 const chunks: string[][] = [];
                 for (let start = 0; start < lightweightSchemeImages.length; start += (CHUNK_SIZE - OVERLAP)) {
                     const slice = lightweightSchemeImages.slice(start, start + CHUNK_SIZE);
@@ -911,12 +1013,12 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
     }
 
     /**
-     * Checks whether an official paper/scheme for the given code and series
-     * already exists in Firestore (`markingSchemes` or `fullExamPapers`).
+     * Checks whether an official marking scheme for the given code and series
+     * already exists in Firestore (`markingSchemes`).
      * Checks both canonical doc IDs and the cached QuestionDetection catalog
      * to safely detect existing manual entries (including those with custom/UUID docIds).
      */
-    static async paperExistsInDatabase(
+    static async schemeExistsInDatabase(
         board?: string,
         paperCode?: string,
         examSeries?: string
@@ -931,15 +1033,11 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
             const targetNormCode = norm(rawCode);
             const targetSeriesYear = (examSeries || '').match(/\b(20\d{2})\b/)?.[1] || '';
 
-            // 1. Direct canonical doc ID check in Firestore
+            // 1. Direct canonical doc ID check in Firestore `markingSchemes`
             if (db && board && examSeries) {
                 const msDocId = `official_${slug(board)}_${slug(rawCode)}_${slug(examSeries)}`;
                 const msDoc = await db.collection('markingSchemes').doc(msDocId).get();
                 if (msDoc.exists) return true;
-
-                const qpDocId = `${slug(board)}_${slug(rawCode)}_${slug(examSeries)}`;
-                const qpDoc = await db.collection('fullExamPapers').doc(qpDocId).get();
-                if (qpDoc.exists) return true;
             }
 
             // 2. Search cached in-memory marking schemes list (catches UUID/custom docIds)
@@ -955,7 +1053,45 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
             });
             if (matchedScheme) return true;
 
-            // 3. Search cached in-memory full exam papers list
+            return false;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * Checks whether an official exam paper for the given code and series
+     * already exists in Firestore (`fullExamPapers`).
+     * Separated from `schemeExistsInDatabase` so a later Question Paper upload can still
+     * enrich `fullExamPapers` even if the official mark scheme was already cataloged earlier.
+     */
+    static async examPaperExistsInDatabase(
+        board?: string,
+        paperCode?: string,
+        examSeries?: string
+    ): Promise<boolean> {
+        try {
+            const rawCode = String(paperCode || '').trim();
+            if (!rawCode) return false;
+
+            const db = getFirestore();
+            const norm = (s: string) => String(s || '').trim().toUpperCase().replace(/[-_\s]+/g, '/');
+            const slug = (s: string) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+            const targetNormCode = norm(rawCode);
+            const targetSeriesYear = (examSeries || '').match(/\b(20\d{2})\b/)?.[1] || '';
+
+            // 1. Direct canonical doc ID checks in Firestore `fullExamPapers`
+            if (db && board && examSeries) {
+                const autoQpDocId = `official_paper_${slug(board)}_${slug(rawCode)}_${slug(examSeries)}`;
+                const autoQpDoc = await db.collection('fullExamPapers').doc(autoQpDocId).get();
+                if (autoQpDoc.exists) return true;
+
+                const legacyQpDocId = `${slug(board)}_${slug(rawCode)}_${slug(examSeries)}`;
+                const legacyQpDoc = await db.collection('fullExamPapers').doc(legacyQpDocId).get();
+                if (legacyQpDoc.exists) return true;
+            }
+
+            // 2. Search cached in-memory full exam papers list
             const papers = await QuestionDetectionService.getInstance().getExamPapersList();
             const matchedPaper = (papers || []).some((p: any) => {
                 const pCode = norm(p?.metadata?.exam_code || p?.examDetails?.paperCode || p?.metadata?.paperCode || '');
@@ -972,6 +1108,22 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
         } catch {
             return false;
         }
+    }
+
+    /**
+     * Checks whether an official paper OR scheme for the given code and series
+     * already exists in Firestore (`markingSchemes` or `fullExamPapers`).
+     */
+    static async paperExistsInDatabase(
+        board?: string,
+        paperCode?: string,
+        examSeries?: string
+    ): Promise<boolean> {
+        const [hasScheme, hasPaper] = await Promise.all([
+            this.schemeExistsInDatabase(board, paperCode, examSeries),
+            this.examPaperExistsInDatabase(board, paperCode, examSeries)
+        ]);
+        return hasScheme || hasPaper;
     }
 
     /**
@@ -1164,9 +1316,13 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
     }
 
     /**
-     * SINGLE gated entry point for auto-persisting an official non-Maths/English past paper.
-     * Both `markingSchemes` and `fullExamPapers` are written ONLY when the mark scheme AND the
-     * question paper are verified complete. Individual questions / partial uploads are ignored.
+     * Decoupled gated entry point for auto-persisting an official past paper:
+     * - `markingSchemes`: persisted whenever the official mark scheme itself is verified complete
+     *   (even on lined-paper / notebook student uploads where no printed question paper is present).
+     * - `fullExamPapers`: persisted independently whenever the extracted question paper is ALSO
+     *   verified complete (so a later Question Paper upload can enrich `fullExamPapers` even if
+     *   the mark scheme was already cataloged earlier).
+     * For Mathematics & English Language, each collection is checked separately to preserve curated data.
      */
     static async persistOfficialPastPaperIfComplete(params: {
         parsedScheme: any;
@@ -1175,7 +1331,7 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
         auditContext?: AutoPersistenceAuditContext;
         isUnofficialOrPracticePaper?: boolean;
         documentEvidenceText?: string;
-    }): Promise<{ persisted: boolean; report?: CompletenessReport }> {
+    }): Promise<{ persisted: boolean; schemePersisted?: boolean; paperPersisted?: boolean; report?: CompletenessReport }> {
         const {
             parsedScheme,
             extractedQuestions,
@@ -1187,11 +1343,13 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
         try {
             if (isUnofficialOrPracticePaper === true) {
                 console.log(`🛡️ [AUTO-CATALOG] Skipped persisting unofficial/practice paper "${parsedScheme?.examDetails?.paperCode || auditContext?.sourceFileName || 'unknown'}" (flagged by document geometry).`);
-                return { persisted: false };
+                return { persisted: false, schemePersisted: false, paperPersisted: false };
             }
 
             // Not an official past paper -> silently ignore (custom / teacher / practice schemes are never cataloged)
-            if (!this.isOfficialPastPaperScheme(parsedScheme)) return { persisted: false };
+            if (!this.isOfficialPastPaperScheme(parsedScheme)) {
+                return { persisted: false, schemePersisted: false, paperPersisted: false };
+            }
 
             const evidenceText = [
                 documentEvidenceText || '',
@@ -1199,28 +1357,18 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
             ].filter(Boolean).join(' ');
             if (hasUnofficialPaperIndicators(evidenceText)) {
                 console.log(`🛡️ [AUTO-CATALOG] Skipped persisting unofficial/practice paper "${auditContext?.sourceFileName || parsedScheme.examDetails?.paperCode || 'unknown'}".`);
-                return { persisted: false };
+                return { persisted: false, schemePersisted: false, paperPersisted: false };
             }
 
-            const label = `${parsedScheme.examDetails?.board || ''} ${parsedScheme.examDetails?.paperCode || ''} ${parsedScheme.examDetails?.exam_series || parsedScheme.examDetails?.date || ''}`.trim();
+            const board = parsedScheme.examDetails?.board;
+            const paperCode = parsedScheme.examDetails?.paperCode;
+            const examSeries = parsedScheme.examDetails?.exam_series || parsedScheme.examDetails?.date;
+            const label = `${board || ''} ${paperCode || ''} ${examSeries || ''}`.trim();
 
-            // 🛡️ MATHS & ENGLISH LANGUAGE EXISTENCE GATE:
-            // For Mathematics and English Language, auto-persistence is ONLY permitted if the official paper
-            // does NOT already exist in our database, strictly preserving all curated/manual data.
             const isMathOrEnglish = this.isMathematicsOrEnglishLanguage(
                 parsedScheme.examDetails?.subject,
-                parsedScheme.examDetails?.paperCode
+                paperCode
             );
-            if (isMathOrEnglish) {
-                const board = parsedScheme.examDetails?.board;
-                const paperCode = parsedScheme.examDetails?.paperCode;
-                const examSeries = parsedScheme.examDetails?.exam_series || parsedScheme.examDetails?.date;
-                const existsInDb = await this.paperExistsInDatabase(board, paperCode, examSeries);
-                if (existsInDb) {
-                    console.log(`🛡️ [AUTO-CATALOG] Skipped Maths/English paper "${label}" — already exists in database. Curated data preserved.`);
-                    return { persisted: false };
-                }
-            }
 
             const schemeReport = this.assessSchemeCompleteness(parsedScheme, paperStatedTotal);
             const paperReport = this.assessQuestionPaperCompleteness(parsedScheme, extractedQuestions);
@@ -1237,21 +1385,57 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
 
             report.warnings.forEach(w => console.warn(`⚠️ [AUTO-CATALOG] ${label}: ${w}`));
 
-            if (!report.isComplete) {
-                console.log(`🚫 [AUTO-CATALOG] Skipped persisting ${label} — upload is not a complete paper + mark scheme:`);
-                report.reasons.forEach(r => console.log(`     • ${r}`));
-                return { persisted: false, report };
+            if (!schemeReport.isComplete) {
+                console.log(`🚫 [AUTO-CATALOG] Skipped persisting ${label} — mark scheme is incomplete:`);
+                schemeReport.reasons.forEach(r => console.log(`     • [scheme] ${r}`));
+                return { persisted: false, schemePersisted: false, paperPersisted: false, report };
             }
 
-            console.log(`✅ [AUTO-CATALOG] Completeness verified for ${label}: ${report.baseQuestionCount} questions / ${report.subQuestionCount} sub-questions / ${report.schemeTotalMarks} marks (matches ${report.expectedTotalSource?.replace('_', ' ')} total).`);
+            // 1. Persist complete official Mark Scheme to `markingSchemes` (decoupled from Question Paper completeness)
+            let schemePersisted = false;
+            const schemeBlockedByCurated = isMathOrEnglish
+                ? await this.schemeExistsInDatabase(board, paperCode, examSeries)
+                : false;
 
-            const ctx: AutoPersistenceAuditContext = { ...(auditContext || {}), completeness: report };
-            await this.saveOfficialSchemeToDatabase(parsedScheme, ctx);
-            await this.saveOfficialExamPaperQuestionsToDatabase(parsedScheme, extractedQuestions, ctx);
-            return { persisted: true, report };
+            if (schemeBlockedByCurated) {
+                console.log(`🛡️ [AUTO-CATALOG] Skipped Maths/English marking scheme "${label}" — already exists in markingSchemes. Curated data preserved.`);
+            } else {
+                const schemeCtx: AutoPersistenceAuditContext = { ...(auditContext || {}), completeness: schemeReport };
+                await this.saveOfficialSchemeToDatabase(parsedScheme, schemeCtx);
+                schemePersisted = true;
+            }
+
+            // 2. Persist Question Paper to `fullExamPapers` independently when paper text is also complete
+            let paperPersisted = false;
+            if (paperReport.isComplete) {
+                const paperBlockedByCurated = isMathOrEnglish
+                    ? await this.examPaperExistsInDatabase(board, paperCode, examSeries)
+                    : false;
+
+                if (paperBlockedByCurated) {
+                    console.log(`🛡️ [AUTO-CATALOG] Skipped Maths/English exam paper "${label}" — already exists in fullExamPapers. Curated data preserved.`);
+                } else {
+                    const paperCtx: AutoPersistenceAuditContext = { ...(auditContext || {}), completeness: report };
+                    await this.saveOfficialExamPaperQuestionsToDatabase(parsedScheme, extractedQuestions, paperCtx);
+                    paperPersisted = true;
+                }
+            } else {
+                console.log(`📚 [AUTO-CATALOG] Cataloged official mark scheme for ${label} (${schemeReport.baseQuestionCount} questions / ${schemeReport.schemeTotalMarks} marks); skipped fullExamPapers (question paper incomplete — e.g. lined-paper/notebook upload; will enrich on a later Question Paper upload).`);
+            }
+
+            if (schemePersisted && paperPersisted) {
+                console.log(`✅ [AUTO-CATALOG] Completeness verified for ${label}: ${report.baseQuestionCount} questions / ${report.subQuestionCount} sub-questions / ${report.schemeTotalMarks} marks (matches ${report.expectedTotalSource?.replace('_', ' ')} total).`);
+            }
+
+            return {
+                persisted: schemePersisted || paperPersisted,
+                schemePersisted,
+                paperPersisted,
+                report
+            };
         } catch (err) {
             console.warn('⚠️ [AUTO-CATALOG] Completeness-gated persistence failed:', err);
-            return { persisted: false };
+            return { persisted: false, schemePersisted: false, paperPersisted: false };
         }
     }
 

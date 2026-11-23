@@ -9,6 +9,7 @@ import { GuestUsageService } from '../services/guestUsageService.js';
 import axios from 'axios';
 import https from 'https';
 import { AdminAlertService } from '../services/AdminAlertService.js';
+import { CompletionNotificationService } from '../services/CompletionNotificationService.js';
 import { runWithLogCapture } from '../utils/RequestLogCapture.js';
 import { UserFacingError } from '../utils/UserFacingError.js';
 import { FirestoreService } from '../services/firestoreService.js';
@@ -82,6 +83,7 @@ export class MarkingController {
 
         let capturedRemarkLogs: { logsText: string; lineCount: number; durationMs: number; truncated: boolean } | null = null;
         let remarkModel = model;
+        const remarkStartedAt = Date.now();
 
         const resolvedRemarkAiMessageId = aiMessageId || `ai-${Date.now()}`;
         const remarkJobUserId = (req as any).user?.uid || null;
@@ -195,6 +197,20 @@ export class MarkingController {
                 sendSseUpdate(res, { type: 'complete', result });
                 completeEventSent = true;
             }
+
+            // 📧 Delayed completion email (~75s) if user does not view long re-mark job
+            CompletionNotificationService.scheduleCompletionEmail({
+                sessionId,
+                userEmail: (req as any).user?.email,
+                userName: (req as any).user?.name || (req as any).user?.displayName,
+                sessionTitle: (result as any)?.sessionTitle || (result as any)?.unifiedSession?.title || paperTitle,
+                durationMs: Date.now() - remarkStartedAt,
+                awardedMarks: (result as any)?.metadata?.totalScore ?? (result as any)?.processingStats?.awardedMarks ?? null,
+                totalMarks: (result as any)?.metadata?.maxScore ?? (result as any)?.processingStats?.totalMarks ?? null,
+                questionCount: (result as any)?.metadata?.totalQuestions ?? (result as any)?.processingStats?.questionCount ?? null,
+                grade: (result as any)?.grade || (result as any)?.aiMessage?.grade || null,
+                isRemark: true
+            });
 
             if (capturedRemarkLogs) {
                 const rawRemarkAiContent =
@@ -488,6 +504,7 @@ export class MarkingController {
         }, 15000); // Ping every 15 seconds
 
         let capturedMarkingLogs: { logsText: string; lineCount: number; durationMs: number; truncated: boolean } | null = null;
+        const markingStartedAt = Date.now();
         const aiMessageId = req.body?.aiMessageId || `ai-${Date.now()}`;
         const jobUserId = (req as any).user?.uid || null;
         let isJobFinished = false;
@@ -705,6 +722,25 @@ export class MarkingController {
             if (!completeEventSent && (pendingCompleteEvent || result)) {
                 sendSseUpdate(res, pendingCompleteEvent || { type: 'complete', result });
                 completeEventSent = true;
+            }
+
+            // 📧 Delayed completion email (~75s) if user does not view long marking job
+            if (!isRejectedOrEmpty && resolvedCompletedSessionId) {
+                const assistantMsg = Array.isArray((result as any)?.unifiedSession?.messages)
+                    ? [...(result as any).unifiedSession.messages].reverse().find((m: any) => m?.role === 'assistant')
+                    : null;
+                CompletionNotificationService.scheduleCompletionEmail({
+                    sessionId: resolvedCompletedSessionId,
+                    userEmail: (req as any).user?.email,
+                    userName: (req as any).user?.name || (req as any).user?.displayName,
+                    sessionTitle: (result as any)?.unifiedSession?.title || (result as any)?.sessionTitle || null,
+                    durationMs: Date.now() - markingStartedAt,
+                    awardedMarks: (result as any)?.metadata?.totalScore ?? (result as any)?.processingStats?.awardedMarks ?? null,
+                    totalMarks: (result as any)?.metadata?.maxScore ?? (result as any)?.processingStats?.totalMarks ?? null,
+                    questionCount: (result as any)?.metadata?.totalQuestions ?? (result as any)?.processingStats?.questionCount ?? null,
+                    grade: assistantMsg?.grade || (result as any)?.grade || null,
+                    isRemark: false
+                });
             }
 
             // --- NEW: Increment Guest Usage ---

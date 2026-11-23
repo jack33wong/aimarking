@@ -1,4 +1,4 @@
 export const PROCESSING_CONSTANTS = {
-    // Global concurrency limit for AI operations to prevent rate limiting (429 errors)
-    CONCURRENCY_LIMIT: 5
+    // Global concurrency limit for AI operations (Classification Pass-2 & Question Marking)
+    CONCURRENCY_LIMIT: 10
 };

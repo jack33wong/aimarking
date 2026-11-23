@@ -4933,12 +4933,29 @@ export class MarkingPipelineService {
                 const schemeParserModel = resolveExecutionPlan('fast', 'markingScheme').modelName;
                 const logSchemeParserComplete = logStep('Custom Scheme Parsing', schemeParserModel);
                 try {
+                    const { MarkingSchemeParserService } = await import('./MarkingSchemeParserService.js');
+                    const sourceFileName = deferredSchemePdfFiles[0]?.originalname || files?.find(isExplicitMarkSchemePdfFile)?.originalname;
+                    const isPurePdfScheme = deferredSchemePdfFiles.length > 0 && interceptedSchemeImages.length === 0;
+                    let rawPdfCacheKey = '';
+
+                    if (isPurePdfScheme) {
+                        const pdfBuffers = deferredSchemePdfFiles.map(f => f.buffer);
+                        const cached = await MarkingSchemeParserService.getCachedSchemeByPdfBuffers(pdfBuffers, sourceFileName);
+                        rawPdfCacheKey = cached.cacheKey;
+                        if (cached.parsedScheme) {
+                            console.log(`⚡ [DEFERRED-MS-PDF] Pre-rasterization SHA-256 cache HIT — skipped PDF rasterization & LLM parsing!`);
+                            logSchemeParserComplete();
+                            return cached.parsedScheme;
+                        }
+                    }
+
                     if (deferredSchemePdfFiles.length > 0) {
-                        console.log(`📄 [DEFERRED-MS-PDF] Paper not found in DB — rasterizing ${deferredSchemePdfFiles.length} deferred Mark Scheme PDF(s) on demand...`);
+                        console.log(`📄 [DEFERRED-MS-PDF] Paper not found in DB — rasterizing ${deferredSchemePdfFiles.length} deferred Mark Scheme PDF(s) on demand at 130 DPI...`);
                         for (const msFile of deferredSchemePdfFiles) {
                             const msPages = await PdfProcessingService.convertPdfToImages(msFile.buffer, {
                                 maxPages: MAX_RAW_COMBINED_PAGES,
-                                maxPagesErrorMessage: getPageLimitErrorMessage
+                                maxPagesErrorMessage: getPageLimitErrorMessage,
+                                density: 130
                             });
                             msPages.forEach(p => interceptedSchemeImages.push(p.imageData));
                         }
@@ -4947,19 +4964,25 @@ export class MarkingPipelineService {
                         logSchemeParserComplete();
                         return null;
                     }
-                    const { MarkingSchemeParserService } = await import('./MarkingSchemeParserService.js');
                     const parsedObj = await MarkingSchemeParserService.parseImagesToObject(
                         interceptedSchemeImages,
                         usageTracker,
                         {
                             userId: userId || 'anonymous',
                             sessionId: options.sessionId || submissionId,
-                            sourceFileName: deferredSchemePdfFiles[0]?.originalname || files?.find(isExplicitMarkSchemePdfFile)?.originalname
+                            sourceFileName
                         }
                     );
                     logSchemeParserComplete();
 
                     if (parsedObj && Object.keys(parsedObj).length > 0) {
+                        if (isPurePdfScheme && rawPdfCacheKey) {
+                            void MarkingSchemeParserService.cacheSchemeByPdfBuffers(
+                                rawPdfCacheKey,
+                                parsedObj,
+                                interceptedSchemeImages.length
+                            );
+                        }
                         console.log(`✅ [SCHEME PARSER] Successfully extracted marking scheme via ${schemeParserModel}.`);
                         if (process.env.LOG_CUSTOM_SCHEME_JSON === 'true') {
                             console.log(`\n📄 [CUSTOM-SCHEME-DEBUG] Pretty JSON of Parsed Scheme:`);
@@ -5088,7 +5111,21 @@ export class MarkingPipelineService {
                 }
             }
 
-            if (parsedCustomScheme && individualQuestions.length >= 3) {
+            // Decoupled auto-catalog:
+            // - Complete official mark schemes are persisted to `markingSchemes` even on lined-paper/notebook uploads
+            //   (where individualQuestions may be < 3 or lack printed question text).
+            // - Later Question Paper uploads (matching a cataloged official scheme in `inputMarkingScheme`) still
+            //   run through `persistOfficialPastPaperIfComplete` to enrich `fullExamPapers`.
+            const schemeForPersistence = parsedCustomScheme || (
+                inputMarkingScheme &&
+                typeof inputMarkingScheme === 'object' &&
+                (inputMarkingScheme as any)?.examDetails?.paperCode &&
+                individualQuestions.length >= 3
+                    ? inputMarkingScheme
+                    : null
+            );
+
+            if (schemeForPersistence) {
                 // Snapshot BEFORE orchestration: orchestrateMarkingSchemeLookup mutates q.text in place ("smart swap"),
                 // and this save runs asynchronously, so passing the live objects races with that mutation.
                 const questionsSnapshot = individualQuestions.map(q => ({
@@ -5096,7 +5133,6 @@ export class MarkingPipelineService {
                     text: q.text,
                     parentText: q.parentText
                 }));
-                const schemeForPersistence = parsedCustomScheme;
 
                 // Paper total printed on the QUESTION PAPER cover (e.g. "The maximum mark for this paper is 100"),
                 // detected by the pre-flight geometry pass. Most frequent value across non-scheme pages wins.
@@ -5106,8 +5142,8 @@ export class MarkingPipelineService {
                     .forEach(g => totalVotes.set(g!.paper_total_marks_hint!, (totalVotes.get(g!.paper_total_marks_hint!) || 0) + 1));
                 const paperStatedTotal = Array.from(totalVotes.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 
-                // 🛡️ COMPLETENESS GATE: Only a COMPLETE question paper + COMPLETE mark scheme is auto-persisted.
-                // Individual questions / partial uploads / unofficial practice papers are ignored (see persistOfficialPastPaperIfComplete).
+                // 🛡️ COMPLETENESS GATE: Official mark schemes are cataloged whenever complete; `fullExamPapers` is enriched
+                // independently whenever the uploaded question paper is also complete. Unofficial practice papers are ignored.
                 const uploadEvidenceText = [
                     ...geometryResults.map(g => g?.paper_code_hint || ''),
                     ...geometryResults.map(g => g?.evidence_text_snippet || ''),
@@ -6868,60 +6904,92 @@ export class MarkingPipelineService {
 
         // --- PATH A: USER UPLOADED CUSTOM MARK SCHEME FILES ---
         if (Array.isArray(options.uploadedSchemeFiles) && options.uploadedSchemeFiles.length > 0) {
-            const schemePageImages: string[] = [];
-
-            for (const f of options.uploadedSchemeFiles) {
+            const { MarkingSchemeParserService } = await import('./MarkingSchemeParserService.js');
+            const decodedUploads = options.uploadedSchemeFiles.map(f => {
                 const rawB64 = f.base64Data.includes(',') ? f.base64Data.split(',')[1] : f.base64Data;
                 const buf = Buffer.from(rawB64, 'base64');
                 const isPdfHeader = buf.length >= 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46;
-                if (isPdfHeader || f.mimeType === 'application/pdf' || f.originalName?.toLowerCase().endsWith('.pdf')) {
-                    if (!isPdfHeader) {
-                        console.warn(`🛑 [REMARK-REJECTED] Uploaded file "${f.originalName || 'file'}" declared as PDF but lacks valid %PDF header.`);
-                        throw new Error(`UNSUPPORTED_SCHEME_FORMAT: Could not read "${f.originalName || 'uploaded file'}" as a valid PDF. Please upload a standard PDF, JPG, PNG, or WebP file. Your existing marks have been kept.`);
-                    }
-                    const pdfPages = await PdfProcessingService.convertPdfToImages(buf, { maxPages: 30 });
-                    pdfPages.forEach(p => schemePageImages.push(p.imageData));
-                } else {
-                    const probed = await ImageUtils.probeImageBuffer(buf);
-                    if (!probed) {
-                        console.warn(`🛑 [REMARK-REJECTED] Uploaded scheme file "${f.originalName || 'file'}" (mime=${f.mimeType || 'unknown'}, bytes=${buf.length}) is not a decodable image format.`);
-                        throw new Error(`UNSUPPORTED_SCHEME_FORMAT: Could not read "${f.originalName || 'uploaded file'}" — unsupported or corrupted image format. Please upload a standard PDF, JPG, PNG, or WebP file. Your existing marks have been kept.`);
-                    }
-                    const normImg = await ImageUtils.normalizeOrientation(
-                        f.base64Data.startsWith('data:') ? f.base64Data : `data:${f.mimeType || 'image/jpeg'};base64,${rawB64}`
-                    );
-                    schemePageImages.push(normImg);
+                const isPdfDeclared = isPdfHeader || f.mimeType === 'application/pdf' || f.originalName?.toLowerCase().endsWith('.pdf');
+                return { f, rawB64, buf, isPdfHeader, isPdfDeclared };
+            });
+
+            // Validate PDF headers upfront before cache lookup or rasterization
+            for (const item of decodedUploads) {
+                if (item.isPdfDeclared && !item.isPdfHeader) {
+                    console.warn(`🛑 [REMARK-REJECTED] Uploaded file "${item.f.originalName || 'file'}" declared as PDF but lacks valid %PDF header.`);
+                    throw new Error(`UNSUPPORTED_SCHEME_FORMAT: Could not read "${item.f.originalName || 'uploaded file'}" as a valid PDF. Please upload a standard PDF, JPG, PNG, or WebP file. Your existing marks have been kept.`);
                 }
             }
 
-            if (schemePageImages.length === 0) {
-                throw new Error('INVALID_MARKING_SCHEME: Could not read any pages from the uploaded file.');
+            const isAllPdfUploads = decodedUploads.length > 0 && decodedUploads.every(d => d.isPdfHeader);
+            let remarkPdfCacheKey = '';
+            if (isAllPdfUploads) {
+                const cached = await MarkingSchemeParserService.getCachedSchemeByPdfBuffers(
+                    decodedUploads.map(d => d.buf),
+                    decodedUploads[0]?.f.originalName
+                );
+                remarkPdfCacheKey = cached.cacheKey;
+                if (cached.parsedScheme) {
+                    parsedCustomScheme = cached.parsedScheme;
+                    console.log(`⚡ [REMARK-SCHEME] Pre-rasterization SHA-256 PDF cache HIT — skipped rasterization & parsing (${Object.keys(parsedCustomScheme.questions || {}).length} question(s)).`);
+                }
             }
 
-            // 🛡️ STRICT VALIDATION GATE 1: Verify with ImageGeometryService that the uploaded files are actually a Marking Scheme
-            // (Rejects dummy images, selfies, or duplicate student essay pages like "HARRY D Q5 P1_page_1.jpg"!)
-            const lightSchemeImages = await Promise.all(
-                schemePageImages.map(img => ImageUtils.createLightweightCopy(img, 800))
-            );
-            const geoChecks = await Promise.all(
-                lightSchemeImages.map(img => ImageGeometryService.analyze(img, 800, 1000, 'fast', usageTracker))
-            );
+            if (!parsedCustomScheme) {
+                const schemePageImages: string[] = [];
 
-            const validSchemeImages = schemePageImages.filter((_, idx) => geoChecks[idx]?.is_acceptable_quality && geoChecks[idx]?.is_marking_scheme === true);
+                for (const { f, rawB64, buf, isPdfDeclared } of decodedUploads) {
+                    if (isPdfDeclared) {
+                        const pdfPages = await PdfProcessingService.convertPdfToImages(buf, { maxPages: 30, density: 130 });
+                        pdfPages.forEach(p => schemePageImages.push(p.imageData));
+                    } else {
+                        const probed = await ImageUtils.probeImageBuffer(buf);
+                        if (!probed) {
+                            console.warn(`🛑 [REMARK-REJECTED] Uploaded scheme file "${f.originalName || 'file'}" (mime=${f.mimeType || 'unknown'}, bytes=${buf.length}) is not a decodable image format.`);
+                            throw new Error(`UNSUPPORTED_SCHEME_FORMAT: Could not read "${f.originalName || 'uploaded file'}" — unsupported or corrupted image format. Please upload a standard PDF, JPG, PNG, or WebP file. Your existing marks have been kept.`);
+                        }
+                        const normImg = await ImageUtils.normalizeOrientation(
+                            f.base64Data.startsWith('data:') ? f.base64Data : `data:${f.mimeType || 'image/jpeg'};base64,${rawB64}`
+                        );
+                        schemePageImages.push(normImg);
+                    }
+                }
 
-            if (validSchemeImages.length === 0) {
-                console.warn(`🛑 [REMARK-REJECTED] Uploaded file(s) failed Marking Scheme validation gate. None of the ${schemePageImages.length} page(s) were recognized as a marking scheme.`);
-                throw new Error('INVALID_MARKING_SCHEME: The uploaded file is not a valid marking scheme (it looks like a student answer page or non-scheme image). Your existing marks have been kept.');
+                if (schemePageImages.length === 0) {
+                    throw new Error('INVALID_MARKING_SCHEME: Could not read any pages from the uploaded file.');
+                }
+
+                // 🛡️ STRICT VALIDATION GATE 1: Verify with ImageGeometryService that the uploaded files are actually a Marking Scheme
+                // (Rejects dummy images, selfies, or duplicate student essay pages like "HARRY D Q5 P1_page_1.jpg"!)
+                const lightSchemeImages = await Promise.all(
+                    schemePageImages.map(img => ImageUtils.createLightweightCopy(img, 800))
+                );
+                const geoChecks = await Promise.all(
+                    lightSchemeImages.map(img => ImageGeometryService.analyze(img, 800, 1000, 'fast', usageTracker))
+                );
+
+                const validSchemeImages = schemePageImages.filter((_, idx) => geoChecks[idx]?.is_acceptable_quality && geoChecks[idx]?.is_marking_scheme === true);
+
+                if (validSchemeImages.length === 0) {
+                    console.warn(`🛑 [REMARK-REJECTED] Uploaded file(s) failed Marking Scheme validation gate. None of the ${schemePageImages.length} page(s) were recognized as a marking scheme.`);
+                    throw new Error('INVALID_MARKING_SCHEME: The uploaded file is not a valid marking scheme (it looks like a student answer page or non-scheme image). Your existing marks have been kept.');
+                }
+
+                // 🛡️ STRICT VALIDATION GATE 2: Parse the scheme and ensure it contains valid question criteria
+                parsedCustomScheme = await MarkingSchemeParserService.parseImagesToObject(validSchemeImages, usageTracker);
+
+                if (!parsedCustomScheme || !parsedCustomScheme.questions || Object.keys(parsedCustomScheme.questions).length === 0) {
+                    throw new Error('INVALID_MARKING_SCHEME: Could not extract any valid marking scheme criteria from the uploaded file. Your existing marks have been kept.');
+                }
+                if (isAllPdfUploads && remarkPdfCacheKey) {
+                    void MarkingSchemeParserService.cacheSchemeByPdfBuffers(
+                        remarkPdfCacheKey,
+                        parsedCustomScheme,
+                        validSchemeImages.length
+                    );
+                }
+                console.log(`✅ [REMARK-SCHEME] Validated & parsed custom marking scheme with ${Object.keys(parsedCustomScheme.questions).length} question(s).`);
             }
-
-            // 🛡️ STRICT VALIDATION GATE 2: Parse the scheme and ensure it contains valid question criteria
-            const { MarkingSchemeParserService } = await import('./MarkingSchemeParserService.js');
-            parsedCustomScheme = await MarkingSchemeParserService.parseImagesToObject(validSchemeImages, usageTracker);
-
-            if (!parsedCustomScheme || !parsedCustomScheme.questions || Object.keys(parsedCustomScheme.questions).length === 0) {
-                throw new Error('INVALID_MARKING_SCHEME: Could not extract any valid marking scheme criteria from the uploaded file. Your existing marks have been kept.');
-            }
-            console.log(`✅ [REMARK-SCHEME] Validated & parsed custom marking scheme with ${Object.keys(parsedCustomScheme.questions).length} question(s).`);
         }
 
         // --- PATH B: USER SELECTED OFFICIAL PAST PAPER ---

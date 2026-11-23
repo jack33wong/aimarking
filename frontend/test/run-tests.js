@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Test Runner for IntelliMark Frontend Tests
+ * Test Runner for AI Marking Frontend Tests
  * 
  * Usage:
  *   node run-tests.js                    # Run all tests

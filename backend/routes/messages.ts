@@ -17,6 +17,7 @@ import { GuestUsageService } from '../services/guestUsageService.js';
 import SubscriptionService from '../services/subscriptionService.js';
 import { getFirebaseAuth, getFirestore, getUserRole } from '../config/firebase.js';
 import { AdminAlertService, type SessionDigestUploadedFile } from '../services/AdminAlertService.js';
+import { CompletionNotificationService } from '../services/CompletionNotificationService.js';
 import { runWithLogCapture, type CapturedLogResult } from '../utils/RequestLogCapture.js';
 
 const router = express.Router();
@@ -953,6 +954,7 @@ router.post('/', optionalAuth, async (req, res) => {
  */
 router.get('/session/:sessionId', optionalAuth, async (req, res) => {
   try {
+    CompletionNotificationService.sweepExpiredNotifications();
     const { sessionId } = req.params;
 
     const [session, job] = await Promise.all([
@@ -1361,6 +1363,25 @@ router.post('/batch', optionalAuth, async (req, res) => {
       success: false,
       error: 'Failed to save messages'
     });
+  }
+});
+
+/**
+ * POST /messages/session/:sessionId/viewed
+ * Acknowledges that the user has actively viewed a completed session in a visible tab,
+ * cancelling any pending delayed completion notification email.
+ */
+router.post('/session/:sessionId/viewed', optionalAuth, async (req, res) => {
+  try {
+    CompletionNotificationService.sweepExpiredNotifications();
+    const { sessionId } = req.params;
+    if (!sessionId || sessionId.startsWith('temp-')) {
+      return res.json({ success: true, cancelled: false });
+    }
+    const cancelled = CompletionNotificationService.markSessionViewed(sessionId);
+    return res.json({ success: true, cancelled });
+  } catch (error) {
+    return res.json({ success: false, cancelled: false });
   }
 });
 

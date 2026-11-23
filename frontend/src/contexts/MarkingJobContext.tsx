@@ -5,6 +5,8 @@ import './MarkingJobToast.css';
 
 const ACTIVE_JOBS_STORAGE_KEY = 'intellimark_active_jobs_v1';
 const UNREAD_SESSIONS_STORAGE_KEY = 'intellimark_unread_sessions_v1';
+const READY_TAB_TITLE = '✓ Ready · AI Marking';
+const DEFAULT_TAB_TITLE = 'AI Marking | GCSE Maths Past Paper Grading & Feedback';
 const POLL_INTERVAL_MS = 2500;
 const AUTO_DISMISS_MS = 7000;
 const MAX_CONSECUTIVE_POLL_ERRORS = 12;
@@ -146,6 +148,28 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const pollInFlightRef = useRef<Set<string>>(new Set());
   const pollAttemptsRef = useRef<Record<string, number>>({});
   const mountedRef = useRef(true);
+  const previousTabTitleRef = useRef<string | null>(null);
+  const hasReadyTabTitleRef = useRef<boolean>(false);
+  const pendingViewedAckRef = useRef<Set<string>>(new Set());
+
+  const restoreReadyTabTitle = useCallback(() => {
+    if (!hasReadyTabTitleRef.current) return;
+    if (document.title === READY_TAB_TITLE) {
+      document.title = previousTabTitleRef.current || DEFAULT_TAB_TITLE;
+    }
+    previousTabTitleRef.current = null;
+    hasReadyTabTitleRef.current = false;
+  }, []);
+
+  const acknowledgeViewedIfVisible = useCallback((sessionId?: string | null) => {
+    if (!sessionId || sessionId.startsWith('temp-')) return;
+    if (document.hidden || document.visibilityState === 'hidden') {
+      pendingViewedAckRef.current.add(sessionId);
+      return;
+    }
+    pendingViewedAckRef.current.delete(sessionId);
+    void (simpleSessionService as any).acknowledgeSessionViewed?.(sessionId);
+  }, []);
 
   const commitJobs = useCallback((updater: (prev: Record<string, MarkingJob>) => Record<string, MarkingJob>) => {
     setJobsBySessionId(prev => {
@@ -237,6 +261,23 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     delete pollAttemptsRef.current[sessionId];
     const trimmedTitle = typeof title === 'string' ? title.trim() : '';
     const isViewing = isViewingSessionPath(window.location.pathname, sessionId);
+    const isTabHidden = document.hidden || document.visibilityState === 'hidden';
+
+    if (isTabHidden) {
+      if (!hasReadyTabTitleRef.current) {
+        if (document.title !== READY_TAB_TITLE) {
+          previousTabTitleRef.current = document.title;
+        }
+        document.title = READY_TAB_TITLE;
+        hasReadyTabTitleRef.current = true;
+      }
+      if (isViewing && !sessionId.startsWith('temp-')) {
+        pendingViewedAckRef.current.add(sessionId);
+      }
+    } else if (isViewing) {
+      acknowledgeViewedIfVisible(sessionId);
+    }
+
     if (!isViewing && !sessionId.startsWith('temp-')) {
       setUnreadSessionIds(prev => {
         if (prev[sessionId]) return prev;
@@ -264,7 +305,7 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         }
       };
     });
-  }, [clearAutoDismissTimerForSession, clearTimerForSession, commitJobs]);
+  }, [acknowledgeViewedIfVisible, clearAutoDismissTimerForSession, clearTimerForSession, commitJobs]);
 
   const failJob = useCallback((sessionId: string, error?: string) => {
     if (!sessionId) return;
@@ -467,12 +508,13 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     return () => {
       mountedRef.current = false;
+      restoreReadyTabTitle();
       Object.values(pollingTimersRef.current).forEach(clearTimeout);
       pollingTimersRef.current = {};
       Object.values(autoDismissTimersRef.current).forEach(clearTimeout);
       autoDismissTimersRef.current = {};
     };
-  }, [startPollingJob]);
+  }, [restoreReadyTabTitle, startPollingJob]);
 
   // Wakeup listeners for background tab / mobile safari / network reconnect
   useEffect(() => {
@@ -485,21 +527,34 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       });
     };
 
+    const handleTabVisible = () => {
+      restoreReadyTabTitle();
+      const routeSessionId = window.location.pathname.startsWith('/app/')
+        ? window.location.pathname.slice('/app/'.length).split('/')[0]
+        : null;
+      if (routeSessionId && pendingViewedAckRef.current.has(routeSessionId)) {
+        acknowledgeViewedIfVisible(routeSessionId);
+      }
+      wakeUpActivePolls();
+    };
+
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        wakeUpActivePolls();
+        handleTabVisible();
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', restoreReadyTabTitle);
     window.addEventListener('pageshow', wakeUpActivePolls);
     window.addEventListener('online', wakeUpActivePolls);
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', restoreReadyTabTitle);
       window.removeEventListener('pageshow', wakeUpActivePolls);
       window.removeEventListener('online', wakeUpActivePolls);
     };
-  }, [clearTimerForSession, pollOnce]);
+  }, [acknowledgeViewedIfVisible, clearTimerForSession, pollOnce, restoreReadyTabTitle]);
 
   const activeJobs = useMemo(
     () => Object.values(jobsBySessionId).filter(j => j.status === 'processing'),
@@ -545,8 +600,9 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   useEffect(() => {
     if (currentRouteSessionId && unreadSessionIds[currentRouteSessionId]) {
       markSessionRead(currentRouteSessionId);
+      acknowledgeViewedIfVisible(currentRouteSessionId);
     }
-  }, [currentRouteSessionId, unreadSessionIds, markSessionRead]);
+  }, [acknowledgeViewedIfVisible, currentRouteSessionId, unreadSessionIds, markSessionRead]);
 
   const visibleToastJobs = Object.values(jobsBySessionId).filter(job => {
     if (job.sessionId === currentRouteSessionId) {
