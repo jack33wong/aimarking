@@ -59,6 +59,7 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
     hasNewResponse,
     scrollToNewResponse,
     scrollToMessage,
+    cancelStabilization,
     currentSession,
     handleImageAnalysis,
     onAnalyzeMultiImage,
@@ -130,6 +131,7 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
 
   // Synchronization Lock: Prevents circular updates during programmatic navigation
   const isSyncingRef = React.useRef(false);
+  const syncLockTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Reliable Ref Callback to capture the container node
   const setChatContainerRef = React.useCallback((node: HTMLDivElement | null) => {
@@ -199,8 +201,16 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
 
   // Centralized Navigation & Sync Handler
   const navigateToQuestion = React.useCallback((qNum: string | number, imgIdx: number, source: 'ribbon' | 'image' | 'scroll') => {
-    // 1. Set the Lock
-    isSyncingRef.current = true;
+    // 1. Set the Lock ONLY for explicit programmatic chat scrolls (ribbon / image clicks).
+    // Scroll-spy updates (source === 'scroll') do NOT scroll the chat, so locking for 1000ms
+    // would block syncing after an instant history-load jump or rapid scrolling.
+    if (source !== 'scroll') {
+      cancelStabilization?.(`navigate_${source}`);
+      isSyncingRef.current = true;
+      if (syncLockTimerRef.current) {
+        clearTimeout(syncLockTimerRef.current);
+      }
+    }
 
     let targetImgIdx = imgIdx;
 
@@ -270,87 +280,141 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
           }
         }
       }
+
+      // 4. Clear lock after navigation settlement (to allow smooth scroll to finish)
+      syncLockTimerRef.current = setTimeout(() => {
+        isSyncingRef.current = false;
+        syncLockTimerRef.current = null;
+      }, 1000);
     }
+  }, [currentSession, chatMessages, scrollToMessage, cancelStabilization, setActiveQuestionId, setActiveImageIndex, enterSplitMode, groupedQuestions, splitModeImages, activeImageIndex]);
 
-    // 4. Clear lock after navigation settlement (to allow smooth scroll to finish)
-    setTimeout(() => {
-      isSyncingRef.current = false;
-    }, 1000);
-  }, [currentSession, chatMessages, scrollToMessage, setActiveQuestionId, setActiveImageIndex, enterSplitMode, groupedQuestions, splitModeImages, activeImageIndex]);
+  // Refs for scroll-spy so the IntersectionObserver does NOT tear down and re-fire
+  // every time activeQuestionId or activeImageIndex changes (which previously caused ping-pong loops).
+  const activeQuestionIdRef = React.useRef(activeQuestionId);
+  activeQuestionIdRef.current = activeQuestionId;
+  const activeImageIndexRef = React.useRef(activeImageIndex);
+  activeImageIndexRef.current = activeImageIndex;
+  const groupedQuestionsRef = React.useRef(groupedQuestions);
+  groupedQuestionsRef.current = groupedQuestions;
+  const navigateToQuestionRef = React.useRef(navigateToQuestion);
+  navigateToQuestionRef.current = navigateToQuestion;
 
-  // Setup Centralized Scroll-Spy Observer
+  // Setup Centralized Scroll-Spy (reading-line based, immune to tall-bubble/nested-header conflicts)
   useEffect(() => {
     if (!containerElement) return;
 
-    // Cleanup previous observer
+    // Cleanup any legacy observer reference
     if (scrollSpyObserverRef.current) {
       scrollSpyObserverRef.current.disconnect();
+      scrollSpyObserverRef.current = null;
     }
 
-    // Create a NEW observer for the container
-    const observer = new IntersectionObserver((entries) => {
-      // Determine which header or follow-up message is most prominent at the top
-      const visibleHeaders = entries
-        .filter(entry => entry.isIntersecting)
-        .sort((a, b) => {
-          // Get the distance from the top of the container
-          const aTop = a.boundingClientRect.top;
-          const bTop = b.boundingClientRect.top;
-          return aTop - bTop;
-        });
+    let rafId: number | null = null;
 
-      if (visibleHeaders.length > 0) {
-        const topHeader = visibleHeaders[0];
-        const targetEl = topHeader.target as HTMLElement;
-        const qId = targetEl.id;
-        const contextQ = targetEl.getAttribute('data-context-question-id');
-        const qNum = qId && qId.startsWith('question-')
-          ? qId.replace('question-', '')
-          : (contextQ || '');
+    const evaluateActiveQuestion = () => {
+      rafId = null;
+      if (isSyncingRef.current) {
+        return;
+      }
 
-        if (qNum) {
-          // 1. Check ID change (Idempotency)
-          if (String(qNum).toLowerCase() === String(activeQuestionId).toLowerCase()) {
-            return;
-          }
+      const containerRect = containerElement.getBoundingClientRect();
+      // Reading line near top of chat container (just below header / bubble padding)
+      const readingLine = containerRect.top + 140;
+      const visibleBottom = containerRect.top + containerRect.height * 0.45;
 
-          // 2. Check Lock (Sync Safety)
-          if (isSyncingRef.current) {
-            return;
-          }
+      // Collect all question anchors:
+      // 1. Specific question headers (`[id^="question-"]`)
+      // 2. Outer message bubbles (`[data-context-question-id]`) ONLY if they do NOT contain
+      //    internal `[id^="question-"]` headers (prevents an outer `data-context-question-id="2"`
+      //    wrapper on a multi-question "explain q2 and q3" reply from overriding `#question-3`).
+      const rawElements = Array.from(
+        containerElement.querySelectorAll<HTMLElement>('[id^="question-"], [data-context-question-id]')
+      );
+      const anchors = rawElements.filter(el => {
+        if (el.id && el.id.startsWith('question-')) return true;
+        if (el.hasAttribute('data-context-question-id')) {
+          return !el.querySelector('[id^="question-"]');
+        }
+        return false;
+      });
 
-          // Find associated image index
-          const match = groupedQuestions.find(g => String(g.questionNumber).toLowerCase() === qNum.toLowerCase());
-          const imgIdx = match ? match.sourceImageIndex : activeImageIndex;
+      if (anchors.length === 0) return;
 
-          navigateToQuestion(qNum, imgIdx, 'scroll');
+      let chosenEl: HTMLElement | null = null;
+      let chosenTop = -Infinity;
+
+      // Standard TOC scroll-spy: pick the LAST anchor whose top has passed above readingLine
+      for (const el of anchors) {
+        const top = el.getBoundingClientRect().top;
+        if (top <= readingLine && top >= chosenTop) {
+          chosenTop = top;
+          chosenEl = el;
         }
       }
-    }, {
-      root: containerElement,
-      rootMargin: '-110px 0px -60% 0px', // Adjusted margin to account for header height
-      threshold: 0
-    });
 
-    scrollSpyObserverRef.current = observer;
+      // Fallback when at very top of chat (no anchor above readingLine yet):
+      // pick the first anchor visible in the upper portion of the viewport.
+      if (!chosenEl) {
+        let earliestTop = Infinity;
+        for (const el of anchors) {
+          const top = el.getBoundingClientRect().top;
+          if (top > readingLine && top <= visibleBottom && top < earliestTop) {
+            earliestTop = top;
+            chosenEl = el;
+          }
+        }
+      }
 
-    // We need to observe all elements with id="question-*" and follow-up messages with data-context-question-id
-    const updateObservations = () => {
-      const questionElements = containerElement.querySelectorAll('[id^="question-"], [data-context-question-id]');
-      questionElements.forEach(el => observer.observe(el));
+      if (!chosenEl) return;
+
+      const qId = chosenEl.id;
+      const contextQ = chosenEl.getAttribute('data-context-question-id');
+      const rawQNum = qId && qId.startsWith('question-')
+        ? qId.replace('question-', '')
+        : (contextQ || '');
+
+      if (!rawQNum) return;
+
+      // Match against groupedQuestions (exact first, then base numeric question e.g. "2a" -> "2")
+      const normalizedRaw = rawQNum.toLowerCase();
+      const baseNum = normalizedRaw.replace(/^(\d+).*/, '$1');
+      const match =
+        groupedQuestionsRef.current.find(
+          g => String(g.questionNumber).toLowerCase() === normalizedRaw
+        ) ||
+        groupedQuestionsRef.current.find(
+          g => String(g.questionNumber).toLowerCase() === baseNum
+        );
+
+      const resolvedQNum = match ? String(match.questionNumber) : rawQNum;
+
+      if (resolvedQNum.toLowerCase() === String(activeQuestionIdRef.current || '').toLowerCase()) {
+        return;
+      }
+
+      const imgIdx = match ? match.sourceImageIndex : activeImageIndexRef.current;
+      navigateToQuestionRef.current(resolvedQNum, imgIdx, 'scroll');
     };
 
-    updateObservations();
+    const scheduleEvaluate = () => {
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(evaluateActiveQuestion);
+    };
 
-    // Also re-observe on message changes
-    const mutationObserver = new MutationObserver(updateObservations);
+    containerElement.addEventListener('scroll', scheduleEvaluate, { passive: true });
+    scheduleEvaluate();
+
+    // Re-evaluate when new messages/headers render or images expand
+    const mutationObserver = new MutationObserver(scheduleEvaluate);
     mutationObserver.observe(containerElement, { childList: true, subtree: true });
 
     return () => {
-      observer.disconnect();
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      containerElement.removeEventListener('scroll', scheduleEvaluate);
       mutationObserver.disconnect();
     };
-  }, [containerElement, chatMessages, groupedQuestions, activeImageIndex, navigateToQuestion, activeQuestionId]);
+  }, [containerElement, currentSession?.id]);
 
   // NOTE: All reactive effects for syncing between activeQuestionId and activeImageIndex have been REMOVED.
 
@@ -590,16 +654,26 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
   }, [activeQuestionId, activeImageIndex, splitModeImages, groupedQuestions, sortQuestionsByMistakePriority]);
 
   // Lock Scroll-Spy during active processing/AI thinking (and briefly after) so auto-scrolling to a new follow-up message never hijacks activeQuestionId or activeImageIndex
+  const prevSyncSessionIdRef = useRef<string | null>(currentSession?.id || null);
   useEffect(() => {
+    const sessionChanged = (currentSession?.id || null) !== prevSyncSessionIdRef.current;
+    prevSyncSessionIdRef.current = currentSession?.id || null;
+
     if (isProcessing || isAIThinking) {
       isSyncingRef.current = true;
+      return;
+    }
+    if (sessionChanged) {
+      // Switching to a completed historical session should immediately allow scroll-spy
+      // to sync ribbon & image viewer with the landed assistant bubble.
+      isSyncingRef.current = false;
       return;
     }
     const timer = setTimeout(() => {
       isSyncingRef.current = false;
     }, 1000);
     return () => clearTimeout(timer);
-  }, [isProcessing, isAIThinking]);
+  }, [isProcessing, isAIThinking, currentSession?.id]);
 
   const handleViewerSendFollowUp = useCallback(async (rawText: string, questionNumber?: string | null) => {
     const trimmed = rawText.trim();
@@ -897,11 +971,11 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
                   key={`${currentSession?.id || 'no-session'}-${msg.id}`}
                   message={msg}
                   onImageLoad={() => {
-                    const lastUserMsg = [...(chatMessages || [])].reverse().find(m => m.role === 'user');
-                    if (msg.id === lastUserMsg?.id) {
-                      if (msg.role === 'user') {
-                        scrollToMessage(msg.id, { behavior: 'smooth', block: 'start' });
-                      }
+                    // Only align to a freshly uploaded user message while actively processing/waiting
+                    // and before any assistant bubble exists after it. Never hijack scroll on history load.
+                    const lastMsg = (chatMessages || [])[(chatMessages || []).length - 1];
+                    if ((isProcessing || isAIThinking) && msg.role === 'user' && msg.id === lastMsg?.id) {
+                      scrollToMessage(msg.id, { behavior: 'smooth', block: 'start' });
                     }
                   }}
                   getImageSrc={getImageSrc}

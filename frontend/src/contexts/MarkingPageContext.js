@@ -768,12 +768,15 @@ export const MarkingPageProvider = ({
 
   const {
     chatContainerRef,
+    chatContainerElement,
     showScrollButton,
     hasNewResponse,
     scrollToBottom,
     scrollToNewResponse,
     scrollToMessage,
-  } = useScrollManager(chatMessages, isCurrentSessionThinking);
+    focusMessageWithStabilization,
+    cancelStabilization,
+  } = useScrollManager(chatMessages, isCurrentSessionThinking, currentSession?.id || null);
 
   // This effect connects the service to the API state controls from our hook.
   useEffect(() => {
@@ -1282,44 +1285,92 @@ export const MarkingPageProvider = ({
 
   useEffect(() => {
     const expectedSessionId = routeSessionId || selectedMarkingResult?.id;
-    if (expectedSessionId && currentSession?.id === expectedSessionId) {
-      // Only trigger this "restore position" logic when the session ID actually changes (initial load)
-      // OR if it's the very first time we see this session.
-      if (lastHandledSessionIdRef.current === currentSession.id) {
-        return;
-      }
-      lastHandledSessionIdRef.current = currentSession.id;
-
-      const isSessionActivelyProcessing = Boolean(
-        isCurrentSessionProcessing ||
-        isCurrentSessionThinking ||
-        (currentSession.messages || []).some(m => m.isProcessing)
-      );
-
-      const timeoutId = setTimeout(() => {
-        const reversedMsgs = [...(currentSession.messages || [])].reverse();
-        const processingAssistantMessage = reversedMsgs.find(m => m.role === 'assistant' && m.isProcessing);
-        const lastUserMessage = reversedMsgs.find(m => m.role === 'user');
-        if (isSessionActivelyProcessing) {
-          // During active marking submission, focus on the AI assistant processing bubble
-          // (never scrollToBottom into the 60vh spacer, and never stay stuck at top: 0).
-          const targetMsg = processingAssistantMessage || lastUserMessage;
-          if (targetMsg) {
-            scrollToMessage(targetMsg.id, { behavior: 'smooth', block: 'start' });
-          }
-          return;
-        }
-        if (lastUserMessage) {
-          // Completed historical session: scroll to bottom to show the latest result.
-          scrollToBottom();
-        } else {
-          scrollToBottom();
-        }
-      }, 150);
-      return () => clearTimeout(timeoutId);
+    if (!expectedSessionId) {
+      lastHandledSessionIdRef.current = null;
+      return;
     }
+    if (isHistoryLoading) {
+      // User explicitly clicked a history item (possibly even the currently open session):
+      // clear lastHandledSessionIdRef so we always re-focus the last assistant bubble once loaded.
+      lastHandledSessionIdRef.current = null;
+      return;
+    }
+    if (currentSession?.id !== expectedSessionId) {
+      return;
+    }
+    if (lastHandledSessionIdRef.current === currentSession.id) {
+      return;
+    }
+
+    const sessionMsgs = (currentSession.messages && currentSession.messages.length > 0)
+      ? currentSession.messages
+      : (chatMessages || []);
+    if (sessionMsgs.length === 0) {
+      return;
+    }
+
+    const isSessionActivelyProcessing = Boolean(
+      isCurrentSessionProcessing ||
+      isCurrentSessionThinking ||
+      sessionMsgs.some(m => m.isProcessing)
+    );
+
+    const reversedMsgs = [...sessionMsgs].reverse();
+    const processingAssistantMessage = reversedMsgs.find(m => m.role === 'assistant' && m.isProcessing);
+    const lastAssistantMessage = reversedMsgs.find(m => m.role === 'assistant');
+    const lastUserMessage = reversedMsgs.find(m => m.role === 'user');
+
+    const targetMsg = isSessionActivelyProcessing
+      ? (processingAssistantMessage || lastUserMessage)
+      : (lastAssistantMessage || reversedMsgs[0]);
+
+    if (!targetMsg) {
+      return;
+    }
+
+    let cancelled = false;
+    let rafId1 = null;
+    let rafId2 = null;
+
+    const attemptFocus = () => {
+      if (cancelled) return false;
+      const didScroll = isSessionActivelyProcessing
+        ? scrollToMessage(targetMsg.id, { behavior: 'smooth', block: 'start' })
+        : (typeof focusMessageWithStabilization === 'function'
+            ? focusMessageWithStabilization(targetMsg.id, { behavior: 'auto', block: 'start', stabilizeMs: 1200 })
+            : scrollToMessage(targetMsg.id, { behavior: 'auto', block: 'start' }));
+
+      if (didScroll) {
+        lastHandledSessionIdRef.current = currentSession.id;
+        return true;
+      }
+      return false;
+    };
+
+    // Wait for React commit + layout paint (and split-view transition) before instant jump
+    rafId1 = requestAnimationFrame(() => {
+      if (attemptFocus()) return;
+      rafId2 = requestAnimationFrame(() => {
+        attemptFocus();
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      if (rafId1 !== null) cancelAnimationFrame(rafId1);
+      if (rafId2 !== null) cancelAnimationFrame(rafId2);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentSession?.id, selectedMarkingResult, routeSessionId, scrollToMessage, scrollToBottom]);
+  }, [
+    currentSession?.id,
+    chatMessages.length,
+    chatContainerElement,
+    isHistoryLoading,
+    selectedMarkingResult,
+    routeSessionId,
+    focusMessageWithStabilization,
+    scrollToMessage,
+  ]);
 
   const handleImageAnalysis = useCallback(async (file = null, customText = null) => {
     const targetFile = file || selectedFile;
@@ -2295,6 +2346,7 @@ export const MarkingPageProvider = ({
     hasNewResponse,
     scrollToNewResponse,
     scrollToMessage,
+    cancelStabilization,
     onFollowUpImage: handleImageAnalysis,
     onAnalyzeMultiImage: handleMultiImageAnalysis,
     onFollowUpMultiImage: handleMultiImageAnalysis,
@@ -2334,7 +2386,7 @@ export const MarkingPageProvider = ({
     onFavoriteToggle, onRatingChange, onTitleUpdate, setHoveredRating, onToggleInfoDropdown, isCurrentSessionProcessing, isCurrentSessionThinking, error,
     onSendMessage, addMessage, chatContainerRef,
     isHistoryLoading,
-    scrollToBottom, showScrollButton, hasNewResponse, scrollToNewResponse, scrollToMessage,
+    scrollToBottom, showScrollButton, hasNewResponse, scrollToNewResponse, scrollToMessage, cancelStabilization,
     handleMultiImageAnalysis, attachMarkingSchemeAndRetry, gradeWithGeneralRubric, markPaperAnyway, retryFailedUpload, startMarkingFromPreCheck, gradeSelectedPaperGroup, remarkWithOfficialPaper, progressProps, getImageSrc, startAIThinking,
     splitModeImages, activeImageIndex, enterSplitMode, exitSplitMode, setActiveImageIndex,
     activeQuestionId, setActiveQuestionId, isQuestionTableVisible, setQuestionTableVisibility,
