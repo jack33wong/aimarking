@@ -1649,23 +1649,27 @@ export class SVGOverlayService {
     const underlineY2 = textY + underlineOffset + underlineSpacing;
 
     // Optional teacher-style red handwritten grade stamp on Meta / Front Cover page for past papers
+    // Stacked right-aligned directly below the double-underlined total score so it never collides
+    // with centered exam board logos (e.g. Cambridge, Edexcel, AQA, OCR).
     const cleanGrade = typeof gradeText === 'string' ? gradeText.trim() : '';
     const shouldDrawGrade = Boolean(!isTopLeft && hasMetaPage && cleanGrade && cleanGrade !== 'N/A' && cleanGrade !== 'Partial Paper');
     let gradeSvg = '';
     let groupLeftX = underlineStartX;
+    let totalHeight = fontSize + underlineOffset + underlineSpacing + strokeWidth;
 
     if (shouldDrawGrade) {
       const isNumericGrade = /^\d+(\.\d+)?$/.test(cleanGrade);
       const gradeDisplay = isNumericGrade ? `Grade ${cleanGrade}` : cleanGrade;
       const gradeFontSize = isNumericGrade
-        ? fontSize
-        : Math.max(fontSize, Math.round(fontSize * 1.18));
-      const gradeGap = Math.max(16, Math.round(fontSize * 0.55));
-      const gradeX = underlineStartX - gradeGap;
+        ? Math.max(12, Math.round(fontSize * 0.92))
+        : Math.max(fontSize, Math.round(fontSize * 1.15));
+      const verticalGap = Math.max(10, Math.round(fontSize * 0.28));
+      const gradeY = underlineY2 + verticalGap + gradeFontSize;
       const estimatedGradeWidth = this.estimateTextWidth(gradeDisplay, gradeFontSize);
-      groupLeftX = Math.max(8, gradeX - estimatedGradeWidth);
+      groupLeftX = Math.min(underlineStartX, Math.max(8, textX - estimatedGradeWidth));
+      totalHeight = (gradeY - marginTop) + Math.round(gradeFontSize * 0.15);
 
-      gradeSvg = `<text x="${gradeX}" y="${textY}" text-anchor="end" dominant-baseline="baseline" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${gradeFontSize}" font-weight="bold">${this.escapeXml(gradeDisplay)}</text>`;
+      gradeSvg = `<text x="${textX}" y="${gradeY}" text-anchor="end" dominant-baseline="baseline" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${gradeFontSize}" font-weight="bold">${this.escapeXml(gradeDisplay)}</text>`;
     }
 
     if (occupiedRects) {
@@ -1673,12 +1677,12 @@ export class SVGOverlayService {
         x: groupLeftX,
         y: marginTop,
         w: underlineEndX - groupLeftX,
-        h: fontSize + underlineOffset + underlineSpacing + strokeWidth
+        h: totalHeight
       });
     }
 
     const pivotX = Math.round((groupLeftX + underlineEndX) / 2);
-    const pivotY = Math.round(marginTop + fontSize * 0.5);
+    const pivotY = Math.round(marginTop + totalHeight * 0.5);
 
     const text = `<text x="${textX}" y="${textY}" text-anchor="${textAnchor}" dominant-baseline="baseline" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${fontSize}" font-weight="bold">${this.escapeXml(totalScoreText)}</text>`;
     const underline1 = `<line x1="${underlineStartX}" y1="${underlineY1}" x2="${underlineEndX}" y2="${underlineY1}" stroke="#ff0000" stroke-width="${strokeWidth}" opacity="0.9"/>`;

@@ -26,7 +26,7 @@ export class MarkingOutputService {
         allPagesOcrData: PageOcrResult[],
         files: Express.Multer.File[],
         submissionId: string,
-        options: { userId?: string; scopeLabel?: string; gradeText?: string },
+        options: { userId?: string; scopeLabel?: string; gradeText?: string; gradeTextPromise?: Promise<string | undefined> },
         markingSchemesMap: Map<string, any>,
         progressCallback: (data: any) => void,
         MULTI_IMAGE_STEPS: string[]
@@ -84,7 +84,9 @@ export class MarkingOutputService {
 
             const mapperCategory = allClassificationResults.find(c => c.pageIndex === pageIndex)?.result?.category;
             const hasMetaPage = mapperCategory === 'metadata' || mapperCategory === 'frontPage' || pageQuestions.length === 0;
-            const gradeToDraw = (isFirstOutputPage && hasMetaPage) ? options.gradeText : undefined;
+            const gradeToDraw = (isFirstOutputPage && hasMetaPage)
+                ? (options.gradeText ?? (options.gradeTextPromise ? await options.gradeTextPromise : undefined))
+                : undefined;
 
             // [RESOLUTION-SYNC] Synchronize burn dimensions
             const burnW = page.width;
