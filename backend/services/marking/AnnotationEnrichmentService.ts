@@ -30,10 +30,12 @@ const areMarkCodesEquivalent = (tickCode: string, crossCode: string): boolean =>
     return false;
 };
 
-// Logic: Hide Crosses ONLY if a Tick of the SAME CODE exists on the same line
+// Logic: Hide Crosses ONLY if a Tick of the SAME CODE exists on the same line,
+// while preserving partial-credit 0-mark crosses (e.g. ✓ B1 + ✗ B0 on a 2-mark single-line answer)
+// that carry distinct constructive error reasoning for the student.
 const applyPositiveDominance = (annotations: EnrichedAnnotation[]): EnrichedAnnotation[] => {
     // 1. Map lines to their Awarded Marks (Ticks)
-    const lineTicksMap = new Map<string, string[]>();
+    const lineTicksMap = new Map<string, Array<{ code: string; reasoning: string }>>();
 
     annotations.forEach(anno => {
         // Use linked_ocr_id as it is already resolved in the enriched loop
@@ -43,7 +45,8 @@ const applyPositiveDominance = (annotations: EnrichedAnnotation[]): EnrichedAnno
                 lineTicksMap.set(lineId, []);
             }
             const markText = anno.text || anno.classification_text || "";
-            lineTicksMap.get(lineId)?.push(markText);
+            const tickReason = String((anno as any).reasoning || '').trim().toLowerCase();
+            lineTicksMap.get(lineId)?.push({ code: markText, reasoning: tickReason });
         }
     });
 
@@ -55,14 +58,29 @@ const applyPositiveDominance = (annotations: EnrichedAnnotation[]): EnrichedAnno
             const ticksOnThisLine = lineTicksMap.get(lineId);
 
             if (ticksOnThisLine) {
-                // Check if ANY tick on this line is "Equivalent" to this cross
-                const hasDominantTick = ticksOnThisLine.some(tickCode =>
-                    areMarkCodesEquivalent(tickCode, markText)
+                const crossReason = String((anno as any).reasoning || '').trim().toLowerCase();
+
+                // Always hide strict contradictions (e.g. ✓ B1 and ✗ B1 on the same line)
+                const hasStrictDuplicate = ticksOnThisLine.some(t => t.code === markText);
+                if (hasStrictDuplicate) {
+                    return false;
+                }
+
+                // For 0-mark crosses of the same mark family (e.g. ✓ B1 + ✗ B0 on the same line):
+                // keep the cross when it provides distinct error feedback (partial credit on a single line),
+                // and only hide redundant crosses with empty or identical reasoning.
+                const hasEquivalentTick = ticksOnThisLine.some(t =>
+                    areMarkCodesEquivalent(t.code, markText)
                 );
 
-                if (hasDominantTick) {
-                    // HIDE THIS CROSS (Positive Dominance)
-                    return false;
+                if (hasEquivalentTick) {
+                    const hasDistinctFeedback =
+                        crossReason.length > 0 &&
+                        !ticksOnThisLine.some(t => t.reasoning === crossReason);
+                    if (!hasDistinctFeedback) {
+                        // HIDE THIS CROSS (Positive Dominance)
+                        return false;
+                    }
                 }
             }
         }
@@ -353,8 +371,9 @@ export const enrichAnnotationsWithPositions = (
 
         // 🎨 [DIAGRAM-ANCHORING]: For ocr_match_status: 'VISUAL', ALWAYS anchor to the diagram bounding box
         // ([DRAWING] / visual_drawing / [VISUAL WORKSPACE]) rather than nearby arithmetic working.
+        // Never hijack neutral `not_attempted` pills onto another sub-question's diagram!
         let resolvedDiagramBlock: any = null;
-        if (status === 'VISUAL') {
+        if (status === 'VISUAL' && !isNotAttempted) {
             if (isDrawingPointer && linkedOcrBlock?.bbox) {
                 resolvedDiagramBlock = linkedOcrBlock;
             } else {

@@ -322,7 +322,10 @@ export class MarkingSchemeOrchestrationService {
       }
     }
 
-    const failFastMinChecks = Math.max(5, Math.ceil(totalNonEmptyGroups / 2));
+    // Cap Global Search fail-fast at 6 consecutive non-empty misses (min 5) so any non-DB paper
+    // (practice papers, shadow sets, custom worksheets) exits cleanly into Generic Rubric Mode
+    // without wasting ~10-15s scanning every remaining question sequentially.
+    const failFastMinChecks = Math.min(6, Math.max(5, Math.ceil(totalNonEmptyGroups / 2)));
     let checkedNonEmptyGroups = 0;
     let matchedGroupsCount = 0;
     let sawGlobalSearch = false;

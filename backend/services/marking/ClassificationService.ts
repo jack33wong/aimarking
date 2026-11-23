@@ -1478,19 +1478,25 @@ ${pageHints}
         }
 
         let p = line.position;
-        const isLargeScale = p && (
-          (p.x > 120 || p.y > 120) ||
-          (p.width > 200 || p.height > 200) ||
-          (p.x > 100 && p.y > 100)
-        );
+        if (p && typeof p === 'object') {
+          const px = Number(p.x);
+          const py = Number(p.y);
+          const pw = Number(p.width);
+          const ph = Number(p.height);
 
-        if (isLargeScale) {
-          line.position = {
-            x: p.x / 10,
-            y: p.y / 10,
-            width: p.width / 10,
-            height: p.height / 10
-          };
+          // Normalize per-axis so mixed-scale LLM outputs (e.g. x/width in 0-100 and y/height in 0-1000,
+          // or vice versa) never shrink an already-percentage axis by 10x.
+          const isHorizLarge = px > 100 || pw > 100 || (px + pw) > 105;
+          const isVertLarge = py > 100 || ph > 100 || (py + ph) > 105;
+
+          if (isHorizLarge || isVertLarge) {
+            line.position = {
+              x: isHorizLarge ? px / 10 : px,
+              y: isVertLarge ? py / 10 : py,
+              width: isHorizLarge ? pw / 10 : pw,
+              height: isVertLarge ? ph / 10 : ph
+            };
+          }
         }
 
         // [DEBUG] Drawing check
@@ -1506,11 +1512,15 @@ ${pageHints}
         let width = typeof pos.width === 'number' ? pos.width : parseFloat(pos.width);
         let height = typeof pos.height === 'number' ? pos.height : parseFloat(pos.height);
 
-        // Normalize if on 0-1000 scale
-        if (x > 100 || y > 100 || width > 100 || height > 100) {
+        // Normalize per-axis if on 0-1000 scale
+        const isHorizLarge = x > 100 || width > 100 || (x + width) > 105;
+        const isVertLarge = y > 100 || height > 100 || (y + height) > 105;
+        if (isHorizLarge) {
           x /= 10;
-          y /= 10;
           width /= 10;
+        }
+        if (isVertLarge) {
+          y /= 10;
           height /= 10;
         }
 

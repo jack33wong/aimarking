@@ -356,14 +356,14 @@ export class SVGOverlayService {
         if ((deferredCountBySubQ.get(normSub) || 0) !== 1) return;
 
         const matchingZone = flatZones.length > 0
-          ? flatZones.find(z => {
-              const zLabel = String(z.label || '').toLowerCase().replace(/\s+/g, '');
-              return zLabel === normSub || zLabel.endsWith(normSub) || normSub.endsWith(zLabel);
-            })
+          ? (flatZones.find(z => String(z.label || '').toLowerCase().replace(/\s+/g, '') === normSub) ||
+             flatZones.find(z => {
+               const zLabel = String(z.label || '').toLowerCase().replace(/\s+/g, '');
+               return zLabel.length > 0 && (zLabel.endsWith(normSub) || normSub.endsWith(zLabel));
+             }))
           : undefined;
 
         if (!Array.isArray(allPageStudentRects) || allPageStudentRects.length === 0) return;
-        const sourceRects = allPageStudentRects;
 
         const nextSymY = allSymbolRects
           .filter(r => r.y > item.symbolRect.y + 4)
@@ -371,11 +371,27 @@ export class SVGOverlayService {
         const zoneTop = matchingZone ? matchingZone.startY - 15 * fontScaleFactor : item.studentRect.y - 10 * fontScaleFactor;
         const zoneBottom = matchingZone ? Math.min(matchingZone.endY + 25 * fontScaleFactor, nextSymY) : nextSymY;
 
+        // Only expand studentRect through vertically contiguous lines of the SAME answer.
+        // Stop immediately on any gap larger than ~1.5-2 handwriting lines so we never bridge
+        // across printed prompts/diagrams into the next sub-question (e.g. Q15a -> Q15b, Q20b -> Q20c).
+        const maxContiguousLineGap = Math.round(95 * fontScaleFactor);
+        const maxExpandedBottomY = Math.min(zoneBottom, item.symbolRect.y + Math.round(300 * fontScaleFactor));
         let maxSubQuestionLineBottomY = item.studentRect.y + item.studentRect.h;
-        for (const sw of sourceRects) {
-          const swCenterY = sw.y + sw.h / 2;
-          if (swCenterY >= zoneTop && swCenterY <= zoneBottom && sw.y + sw.h > maxSubQuestionLineBottomY) {
-            maxSubQuestionLineBottomY = sw.y + sw.h;
+
+        const sortedRects = allPageStudentRects
+          .filter(sw => {
+            const swCenterY = sw.y + sw.h / 2;
+            return swCenterY >= zoneTop && swCenterY <= maxExpandedBottomY && sw.y + sw.h > maxSubQuestionLineBottomY;
+          })
+          .sort((a, b) => a.y - b.y);
+
+        for (const sw of sortedRects) {
+          if (sw.y <= maxSubQuestionLineBottomY + maxContiguousLineGap) {
+            if (sw.y + sw.h > maxSubQuestionLineBottomY) {
+              maxSubQuestionLineBottomY = sw.y + sw.h;
+            }
+          } else {
+            break;
           }
         }
 
@@ -1044,10 +1060,12 @@ export class SVGOverlayService {
     let zoneMaxY = Math.min(maxBottomY, symbolRect.y + Math.round(220 * fontScaleFactor));
     if (subQuestion && flatZones.length > 0) {
       const normSub = String(subQuestion).toLowerCase().replace(/\s+/g, '');
-      const matchingZone = flatZones.find(z => {
-        const zLabel = String(z.label || '').toLowerCase().replace(/\s+/g, '');
-        return zLabel === normSub || zLabel.endsWith(normSub) || normSub.endsWith(zLabel);
-      });
+      const matchingZone =
+        flatZones.find(z => String(z.label || '').toLowerCase().replace(/\s+/g, '') === normSub) ||
+        flatZones.find(z => {
+          const zLabel = String(z.label || '').toLowerCase().replace(/\s+/g, '');
+          return zLabel.length > 0 && (zLabel.endsWith(normSub) || normSub.endsWith(zLabel));
+        });
       if (matchingZone && matchingZone.endY - matchingZone.startY > 100 * fontScaleFactor) {
         zoneMinY = Math.max(edgeMargin, matchingZone.startY + 10 * fontScaleFactor);
         zoneMaxY = Math.min(maxBottomY, matchingZone.endY + Math.round(60 * fontScaleFactor));
