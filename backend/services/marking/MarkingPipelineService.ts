@@ -6445,6 +6445,26 @@ export class MarkingPipelineService {
                 }
             })();
 
+            // If official DB boundaries weren't found for this past paper (e.g., 2026 or user-attached mark scheme),
+            // let ONLY the Meta/Front Cover page await the AI-estimated grade from precomputedPerformanceSummaryPromise
+            // while all question pages continue burning in parallel.
+            const metaPageGradeTextPromise: Promise<string | undefined> | undefined =
+                !metaPageGradeText && isRealPastPaperForOutput && !isModifiedPaperForOutput
+                    ? precomputedPerformanceSummaryPromise
+                        .then(({ summary }) => {
+                            if (typeof summary !== 'string' || !summary.trim().startsWith('{')) return undefined;
+                            try {
+                                const parsed = JSON.parse(summary);
+                                const g = parsed?.grading?.grade;
+                                if (typeof g === 'string' && g.trim() && g !== 'N/A' && g !== 'Partial Paper') {
+                                    return g.trim();
+                                }
+                            } catch {}
+                            return undefined;
+                        })
+                        .catch(() => undefined)
+                    : undefined;
+
             const {
                 finalAnnotatedOutput,
                 overallScore,
@@ -6460,7 +6480,7 @@ export class MarkingPipelineService {
                 allPagesOcrData,
                 files,
                 submissionId,
-                { ...options, scopeLabel: markingScope?.label, gradeText: metaPageGradeText },
+                { ...options, scopeLabel: markingScope?.label, gradeText: metaPageGradeText, gradeTextPromise: metaPageGradeTextPromise },
                 markingSchemesMap,
                 progressCallback,
                 MULTI_IMAGE_STEPS
@@ -6740,7 +6760,10 @@ export class MarkingPipelineService {
         usageTracker: UsageTracker
     ): Promise<any> {
         const startTime = Date.now();
-        console.log(`🚀 [REMARK-PIPELINE] Starting re-marking for session ${options.sessionId} | paper="${options.paperTitle || 'N/A'}" | question="${options.questionNumber || 'ALL'}" | schemeFiles=${options.uploadedSchemeFiles?.length || 0}`);
+        const schemeFileSummary = Array.isArray(options.uploadedSchemeFiles) && options.uploadedSchemeFiles.length > 0
+            ? options.uploadedSchemeFiles.map(f => `${f.originalName || 'unnamed'} (${f.mimeType || 'unknown'})`).join(', ')
+            : 'none';
+        console.log(`🚀 [REMARK-PIPELINE] Starting re-marking for session ${options.sessionId} | paper="${options.paperTitle || 'N/A'}" | question="${options.questionNumber || 'ALL'}" | schemeFiles=${options.uploadedSchemeFiles?.length || 0} [${schemeFileSummary}]`);
 
         // 1. Load Cache (loading_cache)
         progressCallback(createProgressData(0, 'Loading cached student work...', REMARK_STEPS));
@@ -6842,10 +6865,20 @@ export class MarkingPipelineService {
             for (const f of options.uploadedSchemeFiles) {
                 const rawB64 = f.base64Data.includes(',') ? f.base64Data.split(',')[1] : f.base64Data;
                 const buf = Buffer.from(rawB64, 'base64');
-                if (f.mimeType === 'application/pdf' || f.originalName?.toLowerCase().endsWith('.pdf')) {
+                const isPdfHeader = buf.length >= 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46;
+                if (isPdfHeader || f.mimeType === 'application/pdf' || f.originalName?.toLowerCase().endsWith('.pdf')) {
+                    if (!isPdfHeader) {
+                        console.warn(`🛑 [REMARK-REJECTED] Uploaded file "${f.originalName || 'file'}" declared as PDF but lacks valid %PDF header.`);
+                        throw new Error(`UNSUPPORTED_SCHEME_FORMAT: Could not read "${f.originalName || 'uploaded file'}" as a valid PDF. Please upload a standard PDF, JPG, PNG, or WebP file. Your existing marks have been kept.`);
+                    }
                     const pdfPages = await PdfProcessingService.convertPdfToImages(buf, { maxPages: 30 });
                     pdfPages.forEach(p => schemePageImages.push(p.imageData));
                 } else {
+                    const probed = await ImageUtils.probeImageBuffer(buf);
+                    if (!probed) {
+                        console.warn(`🛑 [REMARK-REJECTED] Uploaded scheme file "${f.originalName || 'file'}" (mime=${f.mimeType || 'unknown'}, bytes=${buf.length}) is not a decodable image format.`);
+                        throw new Error(`UNSUPPORTED_SCHEME_FORMAT: Could not read "${f.originalName || 'uploaded file'}" — unsupported or corrupted image format. Please upload a standard PDF, JPG, PNG, or WebP file. Your existing marks have been kept.`);
+                    }
                     const normImg = await ImageUtils.normalizeOrientation(
                         f.base64Data.startsWith('data:') ? f.base64Data : `data:${f.mimeType || 'image/jpeg'};base64,${rawB64}`
                     );

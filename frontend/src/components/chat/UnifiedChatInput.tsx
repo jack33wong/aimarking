@@ -22,6 +22,7 @@ import { FileHandoff } from './FileHandoff';
 import { useTelemetry } from '../../hooks/useTelemetry';
 import { trackFunnelEvent, getLatestPreInspectSessionId, setLatestPreInspectSessionId } from '../../utils/funnelTracker';
 import { getLandingExamContext, clearLandingExamContext } from '../../utils/landingContext';
+import { validateSupportedUploadFiles } from '../../utils/fileUtils';
 import {
   preInspectUploadedFiles,
   recomputePreInspectFromSummaries,
@@ -725,10 +726,17 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
 
   const isSupportedAttachmentFile = (file: File): boolean => {
     if (!file) return false;
-    if (file.type && (file.type.startsWith('image/') || file.type === 'application/pdf')) {
+    const mime = (file.type || '').toLowerCase();
+    if (
+      mime === 'image/jpeg' ||
+      mime === 'image/jpg' ||
+      mime === 'image/png' ||
+      mime === 'image/webp' ||
+      mime === 'application/pdf'
+    ) {
       return true;
     }
-    return /\.(?:jpe?g|png|webp|gif|bmp|heic|heif|tiff?|pdf)$/i.test(file.name || '');
+    return /\.(?:jpe?g|png|webp|pdf)$/i.test(file.name || '');
   };
 
   const LOCAL_FILE_PATH_REGEX =
@@ -766,6 +774,9 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     // Block file selection while processing
     if (isProcessing) return;
 
+    // 0. Strict client-side format & magic-byte validation (blocks HEIC/BMP/SVG/DOCX/corrupt files before upload)
+    const { validFiles: validatedFiles, errorMessage: formatWarningMsg } = await validateSupportedUploadFiles(newFiles);
+
     // 1. Pre-deduplicate against existing files AND within the newly selected batch using original file name + original size
     const existingFiles: File[] = [...imageFiles, ...(imageFile ? [imageFile] : [])];
     const getOriginalSize = (f: File): number => (f as any)._originalSize ?? f.size;
@@ -777,9 +788,9 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     const MAX_SINGLE_FILE_BYTES = 50 * 1024 * 1024; // 50 MB per file (matches backend Firebase Storage limit)
     const MAX_TOTAL_BATCH_BYTES = 100 * 1024 * 1024; // 100 MB total per batch
     let runningBatchBytes = existingFiles.reduce((sum, f) => sum + (f.size || 0), 0);
-    let sizeWarningMsg: string | null = null;
+    let sizeWarningMsg: string | null = formatWarningMsg;
 
-    for (const file of newFiles) {
+    for (const file of validatedFiles) {
       const key = `${file.name}::${getOriginalSize(file)}`;
       if (seenKeys.has(key)) continue;
 
@@ -2478,7 +2489,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
         </div>
       </div>
 
-      <input ref={fileInputRef} id="unified-file-input" type="file" accept="image/*,.pdf" multiple onChange={handleFileChange} style={{ display: 'none' }} disabled={isProcessing || isNegative} />
+      <input ref={fileInputRef} id="unified-file-input" type="file" accept=".pdf,application/pdf,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple onChange={handleFileChange} style={{ display: 'none' }} disabled={isProcessing || isNegative} />
 
       <MobileUploadModal
         isOpen={isMobileUploadOpen}

@@ -97,11 +97,13 @@ test('AdminAlertService aggregates multiple turns for the same sessionId into on
     assert.equal(AdminAlertService.getPendingSessionDigestCount(), 0);
 
     const mail = sentEmails[0];
-    assert.match(mail.subject, /\[SESSION DIGEST\]/);
-    assert.match(mail.subject, /7\/10/);
-    assert.match(mail.subject, /Edexcel Maths 1MA1/);
-    assert.match(mail.subject, /2 turns/);
-    assert.match(mail.subject, /OK/);
+    assert.equal(mail.subject, '[SESSION DIGEST] student@example.com | sess-agg-1');
+    assert.equal(mail.inReplyTo, '<session-sess-agg-1@aimarking.ai>');
+    assert.deepEqual(mail.references, ['<session-sess-agg-1@aimarking.ai>']);
+    assert.match(mail.text, /7\/10/);
+    assert.match(mail.text, /Edexcel Maths 1MA1/);
+    assert.match(mail.text, /2 turns/);
+    assert.match(mail.text, /OK/);
 
     // Point 2: uploaded file links present & deduplicated
     assert.match(mail.text, /https:\/\/storage\.example\.com\/page1\.jpg/);
@@ -178,7 +180,8 @@ test('MARKING_LOG_EMAIL_MODE=errors_only suppresses success-only sessions and se
     });
     await AdminAlertService.flushSessionDigest('sess-with-err');
     assert.equal(sentEmails.length, 1);
-    assert.match(sentEmails[0].subject, /HAS_ERRORS/);
+    assert.match(sentEmails[0].subject, /\[SESSION DIGEST\] .* \| sess-with-err/);
+    assert.match(sentEmails[0].text, /HAS_ERRORS/);
     assert.match(sentEmails[0].text, /LLM timeout/);
   } finally {
     await AdminAlertService.flushAllSessionDigests();
@@ -265,7 +268,8 @@ test('LOG_AI_MARKING_RESPONSE=false omits raw AI response and REMARK result.resu
     await AdminAlertService.flushSessionDigest('sess-remark-1');
     assert.equal(sentEmails.length, 1);
     const mail = sentEmails[0];
-    assert.match(mail.subject, /8\/10/);
+    assert.match(mail.subject, /\[SESSION DIGEST\] .* \| sess-remark-1/);
+    assert.match(mail.text, /8\/10/);
     assert.match(mail.text, /Q3: 8\/10/);
     assert.ok(!mail.text.includes('SECRET_RAW_AI_OUTPUT'), 'aiResponse should be omitted when LOG_AI_MARKING_RESPONSE=false');
     assert.ok(!mail.attachments[0].content.includes('SECRET_RAW_AI_OUTPUT'), 'aiResponse should be omitted from attachment when LOG_AI_MARKING_RESPONSE=false');
@@ -277,5 +281,101 @@ test('LOG_AI_MARKING_RESPONSE=false omits raw AI response and REMARK result.resu
     process.env.SMTP_PASS = prevSmtpPass;
     process.env.MARKING_LOG_EMAIL_MODE = prevMode;
     process.env.LOG_AI_MARKING_RESPONSE = prevLogResp;
+  }
+});
+
+test('AdminAlertService auto-merges orphaned PRE_INSPECT into same user MARKING session and threads multi-flush emails', async () => {
+  const prevEmail = process.env.ADMIN_ALERT_EMAIL;
+  const prevSmtpUser = process.env.SMTP_USER;
+  const prevSmtpPass = process.env.SMTP_PASS;
+  const prevMode = process.env.MARKING_LOG_EMAIL_MODE;
+
+  process.env.ADMIN_ALERT_EMAIL = 'admin@example.com';
+  process.env.SMTP_USER = 'bot@example.com';
+  process.env.SMTP_PASS = 'secret';
+  process.env.MARKING_LOG_EMAIL_MODE = 'all';
+
+  const { transporter, sentEmails } = createMockTransporter();
+  AdminAlertService.setTransporterForTesting(transporter);
+
+  try {
+    // 1. Orphaned PRE_INSPECT (no preInspectToken consumed because user clicked Send quickly)
+    AdminAlertService.recordSessionTurn({
+      sessionId: 'pre-inspect-12345-abc',
+      turnType: 'PRE_INSPECT',
+      userId: 'uid-shayaan',
+      userEmail: 'shayaan@example.com',
+      model: 'lite',
+      logsText: 'pre-inspect log line',
+      lineCount: 1,
+      durationMs: 1200,
+    });
+
+    // 2. MARKING turn arrives for the same user under real sessionId
+    AdminAlertService.recordSessionTurn({
+      sessionId: 'sub-999-xyz',
+      turnType: 'MARKING',
+      userId: 'uid-shayaan',
+      userEmail: 'shayaan@example.com',
+      model: 'fast',
+      logsText: 'marking log line',
+      lineCount: 1,
+      durationMs: 5000,
+    });
+
+    // 3. FOLLOW_UP_CHAT in same session
+    AdminAlertService.recordSessionTurn({
+      sessionId: 'sub-999-xyz',
+      turnType: 'FOLLOW_UP_CHAT',
+      userId: 'uid-shayaan',
+      userEmail: 'shayaan@example.com',
+      model: 'fast',
+      userInput: 'Explain Q1',
+      logsText: 'chat log line',
+      lineCount: 1,
+      durationMs: 800,
+    });
+
+    // Only 1 pending digest (pre-inspect was merged into sub-999-xyz)
+    assert.equal(AdminAlertService.getPendingSessionDigestCount(), 1);
+    await AdminAlertService.flushSessionDigest('sub-999-xyz');
+    assert.equal(sentEmails.length, 1);
+
+    const firstMail = sentEmails[0];
+    assert.equal(firstMail.subject, '[SESSION DIGEST] shayaan@example.com | sub-999-xyz');
+    assert.equal(firstMail.inReplyTo, '<session-sub-999-xyz@aimarking.ai>');
+    assert.deepEqual(firstMail.references, ['<session-sub-999-xyz@aimarking.ai>']);
+    assert.match(firstMail.attachments[0].content, /TURN 1: PRE_INSPECT/);
+    assert.match(firstMail.attachments[0].content, /TURN 2: MARKING/);
+    assert.match(firstMail.attachments[0].content, /TURN 3: FOLLOW_UP_CHAT/);
+
+    // 4. Later REMARK flush for the same session produces identical Subject & thread headers for Gmail grouping
+    AdminAlertService.recordSessionTurn({
+      sessionId: 'sub-999-xyz',
+      turnType: 'REMARK',
+      userId: 'uid-shayaan',
+      userEmail: 'shayaan@example.com',
+      model: 'fast',
+      error: new Error('UNSUPPORTED_SCHEME_FORMAT: bad file'),
+      uploadedFiles: [{ filename: 'bad.heic', url: 'https://storage.example.com/bad.heic' }],
+      logsText: 'remark log line',
+      lineCount: 1,
+      durationMs: 300,
+    });
+    await AdminAlertService.flushSessionDigest('sub-999-xyz');
+    assert.equal(sentEmails.length, 2);
+
+    const secondMail = sentEmails[1];
+    assert.equal(secondMail.subject, firstMail.subject);
+    assert.equal(secondMail.inReplyTo, firstMail.inReplyTo);
+    assert.deepEqual(secondMail.references, firstMail.references);
+    assert.match(secondMail.text, /https:\/\/storage\.example\.com\/bad\.heic/);
+  } finally {
+    await AdminAlertService.flushAllSessionDigests();
+    AdminAlertService.setTransporterForTesting(null);
+    process.env.ADMIN_ALERT_EMAIL = prevEmail;
+    process.env.SMTP_USER = prevSmtpUser;
+    process.env.SMTP_PASS = prevSmtpPass;
+    process.env.MARKING_LOG_EMAIL_MODE = prevMode;
   }
 });

@@ -208,7 +208,7 @@ export const FollowUpRectificationPanel: React.FC<FollowUpRectificationPanelProp
         ref={fileInputRef}
         type="file"
         multiple
-        accept="image/*,application/pdf,.pdf"
+        accept=".pdf,application/pdf,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
         style={{ display: 'none' }}
         onChange={(e) => {
           if (e.target.files && e.target.files.length > 0) {

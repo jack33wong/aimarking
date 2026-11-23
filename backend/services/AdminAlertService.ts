@@ -52,7 +52,8 @@ interface SessionDigestEntry {
 }
 
 const INACTIVITY_THRESHOLD_MS = 3 * 60 * 1000; // 3 minutes
-const DEFAULT_SESSION_DIGEST_IDLE_MS = 5 * 60 * 1000; // 5 minutes
+const DEFAULT_SESSION_DIGEST_IDLE_MS = 15 * 60 * 1000; // 15 minutes (combines pre-inspect, marking, remarks & follow-up chat into one digest)
+const PRE_INSPECT_AUTOMERGE_WINDOW_MS = 2 * 60 * 1000; // 2 minutes window to auto-attach orphaned pre-inspect turns to the same user's marking session
 const MAX_SESSION_DIGESTS_IN_MEMORY = 500;
 
 export class AdminAlertService {
@@ -704,11 +705,21 @@ ${funnelText}
         if (!transporter) return;
 
         const adminEmail = process.env.ADMIN_ALERT_EMAIL;
+        const crashSessionId = typeof req?.body?.sessionId === 'string' ? req.body.sessionId.trim() : '';
+        const safeCrashSessionId = crashSessionId ? crashSessionId.replace(/[^a-zA-Z0-9_-]/g, '_') : '';
+        const crashThreadRootId = safeCrashSessionId ? `<session-${safeCrashSessionId}@aimarking.ai>` : undefined;
 
         await transporter.sendMail({
           from: process.env.SMTP_FROM || process.env.SMTP_USER || 'no-reply@aimarking.ai',
           to: adminEmail,
           subject: `🚨 [CRITICAL ALERT] ${feature} Failed: ${errorMessage.substring(0, 80)}`,
+          ...(crashThreadRootId
+            ? {
+                messageId: `<crash-${safeCrashSessionId}-${Date.now()}@aimarking.ai>`,
+                inReplyTo: crashThreadRootId,
+                references: [crashThreadRootId],
+              }
+            : {}),
           text: `🚨 CRITICAL CONTROLLER CRASH ALERT
 
 Feature: ${feature}
@@ -934,8 +945,51 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
       const extractedLinks = this.extractUploadedFileLinksFromResult(result);
       const combinedFiles = [...uploadedFiles, ...extractedLinks];
 
-      const nowIso = new Date().toISOString();
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
       const errorMessage = error ? (error?.message || String(error)) : undefined;
+
+      // Auto-merge orphaned PRE_INSPECT digests for the same user (handles race when user clicks Send before pre-inspect returns a token)
+      const isSameActor = (entry: SessionDigestEntry) =>
+        (userId && userId !== 'anonymous' && entry.userId === userId) ||
+        (Boolean(userEmail) && entry.userEmail === userEmail);
+
+      if (
+        (turnType === 'MARKING' || turnType === 'QUESTION_MODE') &&
+        !resolvedSessionId.startsWith('pre-inspect-')
+      ) {
+        const orphanedPreInspectIds: string[] = [];
+        for (const [key, candidate] of this.sessionDigests.entries()) {
+          if (!key.startsWith('pre-inspect-')) continue;
+          if (!isSameActor(candidate)) continue;
+          const ageMs = nowMs - Date.parse(candidate.lastActivityAt || candidate.createdAt);
+          if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= PRE_INSPECT_AUTOMERGE_WINDOW_MS) {
+            orphanedPreInspectIds.push(key);
+          }
+        }
+        for (const preId of orphanedPreInspectIds) {
+          this.mergePreInspectDigestIntoSession(preId, resolvedSessionId);
+        }
+      }
+
+      let targetSessionId = resolvedSessionId;
+      if (turnType === 'PRE_INSPECT' && resolvedSessionId.startsWith('pre-inspect-')) {
+        // If the user's real marking session already exists within the merge window, attach directly to it
+        let latestMatchingSessionId: string | null = null;
+        let latestTs = 0;
+        for (const [key, candidate] of this.sessionDigests.entries()) {
+          if (key.startsWith('pre-inspect-')) continue;
+          if (!isSameActor(candidate)) continue;
+          const ts = Date.parse(candidate.lastActivityAt || candidate.createdAt);
+          if (Number.isFinite(ts) && nowMs - ts <= PRE_INSPECT_AUTOMERGE_WINDOW_MS && ts >= latestTs) {
+            latestTs = ts;
+            latestMatchingSessionId = key;
+          }
+        }
+        if (latestMatchingSessionId) {
+          targetSessionId = latestMatchingSessionId;
+        }
+      }
 
       const turn: SessionDigestTurn = {
         turnType,
@@ -954,7 +1008,7 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
         truncated,
       };
 
-      const existing = this.sessionDigests.get(resolvedSessionId);
+      const existing = this.sessionDigests.get(targetSessionId);
       const idleMs = this.getSessionDigestIdleMs();
       const expiresAt = Date.now() + idleMs;
 
@@ -967,7 +1021,11 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
         if (extractedTitle && (existing.sessionTitle === 'Marking Session' || existing.sessionTitle === 'Chat Session' || !existing.sessionTitle)) {
           existing.sessionTitle = extractedTitle;
         }
-        existing.turns.push(turn);
+        if (turnType === 'PRE_INSPECT' && targetSessionId !== resolvedSessionId) {
+          existing.turns.unshift(turn);
+        } else {
+          existing.turns.push(turn);
+        }
 
         // Merge & deduplicate uploaded file links by URL
         const seenUrls = new Set(existing.uploadedFiles.map((f) => f.url));
@@ -980,7 +1038,7 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
 
         existing.expiresAt = expiresAt;
         existing.timer = setTimeout(() => {
-          this.sessionDigests.delete(resolvedSessionId);
+          this.sessionDigests.delete(targetSessionId);
           void this.flushSessionDigestEntry(existing);
         }, idleMs);
         existing.timer.unref?.();
@@ -1008,7 +1066,7 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
         }
 
         const entry: SessionDigestEntry = {
-          sessionId: resolvedSessionId,
+          sessionId: targetSessionId,
           userId,
           userEmail,
           userAgent,
@@ -1019,15 +1077,15 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
           uploadedFiles: dedupedFiles,
           expiresAt,
           timer: setTimeout(() => {
-            this.sessionDigests.delete(resolvedSessionId);
+            this.sessionDigests.delete(targetSessionId);
             void this.flushSessionDigestEntry(entry);
           }, idleMs),
         };
         entry.timer.unref?.();
-        this.sessionDigests.set(resolvedSessionId, entry);
+        this.sessionDigests.set(targetSessionId, entry);
       }
 
-      console.log(`🕒 [ADMIN-ALERT] Recorded ${turnType} turn for session ${resolvedSessionId} (digest idle timeout: ${Math.round(idleMs / 1000)}s)`);
+      console.log(`🕒 [ADMIN-ALERT] Recorded ${turnType} turn for session ${targetSessionId} (digest idle timeout: ${Math.round(idleMs / 1000)}s)`);
     } catch (err) {
       console.error('❌ [ADMIN-ALERT] Failed to record session turn for digest:', err);
     }
@@ -1122,7 +1180,10 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
       const latestBreakdown = [...entry.turns].reverse().find((t) => t.questionBreakdown && t.questionBreakdown.length > 0)?.questionBreakdown || [];
 
       const turnLabel = `${entry.turns.length} turn${entry.turns.length === 1 ? '' : 's'}`;
-      const emailSubject = `[SESSION DIGEST] ${scoreSummary}${entry.sessionTitle} | ${turnLabel} | ${overallStatus} | ${totalDurationSec}s`;
+      const userLabel = entry.userEmail || entry.userId || 'anonymous';
+      // Keep the Subject line constant per session so Gmail threads all flushes for the same session together
+      const emailSubject = `[SESSION DIGEST] ${userLabel} | ${entry.sessionId}`;
+      const digestSummaryLine = `${overallStatus} | ${scoreSummary}${entry.sessionTitle} | ${turnLabel} | ${totalDurationSec}s`;
 
       const escapeHtml = (str: string) =>
         String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -1218,13 +1279,18 @@ ${funnel.map(f => `[${f.timestamp}] ${f.event} (${f.path || '/'})`).join('\n')}
         .join('\n');
 
       const safeSessionId = String(entry.sessionId || 'session').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const threadRootId = `<session-${safeSessionId}@aimarking.ai>`;
+      const emailMessageId = `<session-${safeSessionId}-${Date.now()}@aimarking.ai>`;
 
       await transporter.sendMail({
         from: process.env.SMTP_FROM || process.env.SMTP_USER,
         to: adminEmail,
         subject: emailSubject,
+        messageId: emailMessageId,
+        inReplyTo: threadRootId,
+        references: [threadRootId],
         text: [
-          `SESSION DIGEST (${turnLabel})`,
+          `SESSION DIGEST: ${digestSummaryLine}`,
           `Status: ${overallStatus}`,
           `Session ID: ${entry.sessionId}`,
           `User: ${entry.userEmail || entry.userId}`,

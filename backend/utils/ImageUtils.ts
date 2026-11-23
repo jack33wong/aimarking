@@ -6,6 +6,21 @@ import sharp from 'sharp';
 export class ImageUtils {
 
   /**
+   * Verifies that a raw buffer can actually be decoded as a supported raster image by sharp.
+   * Returns format & dimensions if valid, or null if unsupported/corrupt.
+   */
+  static async probeImageBuffer(buffer: Buffer): Promise<{ format?: string; width?: number; height?: number } | null> {
+    try {
+      if (!buffer || buffer.length === 0) return null;
+      const meta = await sharp(buffer).metadata();
+      if (!meta || !meta.format || !meta.width || !meta.height) return null;
+      return { format: meta.format, width: meta.width, height: meta.height };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Normalizes the image orientation based on EXIF data and optimizes encoding.
    * (Implementation remains the same as previous successful turns)
    */

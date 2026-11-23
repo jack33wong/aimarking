@@ -85,6 +85,23 @@ export class MarkingController {
 
         const resolvedRemarkAiMessageId = aiMessageId || `ai-${Date.now()}`;
         const remarkJobUserId = (req as any).user?.uid || null;
+        const resolvedRemarkUid = remarkJobUserId || `guest:${req.ip || '0.0.0.0'}`;
+        const schemeMulterFiles: Express.Multer.File[] = Array.isArray(uploadedSchemeFiles)
+            ? uploadedSchemeFiles
+                  .map((f: any, idx: number) => {
+                      if (!f || typeof f.base64Data !== 'string') return null;
+                      const rawB64 = f.base64Data.includes(',') ? f.base64Data.split(',')[1] : f.base64Data;
+                      const buffer = Buffer.from(rawB64 || '', 'base64');
+                      return {
+                          originalname: f.originalName || `marking-scheme-${idx + 1}`,
+                          mimetype: f.mimeType || 'application/octet-stream',
+                          buffer,
+                          size: buffer.length,
+                      } as Express.Multer.File;
+                  })
+                  .filter((f): f is Express.Multer.File => Boolean(f && f.buffer.length > 0))
+            : [];
+        const schemeFileNames = schemeMulterFiles.map((f) => f.originalname).join(', ');
         let isRemarkJobFinished = false;
         let lastRemarkJobUpsertPromise: Promise<void> = Promise.resolve();
         const queueRemarkJobUpsert = (jobId: string, data: Record<string, any>): Promise<void> => {
@@ -185,10 +202,19 @@ export class MarkingController {
                     (remarkResult as any)?.message?.content ||
                     undefined;
 
+                let remarkUploadedFiles = AdminAlertService.extractUploadedFileLinksFromResult(remarkResult);
+                if (schemeMulterFiles.length > 0) {
+                    const schemeLogLinks = await Promise.race([
+                        AdminAlertService.uploadFilesForLog(schemeMulterFiles, resolvedRemarkUid),
+                        new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 4000)),
+                    ]);
+                    remarkUploadedFiles = [...remarkUploadedFiles, ...schemeLogLinks];
+                }
+
                 await AdminAlertService.notifyMarkingLog({
                     submissionId: `remark-${sessionId}`,
                     sessionId,
-                    userId: (req as any).user?.uid,
+                    userId: resolvedRemarkUid,
                     userEmail: (req as any).user?.email,
                     userAgent: req.get('user-agent') || undefined,
                     model: requestedModel,
@@ -196,7 +222,9 @@ export class MarkingController {
                     turnType: 'REMARK',
                     result: remarkResult,
                     error: remarkError,
+                    userInput: schemeFileNames ? `Uploaded marking scheme: ${schemeFileNames}` : (paperTitle ? `Official paper: ${paperTitle}` : undefined),
                     aiResponse: typeof rawRemarkAiContent === 'string' ? rawRemarkAiContent : undefined,
+                    uploadedFiles: remarkUploadedFiles,
                     ...capturedRemarkLogs,
                 });
             }
@@ -205,35 +233,151 @@ export class MarkingController {
         } catch (error: any) {
             console.error('❌ [CONTROLLER] Remark request failed:', error);
             isRemarkJobFinished = true;
+            const cleanErrorMessage =
+                error.message?.replace(/^(?:INVALID_MARKING_SCHEME|UNSUPPORTED_SCHEME_FORMAT):\s*/i, '') ||
+                'Failed to re-mark session.';
+            const isCreditExhausted = error.message?.includes('exhausted your credits');
+            const isInvalidScheme = error.message?.includes('INVALID_MARKING_SCHEME');
+            const isUnsupportedFormat = error.message?.includes('UNSUPPORTED_SCHEME_FORMAT');
+
             await queueRemarkJobUpsert(sessionId, {
                 status: 'failed',
                 sessionId,
                 isRemark: true,
-                error: error.message?.replace(/^INVALID_MARKING_SCHEME:\s*/i, '') || 'Failed to re-mark session.',
+                error: cleanErrorMessage,
                 completedAt: Date.now()
             });
+
+            // Option 1: Persist the failed marking-scheme upload attempt + system response in chat history
+            // while keeping the student's existing graded message untouched.
+            let persistedSchemeLinks: string[] = [];
+            if (remarkJobUserId && remarkJobUserId !== 'anonymous' && sessionId && schemeMulterFiles.length > 0) {
+                try {
+                    const uploadResult = await SessionManagementService.uploadOriginalFiles(
+                        schemeMulterFiles,
+                        remarkJobUserId,
+                        sessionId,
+                        true
+                    );
+                    persistedSchemeLinks = uploadResult.originalImageLinks || [];
+
+                    const pdfFiles = schemeMulterFiles
+                        .map((file, idx) => ({ file, idx }))
+                        .filter((entry) => entry.file.mimetype === 'application/pdf' || entry.file.originalname.toLowerCase().endsWith('.pdf'));
+                    const isSinglePdf = schemeMulterFiles.length === 1 && pdfFiles.length === 1;
+                    const isMultiplePdfs = pdfFiles.length > 1 || (pdfFiles.length >= 1 && schemeMulterFiles.length > 1);
+
+                    let pdfContext: any = undefined;
+                    if (isSinglePdf) {
+                        pdfContext = {
+                            isMultiplePdfs: false,
+                            originalPdfLink: persistedSchemeLinks[0] || null,
+                            originalFileName: schemeMulterFiles[0].originalname || 'marking-scheme.pdf',
+                            fileSize: schemeMulterFiles[0].size || 0
+                        };
+                    } else if (isMultiplePdfs) {
+                        pdfContext = {
+                            isMultiplePdfs: true,
+                            pdfContexts: pdfFiles.map(({ file, idx }) => ({
+                                originalPdfLink: persistedSchemeLinks[idx] || null,
+                                originalFileName: file.originalname || `marking-scheme-${idx + 1}.pdf`,
+                                fileSize: file.size || 0
+                            }))
+                        };
+                    }
+
+                    const { structuredImageDataArray, structuredPdfContexts } = SessionManagementService.createStructuredData(
+                        schemeMulterFiles,
+                        isSinglePdf,
+                        isMultiplePdfs,
+                        pdfContext
+                    );
+
+                    const userTimestamp = new Date().toISOString();
+                    const aiTimestamp = new Date(Date.now() + 50).toISOString();
+                    const userUploadMessage = SessionManagementService.createUserMessageForDatabase(
+                        {
+                            content: `Uploaded marking scheme: ${schemeFileNames}`,
+                            files: schemeMulterFiles,
+                            isPdf: isSinglePdf,
+                            isMultiplePdfs,
+                            customText: `Uploaded marking scheme: ${schemeFileNames}`,
+                            sessionId,
+                            model: remarkModel || 'FAST',
+                            pdfContext
+                        },
+                        structuredImageDataArray,
+                        structuredPdfContexts,
+                        persistedSchemeLinks
+                    );
+                    userUploadMessage.timestamp = userTimestamp;
+
+                    const aiErrorMessage: any = {
+                        id: `ai-remark-err-${Date.now()}`,
+                        role: 'assistant',
+                        content: cleanErrorMessage,
+                        timestamp: aiTimestamp,
+                        type: 'text',
+                        isProcessing: false,
+                        errorCode: isUnsupportedFormat
+                            ? 'UNSUPPORTED_SCHEME_FORMAT'
+                            : isInvalidScheme
+                              ? 'INVALID_MARKING_SCHEME'
+                              : 'REMARK_ERROR',
+                        processingStats: {
+                            apiUsed: 'System Validation',
+                            modelUsed: 'Mark Scheme Check'
+                        }
+                    };
+
+                    const existingSession = await FirestoreService.getUnifiedSession(sessionId);
+                    if (existingSession) {
+                        await FirestoreService.addMessageToUnifiedSession(sessionId, userUploadMessage, 'Marking');
+                        await FirestoreService.addMessageToUnifiedSession(sessionId, aiErrorMessage, 'Marking');
+                    }
+                } catch (persistErr) {
+                    console.error('⚠️ [CONTROLLER] Failed to persist remark error state to Firestore:', persistErr);
+                }
+            }
+
             if (capturedRemarkLogs) {
+                let remarkUploadedFiles: any[] = persistedSchemeLinks
+                    .map((url, idx) => ({
+                        filename: schemeMulterFiles[idx]?.originalname || `marking-scheme-${idx + 1}`,
+                        url,
+                        sizeBytes: schemeMulterFiles[idx]?.size
+                    }))
+                    .filter((item) => Boolean(item.url));
+
+                if (remarkUploadedFiles.length === 0 && schemeMulterFiles.length > 0) {
+                    remarkUploadedFiles = await Promise.race([
+                        AdminAlertService.uploadFilesForLog(schemeMulterFiles, resolvedRemarkUid),
+                        new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 6000)),
+                    ]);
+                }
+
                 await AdminAlertService.notifyMarkingLog({
                     submissionId: `remark-${sessionId}`,
                     sessionId,
-                    userId: (req as any).user?.uid,
+                    userId: resolvedRemarkUid,
                     userEmail: (req as any).user?.email,
                     userAgent: req.get('user-agent') || undefined,
                     model: remarkModel || 'FAST',
                     isRemark: true,
                     turnType: 'REMARK',
                     error,
+                    userInput: schemeFileNames ? `Uploaded marking scheme: ${schemeFileNames}` : (paperTitle ? `Official paper: ${paperTitle}` : undefined),
+                    aiResponse: cleanErrorMessage,
+                    uploadedFiles: remarkUploadedFiles,
                     ...(capturedRemarkLogs as { logsText: string; lineCount: number; durationMs: number; truncated: boolean }),
                 });
             }
-            const isCreditExhausted = error.message?.includes('exhausted your credits');
-            const isInvalidScheme = error.message?.includes('INVALID_MARKING_SCHEME');
-            if (!isCreditExhausted && !isInvalidScheme) {
+            if (!isCreditExhausted && !isInvalidScheme && !isUnsupportedFormat) {
                 void AdminAlertService.notifyCrash('MARKING', req, error);
             }
             sendSseUpdate(res, {
                 type: 'error',
-                error: error.message?.replace(/^INVALID_MARKING_SCHEME:\s*/i, '') || 'Failed to re-mark session.'
+                error: cleanErrorMessage
             });
             res.end();
         } finally {

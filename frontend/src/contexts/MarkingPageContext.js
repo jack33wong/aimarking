@@ -17,6 +17,7 @@ import { useModels } from './ModelContext';
 import GuestLimitModal from '../components/modals/GuestLimitModal';
 import { trackFunnelEvent, getNavigationType } from '../utils/funnelTracker';
 import { getSessionModel } from '../utils/modelDisplay';
+import { validateSupportedUploadFiles } from '../utils/fileUtils';
 
 // --- INDEXEDDB AUTH STASH HELPERS ---
 const STASH_DB_NAME = 'IntelliMarkStashDB';
@@ -1925,8 +1926,8 @@ export const MarkingPageProvider = ({
   }, [currentSession, chatMessages, selectedModel, startProcessing, startAIThinking, stopProcessing, handleError, apiProcessor, loadSession, registerJob, updateJobProgress, completeJob, failJob, startPollingJob]);
 
   const attachMarkingSchemeAndRetry = useCallback(async (schemeFileList) => {
-    const schemeFiles = Array.from(schemeFileList || []);
-    if (schemeFiles.length === 0) return false;
+    const rawSchemeFiles = Array.from(schemeFileList || []);
+    if (rawSchemeFiles.length === 0) return false;
 
     const liveSession = simpleSessionService.getCurrentSession() || currentSession;
     const targetSessionId = liveSession?.id;
@@ -1935,6 +1936,20 @@ export const MarkingPageProvider = ({
       .reverse()
       .find(m => m.role === 'assistant');
     const snapshotMsg = existingAssistantMsg ? JSON.parse(JSON.stringify(existingAssistantMsg)) : null;
+
+    // Strict client-side format & magic-byte validation (blocks HEIC/BMP/SVG/DOCX/corrupt files before upload)
+    const { validFiles: schemeFiles, rejectedFiles, errorMessage: formatErrorMsg } = await validateSupportedUploadFiles(rawSchemeFiles);
+    if (rejectedFiles.length > 0 || schemeFiles.length === 0) {
+      const msgText = formatErrorMsg || 'Unsupported file format. Please upload a PDF, JPG, PNG, or WebP file.';
+      if (existingAssistantMsg && targetSessionId) {
+        simpleSessionService.updateMessageInCurrentSession(existingAssistantMsg.id, {
+          remarkError: msgText
+        }, targetSessionId);
+      } else {
+        handleError(new Error(msgText));
+      }
+      return false;
+    }
 
     const userMsg = allMsgs.find(m => m.role === 'user');
     const skeletonImages = (userMsg?.imageDataArray && userMsg.imageDataArray.length > 0)
@@ -2022,15 +2037,25 @@ export const MarkingPageProvider = ({
           startPollingJob(targetSessionId);
           return false;
         }
-        failJob(targetSessionId, (err?.message || 'Invalid marking scheme uploaded.').replace(/^INVALID_MARKING_SCHEME:\s*/i, ''));
-        // Restore the exact original assistant message snapshot and attach remarkError so nothing is lost!
+        const cleanRemarkErr = (err?.message || 'Invalid marking scheme uploaded.').replace(/^(?:INVALID_MARKING_SCHEME|UNSUPPORTED_SCHEME_FORMAT):\s*/i, '');
+        failJob(targetSessionId, cleanRemarkErr);
+        // Restore the exact original assistant message snapshot so nothing is lost
         if (snapshotMsg) {
           simpleSessionService.updateMessageInCurrentSession(targetAiMessageId, {
             ...snapshotMsg,
             isProcessing: false,
             progressData: snapshotMsg.progressData ? { ...snapshotMsg.progressData, isComplete: true } : undefined,
-            remarkError: (err?.message || 'Invalid marking scheme uploaded.').replace(/^INVALID_MARKING_SCHEME:\s*/i, '')
+            remarkError: cleanRemarkErr
           }, targetSessionId);
+        }
+        // Reload persisted Option 1 error history (uploaded scheme + system response) if backend saved it
+        try {
+          const refreshed = await simpleSessionService.getSession(targetSessionId);
+          if (refreshed?.session && simpleSessionService.getCurrentSession()?.id === targetSessionId) {
+            loadSession(refreshed.session);
+          }
+        } catch {
+          // Keep restored snapshotMsg with inline remarkError banner
         }
         stopProcessing(targetSessionId);
         return false;
