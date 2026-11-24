@@ -1532,9 +1532,9 @@ export class SVGOverlayService {
       imageWidth / 1650
     );
     const config = this.CONFIG.circleMark;
-    const circleRadius = Math.max(12, Math.round(config.baseRadius * scaleFactor));
-    const scoreFontSize = Math.max(7, Math.round(config.baseFontSize * scaleFactor));
-    const strokeWidth = Math.max(1.5, Number((config.baseStrokeWidth * scaleFactor).toFixed(1)));
+    const circleRadius = Math.max(14, Math.round(config.baseRadius * 1.1 * scaleFactor));
+    const scoreFontSize = Math.max(9, Math.round(config.baseFontSize * scaleFactor));
+    const strokeWidth = Math.max(1.5, Number((config.baseStrokeWidth * 0.85 * scaleFactor).toFixed(1)));
 
     let svg = '';
     scores.forEach((scoreItem, index) => {
@@ -1547,17 +1547,21 @@ export class SVGOverlayService {
       const fractionMatch = String(scoreText).trim().match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
       if (fractionMatch) {
         const [, numStr, denStr] = fractionMatch;
-        const fracFontSize = Math.max(7, Math.round(scoreFontSize * 0.82));
-        const barHalfW = Math.max(6, Math.round(circleRadius * 0.46));
-        const barStroke = Math.max(1.2, Number((strokeWidth * 0.65).toFixed(1)));
-        const numY = Math.round(circleY - circleRadius * 0.22);
-        const barY = Math.round(circleY + circleRadius * 0.04);
+        const maxDigits = Math.max(numStr.length, denStr.length);
+        // Scale number size directly against circleRadius so stacked digits fill the circle clearly
+        const sizeRatio = maxDigits >= 3 ? 0.56 : 0.72;
+        const fracFontSize = Math.max(10, Math.round(circleRadius * sizeRatio));
+        const denFontSize = Math.max(9, Math.round(fracFontSize * 0.95));
+        const barHalfW = Math.max(8, Math.round(circleRadius * 0.56));
+        const barStroke = Math.max(1.5, Number((strokeWidth * 0.7).toFixed(1)));
+        const numY = Math.round(circleY - circleRadius * 0.30);
+        const barY = Math.round(circleY + circleRadius * 0.03);
         const denY = Math.round(circleY + circleRadius * 0.44);
         const fractionGroup =
           `<g transform="rotate(-2.5, ${circleX}, ${circleY})">` +
           `<text x="${circleX}" y="${numY}" text-anchor="middle" dominant-baseline="middle" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${fracFontSize}" font-weight="bold">${this.escapeXml(numStr)}</text>` +
           `<line x1="${circleX - barHalfW}" y1="${barY}" x2="${circleX + barHalfW}" y2="${barY}" stroke="#ff0000" stroke-width="${barStroke}" stroke-linecap="round"/>` +
-          `<text x="${circleX}" y="${denY}" text-anchor="middle" dominant-baseline="middle" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${Math.max(6, Math.round(fracFontSize * 0.92))}" font-weight="bold">${this.escapeXml(denStr)}</text>` +
+          `<text x="${circleX}" y="${denY}" text-anchor="middle" dominant-baseline="middle" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${denFontSize}" font-weight="bold">${this.escapeXml(denStr)}</text>` +
           `</g>`;
         svg += circle + fractionGroup;
       } else {
