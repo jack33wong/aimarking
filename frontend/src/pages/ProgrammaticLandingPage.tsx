@@ -289,11 +289,11 @@ const ProgrammaticLandingPage: React.FC = () => {
     useEffect(() => {
         saveLandingExamContext({
             board: resolvedBoard,
-            subject: resolvedSubject,
+            subject: preset ? '' : resolvedSubject,
             qualification: resolvedQual,
             sourcePath: location.pathname + location.search,
         });
-    }, [resolvedBoard, resolvedSubject, resolvedQual, location.pathname, location.search]);
+    }, [preset, resolvedBoard, resolvedSubject, resolvedQual, location.pathname, location.search]);
 
     useEffect(() => {
         const timer = setTimeout(() => setStartAnimations(true), 100);

@@ -559,6 +559,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       setChatInput('');
       setSelectedPaper(null);
       setSelectedTags([]);
+      setSelectedQualification(null);
       setSelectedBoard(null);
       setSelectedSubject(null);
       setShowAutocomplete(false);
@@ -572,7 +573,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
 
   // Auto-open and pre-filter Past Papers autocomplete from user's last visited SEO landing page
   useEffect(() => {
-    if (mode !== 'first-time' || landingContextAppliedRef.current) return;
+    if (mode !== 'first-time' || landingContextAppliedRef.current || isMetadataLoading) return;
 
     const params = new URLSearchParams(location.search);
     const hasDeepLink = Boolean(params.get('code') || params.get('action') || params.get('mode'));
@@ -583,17 +584,55 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
 
     landingContextAppliedRef.current = true;
 
-    const targetBoard = landingCtx.board;
-    const matchedBoard = (metadata.boards || []).find((b: string) => {
-      const bl = b.toLowerCase();
-      const target = targetBoard.toLowerCase();
-      return bl === target || bl.includes(target) || target.includes(bl);
-    });
+    // 1. Match qualification only if it actually exists in DB
+    const targetQual = (landingCtx.qualification || '').trim().toLowerCase();
+    const matchedQual = targetQual
+      ? (metadata.qualifications || []).find((q: string) => q.toLowerCase() === targetQual) || null
+      : null;
 
-    setSelectedBoard(matchedBoard || targetBoard);
-    setSelectedSubject(landingCtx.subject);
+    // 2. Match board against boards available under the matched qualification (or all boards)
+    const candidateBoards = matchedQual && metadata.qualificationBoards?.[matchedQual]?.length
+      ? metadata.qualificationBoards[matchedQual]
+      : (metadata.boards || []);
+    const targetBoard = (landingCtx.board || '').trim().toLowerCase();
+    const matchedBoard = targetBoard
+      ? candidateBoards.find((b: string) => {
+          const bl = b.toLowerCase();
+          return bl === targetBoard || bl.includes(targetBoard) || targetBoard.includes(bl);
+        }) || null
+      : null;
+
+    // 3. Match subject only if that subject actually exists under the matched qualification + board
+    const candidateSubjects = matchedQual && matchedBoard && metadata.qualificationBoardSubjects?.[matchedQual]?.[matchedBoard]?.length
+      ? metadata.qualificationBoardSubjects[matchedQual][matchedBoard]
+      : matchedBoard && metadata.boardSubjects?.[matchedBoard]?.length
+        ? metadata.boardSubjects[matchedBoard]
+        : matchedQual && metadata.qualificationBoardSubjects?.[matchedQual]
+          ? Object.values(metadata.qualificationBoardSubjects[matchedQual]).flat()
+          : (metadata.subjects || []);
+    const targetSubject = (landingCtx.subject || '').trim().toLowerCase();
+    const matchedSubject = targetSubject
+      ? candidateSubjects.find((s: string) => s.toLowerCase() === targetSubject) || null
+      : null;
+
+    setSelectedQualification(matchedQual);
+    setSelectedBoard(matchedBoard);
+    setSelectedSubject(matchedSubject);
     setShowAutocomplete(true);
-  }, [mode, location.search, initialInput, pendingModelAnswerPaper, selectedPaper, metadata.boards]);
+  }, [
+    mode,
+    isMetadataLoading,
+    location.search,
+    initialInput,
+    pendingModelAnswerPaper,
+    selectedPaper,
+    metadata.qualifications,
+    metadata.boards,
+    metadata.subjects,
+    metadata.boardSubjects,
+    metadata.qualificationBoards,
+    metadata.qualificationBoardSubjects
+  ]);
 
   // V16.7 Sync input with initialInput from context (for redirection)
   useEffect(() => {
@@ -1510,6 +1549,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       setChatInput('');
       setSelectedPaper(null);
       setSelectedTags([]);
+      setSelectedQualification(null);
       setSelectedBoard(null);
       setSelectedSubject(null);
       setShowAutocomplete(false);
@@ -2026,7 +2066,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                 <>
                   <div className="pre-inspect-header">
                     <span className="pre-inspect-title">
-                      What would you like to do{selectedBoard || selectedSubject ? ` (${[selectedBoard, selectedSubject].filter(Boolean).join(' · ')})` : ''}?
+                      What would you like to do{selectedQualification || selectedBoard || selectedSubject ? ` (${[selectedQualification, selectedBoard, selectedSubject].filter(Boolean).join(' · ')})` : ''}?
                     </span>
                     <button
                       type="button"
