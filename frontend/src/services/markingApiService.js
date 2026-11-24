@@ -409,7 +409,15 @@ class SimpleSessionService {
       trimmed === 'Marking Session' ||
       trimmed === 'Rejected Document' ||
       trimmed === 'Rejected Upload' ||
-      trimmed === 'Upload Issue'
+      trimmed === 'Upload Issue' ||
+      trimmed === 'Untitled Paper' ||
+      trimmed === 'Untitled Question' ||
+      trimmed === 'Unsupported Page Layout' ||
+      trimmed === 'Unreadable Upload' ||
+      trimmed === 'Non-Exam Upload' ||
+      trimmed === 'Page Too Dense' ||
+      trimmed === 'Mark Scheme Needed' ||
+      /·\s*Mark Scheme Needed$/i.test(trimmed)
     ) {
       return true;
     }

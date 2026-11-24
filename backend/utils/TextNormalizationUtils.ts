@@ -414,8 +414,78 @@ export function compareSubQuestionParts(partA: string | null | undefined, partB:
  * @returns Cleaned and truncated title
  */
 /**
- * Strips LaTeX commands, math delimiters, and pure math expressions/equations
- * so fallback session titles contain only readable natural-language prose.
+ * Sanitizes raw exam paper codes / mark-scheme filename artifacts for display in titles.
+ * Examples:
+ * - "9MA0_02_2606_MS |" -> "9MA0/02"
+ * - "1MA1/1H"           -> "1MA1/1H"
+ * - "WMA14_01_2406_QP"  -> "WMA14/01"
+ */
+export function sanitizePaperCodeForTitle(code: string | undefined | null): string {
+  if (!code || typeof code !== 'string') return '';
+  let cleaned = code
+    .replace(/\|.*$/, '')
+    .replace(/\.(pdf|png|jpe?g|webp)$/i, '')
+    .trim();
+
+  // Strip trailing document type suffixes (_MS, _QP, _ER, _INS, _RMS, _QUE) and 4-digit series codes (_2606, _2305)
+  cleaned = cleaned
+    .replace(/(?:[_\-\s]+(?:MS|QP|ER|INS|RMS|QUE))+$/i, '')
+    .replace(/[_\-\s]+\d{4}$/, '')
+    .replace(/(?:[_\-\s]+(?:MS|QP|ER|INS|RMS|QUE))+$/i, '')
+    .trim();
+
+  // Convert underscore-separated paper code parts (e.g. 9MA0_02 or 0610_41) to slash format (9MA0/02, 0610/41)
+  if (/^[A-Za-z0-9]+_[A-Za-z0-9]+$/.test(cleaned)) {
+    cleaned = cleaned.replace('_', '/');
+  } else {
+    cleaned = cleaned.replace(/_+/g, ' ');
+  }
+
+  return cleaned.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Truncates text cleanly on a word boundary so titles never cut mid-word.
+ */
+export function truncateAtWordBoundary(text: string, maxLength: number): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxLength) return trimmed;
+
+  const slice = trimmed.substring(0, maxLength);
+  const lastSpace = slice.lastIndexOf(' ');
+  const cut = lastSpace >= Math.floor(maxLength * 0.5) ? slice.substring(0, lastSpace) : slice;
+  return cut.replace(/[\s.,;:\-–—•]+$/, '').trimEnd() + '…';
+}
+
+/**
+ * Formats a concise, meaningful title for rejected or pre-flight-blocked uploads
+ * instead of falling back to a bare date.
+ */
+export function formatRejectionTitle(
+  reason?: string | null,
+  subjectName?: string | null,
+  isUnsupportedWithoutScheme?: boolean
+): string {
+  const cleanSubject = (subjectName || '').trim();
+  if (isUnsupportedWithoutScheme) {
+    if (cleanSubject && !/^(this subject|unknown|general|n\/a)$/i.test(cleanSubject)) {
+      return `${cleanSubject} · Mark Scheme Needed`;
+    }
+    return 'Mark Scheme Needed';
+  }
+
+  const lower = (reason || '').toLowerCase();
+  if (lower.includes('unsupported page layout')) return 'Unsupported Page Layout';
+  if (lower.includes('too dense')) return 'Page Too Dense';
+  if (lower.includes('blurry') || lower.includes('unreadable')) return 'Unreadable Upload';
+  if (lower.includes('not educational') || lower.includes('non-educational')) return 'Non-Exam Upload';
+  return 'Upload Issue';
+}
+
+/**
+ * Converts question text into readable plain text for session titles:
+ * - Preserves short inline math symbols (e.g. "$A$ and $B$" -> "A and B", "\mathrm{f}(x)" -> "f(x)")
+ * - Strips display equations, LaTeX environments, and pure-math-only stems
  */
 export function stripLatexAndMathForTitle(text: string | undefined): string {
   if (!text || !text.trim()) return '';
@@ -437,50 +507,56 @@ export function stripLatexAndMathForTitle(text: string | undefined): string {
     }
   }
 
-  // Remove display & inline math blocks ($$...$$, \[...\], \(...\), $...$)
+  // Remove LaTeX environments (\begin{...}...\end{...}) and display math blocks ($$...$$, \[...\])
   cleaned = cleaned
+    .replace(/\\begin\{[^}]+\}[\s\S]*?\\end\{[^}]+\}/g, ' ')
     .replace(/\$\$[\s\S]*?\$\$/g, ' ')
-    .replace(/\\\[[\s\S]*?\\\]/g, ' ')
-    .replace(/\\\([\s\S]*?\\\)/g, ' ')
-    .replace(/\$[^$\n]+\$/g, ' ');
+    .replace(/\\\[[\s\S]*?\\\]/g, ' ');
 
-  // Remove LaTeX environments (\begin{...}...\end{...})
-  cleaned = cleaned.replace(/\\begin\{[^}]+\}[\s\S]*?\\end\{[^}]+\}/g, ' ');
+  // Convert short, readable inline math ($...$, \(...\)) to plain text (e.g. "$A$" -> "A", "$f(x)$" -> "f(x)");
+  // strip long or equation-heavy inline math blocks.
+  const simplifyInlineMath = (_match: string, inner: string): string => {
+    const plain = latexToPlainText(inner).replace(/\s+/g, ' ').trim();
+    if (!plain || plain.length > 12 || /[=<>≤≥≠≈]/.test(plain)) {
+      return ' ';
+    }
+    return ` ${plain} `;
+  };
+  cleaned = cleaned
+    .replace(/\\\(([^]*?)\\\)/g, simplifyInlineMath)
+    .replace(/\$([^$\n]+)\$/g, simplifyInlineMath);
 
-  // Remove common LaTeX commands with arguments (\frac{a}{b}, \mathrm{f}, \sqrt{x}, etc.)
-  for (let i = 0; i < 3; i++) {
+  // Convert remaining simple inline LaTeX (e.g. \mathrm{f}(x)) to plain text, while stripping complex equations
+  cleaned = cleaned
+    .replace(/\\(?:mathrm|text|textbf|textit|mathbf)\{([^{}]*)\}/g, '$1')
+    .replace(/\\frac\s*\{[^{}]*\}\s*\{[^{}]*\}/g, ' ');
+
+  // Remove remaining LaTeX commands with arguments and bare commands
+  for (let i = 0; i < 2; i++) {
     cleaned = cleaned.replace(/\\[a-zA-Z]+\*?(\[[^\]]*\])?(\{[^{}]*\})+/g, ' ');
   }
-  // Remove remaining LaTeX commands & braces/subscripts/superscripts
   cleaned = cleaned
     .replace(/\\[a-zA-Z]+\*?/g, ' ')
     .replace(/[_^]\{[^}]*\}/g, ' ')
-    .replace(/[_^][a-zA-Z0-9]/g, ' ')
     .replace(/[{}]/g, ' ');
 
-  // Remove equations / math expressions like f(x) = ..., y = ..., x > -1, = ( ... )
+  // Remove full equations (e.g. f(x) = ..., y = ..., x > -1)
   cleaned = cleaned
     .replace(/\b[a-zA-Z]\s*\([^)]*\)\s*=\s*[^.,;\n]*/g, ' ')
     .replace(/\b[a-zA-Z0-9]+\s*[=<>≤≥≠≈]\s*[^.,;\n]*/g, ' ')
-    .replace(/\([^)]*[+\-*/^=][^)]*\)/g, ' ')
-    .replace(/[=<>≤≥≠≈+\-*/^|\\]/g, ' ');
-
-  // Remove isolated single-letter math variable tokens (e.g. "x", "y", "O", "C") and "(x)"
-  // while keeping valid English single-letter words "a" and "I"
-  cleaned = cleaned.replace(/\(\s*[a-zA-Z]\s*\)/g, ' ');
-  cleaned = cleaned.replace(/(^|\s)(?![aAI]\b)[a-zA-Z](?=\s|$|[.,;:])/g, ' ');
-  cleaned = cleaned.replace(/\(\s*\)|\[\s*\]/g, ' ');
+    .replace(/\(\s*\)|\[\s*\]/g, ' ');
 
   // Collapse whitespace and trim leading/trailing punctuation
   cleaned = cleaned
     .replace(/\n/g, ' ')
     .replace(/\s+/g, ' ')
-    .replace(/^[\s.,;:\-–—•]+|[\s.,;:\-–—•]+$/g, '')
+    .replace(/^[\s.,;:\-–—•|]+|[\s.,;:\-–—•|]+$/g, '')
     .trim();
 
-  // Require meaningful natural-language prose (at least 6 letters and 2+ words of >=2 letters)
-  const proseWords = cleaned.match(/[a-zA-Z]{2,}/g) || [];
-  const alphaCount = (cleaned.match(/[a-zA-Z]/g) || []).length;
+  // Require meaningful natural-language prose (at least 6 letters and 2+ English words of >=2 letters)
+  const mathTokens = new Set(['sin', 'cos', 'tan', 'sec', 'csc', 'cot', 'log', 'ln', 'exp', 'lim', 'dx', 'dy', 'dt', 'fx']);
+  const proseWords = (cleaned.match(/[a-zA-Z]{2,}/g) || []).filter(w => !mathTokens.has(w.toLowerCase()));
+  const alphaCount = proseWords.join('').length;
   if (alphaCount < 6 || proseWords.length < 2) {
     return '';
   }
@@ -488,24 +564,36 @@ export function stripLatexAndMathForTitle(text: string | undefined): string {
   return cleaned;
 }
 
-export function generateGenericTitleFromText(text: string | undefined, mode: 'Question' | 'Marking', maxLength: number = 30): string {
+export function generateGenericTitleFromText(
+  text: string | undefined,
+  mode: 'Question' | 'Marking',
+  maxLength: number = 48,
+  options?: { subject?: string; fallbackTitle?: string }
+): string {
+  const rawSubject = (options?.subject || '').trim();
+  const validSubject =
+    rawSubject && !/^(general|generic question|unknown|n\/a)$/i.test(rawSubject)
+      ? rawSubject
+      : '';
+
+  const fallback =
+    options?.fallbackTitle ||
+    (validSubject ? `${validSubject} Practice` : (mode === 'Marking' ? 'Untitled Paper' : 'Untitled Question'));
+
   if (!text || !text.trim()) {
-    return `${mode} - ${new Date().toLocaleDateString()}`;
+    return fallback;
   }
 
-  let cleaned = stripLatexAndMathForTitle(text);
+  const cleaned = stripLatexAndMathForTitle(text);
 
   // Handle cases where extraction failed or only math/LaTeX remained after cleaning
   const lower = cleaned.toLowerCase();
   if (!cleaned || lower.includes('unable to extract') || lower.includes('no text detected') || lower.includes('extraction failed')) {
-    return `${mode} - ${new Date().toLocaleDateString()}`;
+    return fallback;
   }
 
-  if (cleaned.length > maxLength) {
-    cleaned = cleaned.substring(0, maxLength).trimEnd() + '...';
-  }
-
-  return `${mode} - ${cleaned}`;
+  const truncated = truncateAtWordBoundary(cleaned, maxLength);
+  return validSubject ? `${validSubject} · ${truncated}` : truncated;
 }
 
 /**

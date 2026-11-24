@@ -8,7 +8,7 @@ import type { Request } from 'express';
 import { generateSessionTitle, getShortSubjectName, getShortExamBoard, getQuestionSortValue } from '../services/marking/MarkingHelpers.js';
 import { createUserMessage, createAIMessage, calculateMessageProcessingStats, calculateSessionStats } from '../utils/messageUtils.js';
 import { ImageStorageService } from './imageStorageService.js';
-import { getBaseQuestionNumber } from '../utils/TextNormalizationUtils.js';
+import { getBaseQuestionNumber, sanitizePaperCodeForTitle } from '../utils/TextNormalizationUtils.js';
 import { formatMarkingSchemeAsBullets } from '../config/prompts.js';
 import { generateSessionTitleFromDetectionResults } from './marking/questionDetectionService.js';
 import type {
@@ -84,11 +84,12 @@ export class SessionManagementService {
     // Create database AI message with detected question data
     const dbAiMessage = this.prepareMarkingAiMessage(context);
 
-    // Generate session title
-    // Generate session title using common function (if detectionResults available)
-    let sessionTitle = context.detectionResults && context.detectionResults.length > 0
-      ? generateSessionTitleFromDetectionResults(context.detectionResults, 'Marking')
-      : this.generateMarkingSessionTitle(context);  // Fallback to old method
+    // Generate session title using common function (or explicit override for rejections/custom flows)
+    let sessionTitle = context.sessionTitleOverride
+      ? context.sessionTitleOverride
+      : (context.detectionResults && context.detectionResults.length > 0
+        ? generateSessionTitleFromDetectionResults(context.detectionResults, 'Marking')
+        : this.generateMarkingSessionTitle(context));  // Fallback to old method
 
     if (context.allQuestionResults?.some((qr: any) => qr.isError && qr.errorMessage === 'Too Dense')) {
       sessionTitle = `⚠️ ${sessionTitle}`;
@@ -305,7 +306,7 @@ export class SessionManagementService {
           );
 
           if (isSequence) {
-            questionNumberDisplay = `Q${uniqueNumbers[0]} to Q${uniqueNumbers[uniqueNumbers.length - 1]}`;
+            questionNumberDisplay = `Q${uniqueNumbers[0]}–Q${uniqueNumbers[uniqueNumbers.length - 1]}`;
           } else {
             questionNumberDisplay = uniqueNumbers.map(num => `Q${num}`).join(', ');
           }
@@ -321,8 +322,8 @@ export class SessionManagementService {
             '';
           const subjectShort = subjectFallback ? getShortSubjectName(subjectFallback) : '';
           return subjectShort
-            ? `${subjectShort} (Modified) - ${questionNumberDisplay} ${totalMarks} marks`.replace(/\s+/g, ' ').trim()
-            : `Modified Paper - ${questionNumberDisplay} ${totalMarks} marks`.replace(/\s+/g, ' ').trim();
+            ? `${subjectShort} (Modified) · ${questionNumberDisplay}`.replace(/\s+/g, ' ').trim()
+            : `Modified Paper · ${questionNumberDisplay}`.replace(/\s+/g, ' ').trim();
         }
 
         // Check if we have multiple exam papers
@@ -341,27 +342,34 @@ export class SessionManagementService {
 
         // If different exam boards, codes, or exam series, use simplified title
         if (examBoards.size > 1 || examCodes.size > 1 || examSeriesSet.size > 1) {
-          return `Past paper - ${questionNumberDisplay}`;
+          return `Past Paper · ${questionNumberDisplay}`;
         }
 
-        // Same exam paper - use detailed title
+        // Same exam paper - use canonical front-loaded title
         const firstQuestionDetection = firstQuestionScheme.questionDetection;
         if (firstQuestionDetection?.match) {
           const { board, examSeries, tier, subject, qualification, paperCode } = firstQuestionDetection.match;
-          
+          const isMeaningful = (v: any) => Boolean(v && !/^(n\/a|unknown|none|general|generic question)$/i.test(String(v).trim()));
+
           if (paperCode === 'Generic Question' || board === 'Unknown') {
-            return `Generic Question Session - ${questionNumberDisplay}`;
+            return generateSessionTitle(firstQuestionDetection, context.globalQuestionText || '', 'Marking');
           }
 
-          const boardShort = getShortExamBoard(board);
-          const subjectShort = getShortSubjectName(subject || qualification || '');
-          const baseTitle = `${examSeries} ${paperCode || ''} ${boardShort} ${subjectShort} ${tier || ''}`.replace(/\s+/g, ' ').trim();
-          return `${baseTitle} ${questionNumberDisplay} ${totalMarks} marks`.replace(/\s+/g, ' ').trim();
+          const boardShort = isMeaningful(board) ? getShortExamBoard(board) : '';
+          const subjectShort = isMeaningful(subject || qualification) ? getShortSubjectName(subject || qualification || '') : '';
+          const cleanCode = isMeaningful(paperCode) ? sanitizePaperCodeForTitle(paperCode) : '';
+          const seriesPart = isMeaningful(examSeries) ? String(examSeries).trim() : '';
+          const tierPart = isMeaningful(tier) ? String(tier).trim() : '';
+
+          const primary = [boardShort, subjectShort, cleanCode].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+          const secondary = [seriesPart, tierPart, questionNumberDisplay].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+          if (primary && secondary) return `${primary} · ${secondary}`;
+          if (primary) return primary;
         }
       }
     }
 
-    return generateSessionTitle(null, '', 'Marking');
+    return generateSessionTitle(context.questionDetection || null, context.globalQuestionText || '', context.mode || 'Marking');
   }
 
   /**
@@ -384,22 +392,27 @@ export class SessionManagementService {
           await FirestoreService.addMessageToUnifiedSession(currentSessionId, context.userMessage, context.mode);
           await FirestoreService.addMessageToUnifiedSession(currentSessionId, dbAiMessage, context.mode);
 
-          // Upgrade fallback session title (e.g. "Marking - 11/10/2026" or "Rejected Document") when a descriptive title is generated
+          // Upgrade fallback session title (e.g. "Marking - 11/10/2026", "Upload Issue", "Unsupported Page Layout") when a descriptive title is generated
           const existingTitle = String(sessionExists.title || '').trim();
-          const isFallbackExistingTitle =
-            !existingTitle ||
-            existingTitle === 'Processing...' ||
-            existingTitle === 'Chat Session' ||
-            existingTitle === 'Marking Session' ||
-            existingTitle === 'Rejected Document' ||
-            existingTitle === 'Rejected Upload' ||
-            existingTitle === 'Upload Issue' ||
-            /^(Marking|Question|Single Message|Batch Session)\s*-\s*\d/i.test(existingTitle);
-          const isMeaningfulNewTitle =
-            Boolean(sessionTitle) &&
-            sessionTitle !== 'Processing...' &&
-            sessionTitle !== 'Upload Issue' &&
-            !/^(Marking|Question|Single Message|Batch Session)\s*-\s*\d/i.test(String(sessionTitle).trim());
+          const isFallbackTitle = (t: string): boolean =>
+            !t ||
+            t === 'Processing...' ||
+            t === 'Chat Session' ||
+            t === 'Marking Session' ||
+            t === 'Rejected Document' ||
+            t === 'Rejected Upload' ||
+            t === 'Upload Issue' ||
+            t === 'Untitled Paper' ||
+            t === 'Untitled Question' ||
+            t === 'Unsupported Page Layout' ||
+            t === 'Unreadable Upload' ||
+            t === 'Non-Exam Upload' ||
+            t === 'Page Too Dense' ||
+            t === 'Mark Scheme Needed' ||
+            /·\s*Mark Scheme Needed$/i.test(t) ||
+            /^(Marking|Question|Single Message|Batch Session)\s*-\s*\d/i.test(t);
+          const isFallbackExistingTitle = isFallbackTitle(existingTitle);
+          const isMeaningfulNewTitle = !isFallbackTitle(String(sessionTitle || '').trim());
           if (isFallbackExistingTitle && isMeaningfulNewTitle) {
             await FirestoreService.updateUnifiedSession(currentSessionId, { title: sessionTitle });
           }
@@ -1264,6 +1277,7 @@ export class SessionManagementService {
 
   /**
    * Generates a cohesive master performance summary based on distilled results of all questions.
+   * For 1–2 question uploads, builds a deterministic compact summary in <1ms (skipping the ~3–5s LLM call).
    */
   public static async generateMasterPerformanceSummary(
     allQuestionResults: any[],
@@ -1273,9 +1287,167 @@ export class SessionManagementService {
     predictedGrade?: string | null,
     gradeBoundaries?: any,
     studentScore?: any,
-    examInfo?: any
+    examInfo?: any,
+    markingSource?: {
+      type: 'official' | 'user_uploaded' | 'modified' | 'general';
+      label?: string;
+      fileName?: string;
+    }
   ): Promise<string | undefined> {
     if (!allQuestionResults || allQuestionResults.length === 0) return undefined;
+
+    const preAwardedMarks = studentScore?.awardedMarks ?? allQuestionResults.reduce((s, q) => s + Number(q.score?.awardedMarks ?? 0), 0);
+    const preTotalMarks = studentScore?.totalMarks ?? allQuestionResults.reduce((s, q) => s + Number(q.score?.totalMarks ?? 0), 0);
+    const preOverallPct = preTotalMarks > 0 ? Math.round((preAwardedMarks / preTotalMarks) * 100) : 0;
+    const hasDbBoundaries = Boolean(gradeBoundaries && typeof gradeBoundaries === 'object' && Object.keys(gradeBoundaries).length > 0);
+    const hasTooDenseWarning = allQuestionResults.some((qr: any) => qr.isError && qr.errorMessage === 'Too Dense');
+
+    // Resolve marking source provenance for UI trust badge (exam meta format, never raw filenames)
+    const cleanCodeForLabel = examInfo?.examCode ? sanitizePaperCodeForTitle(examInfo.examCode) : '';
+    const shortSubjectForLabel = examInfo?.subject && !/^(unknown|n\/a|general|generic question)$/i.test(String(examInfo.subject))
+      ? getShortSubjectName(examInfo.subject)
+      : '';
+    const resolvedMarkingSource = markingSource || (() => {
+      if (examInfo?.isModified) {
+        return {
+          type: 'modified' as const,
+          label: [examInfo.examBoard, shortSubjectForLabel, cleanCodeForLabel].filter(Boolean).join(' ') || 'Official Scheme'
+        };
+      }
+      if (
+        examInfo?.examBoard &&
+        !/^(unknown|n\/a)$/i.test(String(examInfo.examBoard)) &&
+        cleanCodeForLabel &&
+        !/^(generic question|unknown|n\/a)$/i.test(cleanCodeForLabel)
+      ) {
+        const seriesStr = examInfo.examSeries && !/^(n\/a|unknown|general)$/i.test(String(examInfo.examSeries))
+          ? ` (${examInfo.examSeries})`
+          : '';
+        return {
+          type: 'official' as const,
+          label: `${[examInfo.examBoard, shortSubjectForLabel, cleanCodeForLabel].filter(Boolean).join(' ')}${seriesStr}`.trim()
+        };
+      }
+      return {
+        type: 'general' as const,
+        label: 'General Mark Scheme'
+      };
+    })();
+
+    // Build deterministic per-question breakdown (used by Compact/Standard tiers and to enrich Focus Next with marksLost)
+    let quickFullMarksCount = 0;
+    let quickAttemptedCount = 0;
+    const questionBreakdown = allQuestionResults.map(qr => {
+      const qNum = String(qr.questionNumber || '').replace(/^Q/i, '').trim();
+      const awarded = Number(qr.score?.awardedMarks ?? qr.marks ?? 0);
+      const total = Number(qr.score?.totalMarks ?? qr.totalMarks ?? 0);
+      const lost = Math.max(0, total - awarded);
+      if (total > 0 && awarded >= total) quickFullMarksCount++;
+      if (awarded > 0 || (qr.studentWork && String(qr.studentWork).trim().length > 0) || (qr.annotations && qr.annotations.length > 0)) {
+        quickAttemptedCount++;
+      }
+      const annotations = Array.isArray(qr.annotations) ? qr.annotations : [];
+      const missedNote = annotations.find((a: any) =>
+        a.reasoning && String(a.reasoning).trim() &&
+        (a.action === 'cross' || a.action === 'partial' || /^0\b|missing|incorrect|error/i.test(String(a.text || '')))
+      )?.reasoning;
+      const anyNote = annotations.find((a: any) => a.reasoning && String(a.reasoning).trim())?.reasoning;
+      const rubricGap = (qr as any).rubricEvaluation?.coaching?.nextLevelGap || (qr as any).rubricEvaluation?.coaching?.rationale;
+      const rawNote = String((lost > 0 ? (rubricGap || missedNote || anyNote) : (anyNote || '')) || '')
+        .replace(/\*\*/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const feedback = rawNote.length > 110 ? rawNote.slice(0, 107).trimEnd() + '…' : rawNote;
+      return {
+        q: qNum,
+        awarded,
+        total,
+        lost,
+        ...(feedback ? { feedback } : {})
+      };
+    });
+
+    // Build 3-part coaching block if any rubric questions exist
+    const buildQuestionCoaching = () => allQuestionResults
+      .filter((qr: any) => qr.rubricEvaluation && qr.rubricEvaluation.coaching)
+      .map((qr: any) => {
+        const r = qr.rubricEvaluation;
+        return {
+          q: String(qr.questionNumber || '').replace(/^Q/i, '').trim(),
+          rubricStamp: r.rubricStamp || `Level ${r.awardedLevel || 0} (${r.awardedMarks}/${r.maxMarks})`,
+          awardedLevel: r.awardedLevel || 0,
+          levelLabel: r.levelLabel || '',
+          awardedMarks: Number(qr.score?.awardedMarks ?? r.awardedMarks ?? 0),
+          maxMarks: Number(qr.score?.totalMarks ?? r.maxMarks ?? 0),
+          aoBreakdown: Array.isArray(r.aoBreakdown) ? r.aoBreakdown : [],
+          coaching: {
+            rationale: r.coaching?.rationale || '',
+            nextLevelGap: r.coaching?.nextLevelGap || '',
+            upgradeRewrite: r.coaching?.upgradeRewrite || null
+          }
+        };
+      });
+
+    // ⚡ FAST DETERMINISTIC PATH FOR 1–2 QUESTIONS:
+    // Skips the 3–5s LLM summary call completely for small uploads (unless it's a large-mark full paper missing DB boundaries).
+    const needsLlmBoundaryEstimate = !hasDbBoundaries && Boolean(examInfo) && !examInfo?.isModified && preTotalMarks >= 40;
+    if (allQuestionResults.length <= 2 && !needsLlmBoundaryEstimate) {
+      const isFullScore = preTotalMarks > 0 && preAwardedMarks >= preTotalMarks;
+      let headline = '';
+      if (isFullScore) {
+        headline = allQuestionResults.length === 1
+          ? 'Full marks achieved — all required working shown.'
+          : 'Full marks achieved across all questions.';
+      } else if (allQuestionResults.length === 1) {
+        headline = questionBreakdown[0]?.feedback || `Review the marked steps below to recover ${Math.max(0, preTotalMarks - preAwardedMarks)} ${preTotalMarks - preAwardedMarks === 1 ? 'mark' : 'marks'}.`;
+      } else {
+        headline = quickFullMarksCount > 0
+          ? `${quickFullMarksCount} of ${allQuestionResults.length} at full marks — review the missed step below.`
+          : 'Review the missed steps below to recover lost marks.';
+      }
+
+      const deterministicFocusNext = isFullScore
+        ? []
+        : questionBreakdown
+            .filter(qb => qb.lost > 0)
+            .sort((a, b) => b.lost - a.lost)
+            .map(qb => ({
+              q: `Q${qb.q}`,
+              marksLost: qb.lost,
+              text: qb.feedback || `Review Q${qb.q} to recover ${qb.lost} ${qb.lost === 1 ? 'mark' : 'marks'}`
+            }));
+
+      const coaching = buildQuestionCoaching();
+      const summaryPayload = {
+        _type: 'AI_SUMMARY_V2',
+        level: /a[- ]?level|9ma0|wma/i.test(`${examInfo?.examCode || ''} ${examInfo?.subject || ''}`) ? 'ALEVEL' : 'GCSE',
+        headline,
+        tooDenseWarning: hasTooDenseWarning,
+        examInfo: examInfo || null,
+        markingSource: resolvedMarkingSource,
+        questionBreakdown,
+        score: {
+          awardedMarks: preAwardedMarks,
+          totalMarks: preTotalMarks,
+          percentage: preOverallPct,
+          questionsTotal: allQuestionResults.length,
+          questionsFullMarks: quickFullMarksCount,
+          questionsAttempted: quickAttemptedCount
+        },
+        grading: hasDbBoundaries ? {
+          grade: grade || 'Partial Paper',
+          predictedGrade: predictedGrade || 'N/A',
+          boundaries: gradeBoundaries,
+          boundariesSource: 'official' as const
+        } : null,
+        radar: [],
+        mastered: [],
+        focusNext: deterministicFocusNext,
+        questionCoaching: coaching.length > 0 ? coaching : undefined
+      };
+
+      return JSON.stringify(summaryPayload);
+    }
 
     const distilledData = allQuestionResults.map(qr => {
       const qNum = String(qr.questionNumber || 'Unknown');
@@ -1297,11 +1469,6 @@ export class SessionManagementService {
 
       return `Q${qNum} (${topic}): Score ${awarded}/${total}.${rubricInfo} Key Points: ${feedback}`;
     }).join('\n');
-
-    const preAwardedMarks = studentScore?.awardedMarks ?? allQuestionResults.reduce((s, q) => s + Number(q.score?.awardedMarks ?? 0), 0);
-    const preTotalMarks = studentScore?.totalMarks ?? allQuestionResults.reduce((s, q) => s + Number(q.score?.totalMarks ?? 0), 0);
-    const preOverallPct = preTotalMarks > 0 ? Math.round((preAwardedMarks / preTotalMarks) * 100) : 0;
-    const hasDbBoundaries = Boolean(gradeBoundaries && typeof gradeBoundaries === 'object' && Object.keys(gradeBoundaries).length > 0);
 
     let promptData = `DISTILLED QUESTION RESULTS:\n${distilledData}\n\n`;
     promptData += `STUDENT SCORE: ${preAwardedMarks}/${preTotalMarks} (${preOverallPct}%)\n`;
@@ -1488,7 +1655,6 @@ export class SessionManagementService {
         ? assessedAxesOnly
         : rawRadarData;
 
-      const hasTooDenseWarning = allQuestionResults.some((qr: any) => qr.isError && qr.errorMessage === 'Too Dense');
       let resolvedBoundaries: Record<string, number> | undefined =
         gradeBoundaries && typeof gradeBoundaries === 'object' && Object.keys(gradeBoundaries).length > 0
           ? gradeBoundaries
@@ -1603,6 +1769,23 @@ export class SessionManagementService {
         ? 'Partial Paper'
         : (resolvedGrade && String(resolvedGrade).trim() !== '' ? String(resolvedGrade) : 'N/A');
 
+      const isFullPaperScore = totalMarks > 0 && awardedMarks >= totalMarks;
+      const enrichedFocusNext = isFullPaperScore
+        ? []
+        : (Array.isArray(aiParsed.focusNext) ? aiParsed.focusNext : [])
+            .map((item: any) => {
+              const qKey = item?.q ? String(item.q).replace(/^Q/i, '').trim() : '';
+              const qScore = qKey ? qScoreMap.get(qKey) : undefined;
+              const marksLost = qScore ? Math.max(0, qScore.total - qScore.awarded) : undefined;
+              return {
+                ...item,
+                ...(marksLost && marksLost > 0 ? { marksLost } : {})
+              };
+            })
+            .filter((item: any) => item.marksLost === undefined || item.marksLost > 0)
+            .sort((a: any, b: any) => (b.marksLost || 0) - (a.marksLost || 0))
+            .slice(0, 3);
+
       const summaryPayload = {
         _type: 'AI_SUMMARY_V2',
         level: isALevel ? 'ALEVEL' : 'GCSE',
@@ -1610,6 +1793,8 @@ export class SessionManagementService {
         headline: aiParsed.headline || '',
         tooDenseWarning: hasTooDenseWarning,
         examInfo: examInfo || null,
+        markingSource: resolvedMarkingSource,
+        questionBreakdown,
         score: {
           awardedMarks,
           totalMarks,
@@ -1621,11 +1806,12 @@ export class SessionManagementService {
         grading: hasBoundaries ? {
           grade: finalGrade,
           predictedGrade: finalPredictedGrade,
-          boundaries: resolvedBoundaries
+          boundaries: resolvedBoundaries,
+          boundariesSource: hasDbBoundaries ? 'official' : 'estimated'
         } : null,
         radar: radarData,
         mastered: Array.isArray(aiParsed.mastered) ? aiParsed.mastered.slice(0, 3) : [],
-        focusNext: Array.isArray(aiParsed.focusNext) ? aiParsed.focusNext.slice(0, 3) : [],
+        focusNext: enrichedFocusNext,
         questionCoaching: questionCoaching.length > 0 ? questionCoaching : undefined
       };
 

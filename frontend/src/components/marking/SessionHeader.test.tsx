@@ -142,4 +142,36 @@ describe('SessionHeader', () => {
     expect(screen.queryByText('Processing')).not.toBeInTheDocument();
     expect(screen.getByText('AQA Mathematics 8300')).toBeInTheDocument();
   });
+
+  it('renders canonical "Primary · Secondary" sessionTitle consistently in header and Task Details', () => {
+    mockMarkingPageState = {
+      ...mockMarkingPageState,
+      isProcessing: false,
+      showInfoDropdown: true,
+      sessionTitle: 'OCR Maths J560/04 · May 2023 Higher Q1–Q4',
+      currentSession: {
+        id: 'sub-999',
+        title: 'OCR Maths J560/04 · May 2023 Higher Q1–Q4',
+        detectedQuestion: {
+          found: true,
+          examPapers: [
+            {
+              examBoard: 'OCR',
+              examCode: 'J560/04',
+              paperTitle: 'Paper 4',
+              subject: 'Mathematics',
+              examSeries: 'May 2023',
+              tier: 'Higher',
+            },
+          ],
+        },
+        messages: [],
+      },
+    };
+
+    render(<SessionHeader />);
+    expect(screen.getByText('OCR Maths J560/04')).toBeInTheDocument();
+    expect(screen.getByText('May 2023 Higher Q1–Q4')).toBeInTheDocument();
+    expect(screen.getByText('OCR Maths J560/04 · May 2023 Higher Q1–Q4')).toBeInTheDocument();
+  });
 });

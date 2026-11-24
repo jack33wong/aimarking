@@ -1,5 +1,18 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { CheckCircle2, Target, Sparkles, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
+import {
+  CheckCircle2,
+  Target,
+  Sparkles,
+  AlertTriangle,
+  ChevronDown,
+  ChevronUp,
+  ShieldCheck,
+  FileCheck2,
+  ArrowRight,
+  ArrowUpRight,
+  BookOpen,
+  X
+} from 'lucide-react';
 import { useMarkingPage } from '../../contexts/MarkingPageContext';
 import './css/PerformanceSummaryPanel.css';
 
@@ -51,6 +64,18 @@ interface SummaryV2Payload {
     tier?: string;
     isModified?: boolean;
   } | null;
+  markingSource?: {
+    type: 'official' | 'user_uploaded' | 'modified' | 'general';
+    label?: string;
+    fileName?: string;
+  } | null;
+  questionBreakdown?: Array<{
+    q: string;
+    awarded: number;
+    total: number;
+    lost: number;
+    feedback?: string;
+  }>;
   score: {
     awardedMarks: number;
     totalMarks: number;
@@ -63,10 +88,11 @@ interface SummaryV2Payload {
     grade?: string | null;
     predictedGrade?: string | null;
     boundaries?: Record<string, number>;
+    boundariesSource?: 'official' | 'estimated';
   } | null;
   radar: RadarPoint[];
   mastered: Array<{ q?: string; text: string }>;
-  focusNext: Array<{ q?: string; text: string }>;
+  focusNext: Array<{ q?: string; text: string; marksLost?: number }>;
   questionCoaching?: QuestionCoachingItem[];
   hasCombinedOverview?: boolean;
   paperSummaries?: Array<{
@@ -78,9 +104,86 @@ interface SummaryV2Payload {
 interface PerformanceSummaryPanelProps {
   rawSummary: string;
   MarkdownMathRenderer: React.ElementType;
+  detectedQuestion?: any;
   onQuestionClick?: (qNum: string) => void;
   activeQuestionId?: string | null;
 }
+
+const sanitizePaperCodeForDisplay = (code?: string | null): string => {
+  if (!code || typeof code !== 'string') return '';
+  let cleaned = code
+    .replace(/\|.*$/, '')
+    .replace(/\.(pdf|png|jpe?g|webp)$/i, '')
+    .trim();
+  cleaned = cleaned
+    .replace(/(?:[_\-\s]+(?:MS|QP|ER|INS|RMS|QUE))+$/i, '')
+    .replace(/[_\-\s]+\d{4}$/, '')
+    .replace(/(?:[_\-\s]+(?:MS|QP|ER|INS|RMS|QUE))+$/i, '')
+    .trim();
+  if (/^[A-Za-z0-9]+_[A-Za-z0-9]+$/.test(cleaned)) {
+    cleaned = cleaned.replace('_', '/');
+  } else {
+    cleaned = cleaned.replace(/_+/g, ' ');
+  }
+  return cleaned.replace(/\s+/g, ' ').trim();
+};
+
+const shortenSubjectForDisplay = (subject?: string | null): string => {
+  const s = (subject || '').trim();
+  if (!s || /^(unknown|n\/a|general|generic question)$/i.test(s)) return '';
+  if (/^mathematics$/i.test(s)) return 'Maths';
+  if (/^further mathematics$/i.test(s)) return 'Further Maths';
+  return s;
+};
+
+type ParsedSchemeBlock =
+  | { kind: 'subpart'; label: string; marks?: string }
+  | { kind: 'point'; code: string; body: string }
+  | { kind: 'text'; body: string };
+
+const parseMarkSchemeBlocks = (scheme: string): ParsedSchemeBlock[] => {
+  const lines = scheme.split(/\r?\n/);
+  const blocks: ParsedSchemeBlock[] = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    // Clean internal headers like "[2a] [MAX SCORE: 3] [PARADIGM: CALCULATION_STEP]"
+    const subpartMatch = line.match(/^\[([^\]]+)\]\s*(?:\[MAX SCORE:\s*([^\]]+)\])?(?:\s*\[PARADIGM:[^\]]+\])?$/i);
+    if (subpartMatch) {
+      const partId = subpartMatch[1].trim();
+      const maxScore = subpartMatch[2]?.trim();
+      blocks.push({
+        kind: 'subpart',
+        label: `Part ${partId}`,
+        ...(maxScore ? { marks: `${maxScore} ${maxScore === '1' ? 'mark' : 'marks'}` } : {})
+      });
+      continue;
+    }
+
+    // Parse mark-point bullets like "- M1: ...", "* A1: ...", "• B1: ...", "B1: ..."
+    const pointMatch = line.match(/^(?:[-*•]\s*)?\*{0,2}([A-Z]{1,4}\d+[a-z]?)\*{0,2}\s*[:\-–]\s*(.+)$/);
+    if (pointMatch) {
+      blocks.push({
+        kind: 'point',
+        code: pointMatch[1].trim(),
+        body: pointMatch[2].trim()
+      });
+      continue;
+    }
+
+    // Merge consecutive plain text lines into a single markdown block
+    const prev = blocks[blocks.length - 1];
+    if (prev && prev.kind === 'text') {
+      prev.body += `\n${rawLine}`;
+    } else {
+      blocks.push({ kind: 'text', body: rawLine });
+    }
+  }
+
+  return blocks;
+};
 
 // Helpers for Scannable Micro-Coaching and Single-Expand Strategy
 const renderBoldText = (str: string, highlight?: boolean): React.ReactNode[] => {
@@ -400,9 +503,31 @@ const TopicRadarChart: React.FC<{ data: RadarPoint[] }> = ({ data }) => {
 export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = ({
   rawSummary,
   MarkdownMathRenderer,
+  detectedQuestion,
   onQuestionClick,
   activeQuestionId: propActiveQuestionId
 }) => {
+  const [showSchemeModal, setShowSchemeModal] = useState(false);
+
+  const schemeQuestions = useMemo(() => {
+    const papers = detectedQuestion?.examPapers;
+    if (!Array.isArray(papers)) return [];
+    const list: Array<{ q: string; marks?: number; scheme: string; paperTitle?: string }> = [];
+    papers.forEach((p: any) => {
+      (p.questions || []).forEach((q: any) => {
+        const schemeText = typeof q?.markingScheme === 'string' ? q.markingScheme.trim() : '';
+        if (schemeText) {
+          list.push({
+            q: String(q.questionNumber || ''),
+            marks: q.marks,
+            scheme: schemeText,
+            paperTitle: p.paperTitle || [p.examBoard, p.examCode, p.examSeries].filter(Boolean).join(' ')
+          });
+        }
+      });
+    });
+    return list;
+  }, [detectedQuestion]);
   let contextActiveQuestionId: string | null = null;
   try {
     const markingPage = useMarkingPage();
@@ -507,11 +632,116 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
     );
   }
 
-  const { examInfo, score, grading, radar, mastered, focusNext, headline, tooDenseWarning, questionCoaching } = activeV2;
+  const {
+    examInfo,
+    markingSource,
+    questionBreakdown,
+    score,
+    grading,
+    radar,
+    mastered,
+    focusNext,
+    headline,
+    tooDenseWarning,
+    questionCoaching
+  } = activeV2;
 
   const isPastPaperWithBoundaries = sortedBoundariesDesc.length > 0;
   const maxBoundaryMark = sortedBoundariesDesc[0]?.mark || 0;
   const isPartialPaper = isPastPaperWithBoundaries && score.totalMarks > 0 && score.totalMarks < maxBoundaryMark * 0.65;
+  const isFullMarksOverall = score.totalMarks > 0 && score.awardedMarks >= score.totalMarks;
+
+  // 3-tier adaptive layout: Compact (1 Q) | Standard (2-5 Qs or partial) | Full (6+ Qs or full paper)
+  const summaryTier: 'compact' | 'standard' | 'full' =
+    score.questionsTotal <= 1 && (!isPastPaperWithBoundaries || isPartialPaper)
+      ? 'compact'
+      : (score.questionsTotal <= 5 && (!isPastPaperWithBoundaries || isPartialPaper))
+        ? 'standard'
+        : 'full';
+
+  // Only show Radar Chart when >= 3 distinct axes are actually assessed (prevents fake 5-provisional hexagons)
+  const assessedRadarCount = Array.isArray(radar) ? radar.filter(r => r.assessed).length : 0;
+  const showRadarChart = summaryTier !== 'compact' && Array.isArray(radar) && radar.length >= 3 && assessedRadarCount >= 3;
+
+  // Resolve marking source provenance badge:
+  // - `label`: full exam meta for modal & tooltip (e.g. "CIE Biology 0610/41 (May/June 2026)")
+  // - `shortLabel`: compact identifier for the single-line header pill (e.g. "CIE 0610/41")
+  const resolvedSource = (() => {
+    const cleanCode = sanitizePaperCodeForDisplay(examInfo?.examCode);
+    const shortSubj = shortenSubjectForDisplay(examInfo?.subject);
+    const seriesStr = examInfo?.examSeries && !/^(n\/a|unknown|general)$/i.test(examInfo.examSeries)
+      ? ` (${examInfo.examSeries})`
+      : '';
+    const formattedExamMeta = [examInfo?.examBoard, shortSubj, cleanCode]
+      .filter(v => v && !/^(unknown|n\/a|generic question)$/i.test(String(v)))
+      .join(' ');
+    const compactExamMeta = [examInfo?.examBoard, cleanCode]
+      .filter(v => v && !/^(unknown|n\/a|generic question)$/i.test(String(v)))
+      .join(' ');
+
+    if (markingSource?.type) {
+      if (markingSource.type === 'official' && formattedExamMeta) {
+        return {
+          ...markingSource,
+          label: `${formattedExamMeta}${seriesStr}`.trim(),
+          shortLabel: compactExamMeta || formattedExamMeta
+        };
+      }
+      if (markingSource.type === 'modified' && formattedExamMeta) {
+        return {
+          ...markingSource,
+          label: formattedExamMeta,
+          shortLabel: compactExamMeta || formattedExamMeta
+        };
+      }
+      return {
+        ...markingSource,
+        shortLabel: markingSource.fileName || markingSource.label || ''
+      };
+    }
+    if (examInfo?.isModified) {
+      return {
+        type: 'modified' as const,
+        label: formattedExamMeta || 'Official Scheme',
+        shortLabel: compactExamMeta || 'Official Scheme'
+      };
+    }
+    if (
+      examInfo?.examBoard &&
+      !/^(unknown|n\/a)$/i.test(examInfo.examBoard) &&
+      cleanCode &&
+      !/^(generic question|unknown|n\/a)$/i.test(cleanCode)
+    ) {
+      return {
+        type: 'official' as const,
+        label: `${formattedExamMeta}${seriesStr}`.trim(),
+        shortLabel: compactExamMeta || formattedExamMeta
+      };
+    }
+    return {
+      type: 'general' as const,
+      label: 'General Mark Scheme',
+      shortLabel: 'General Scheme'
+    };
+  })();
+
+  // Compute Next Grade Gap for full papers (replaces duplicate Grade Achieved / Predicted Grade boxes)
+  const nextGradeTarget = (() => {
+    if (!isPastPaperWithBoundaries || isPartialPaper) return null;
+    const higherBoundaries = sortedBoundariesDesc.filter(b => b.mark > score.awardedMarks);
+    if (higherBoundaries.length === 0) {
+      return { isTopGrade: true, marksNeeded: 0, nextGrade: sortedBoundariesDesc[0]?.grade || '' };
+    }
+    const closestHigher = higherBoundaries[higherBoundaries.length - 1];
+    return {
+      isTopGrade: false,
+      marksNeeded: closestHigher.mark - score.awardedMarks,
+      nextGrade: closestHigher.grade
+    };
+  })();
+
+  // Filter out filler Focus Next on 100% scores
+  const visibleFocusNext = isFullMarksOverall ? [] : (focusNext || []);
 
   let proratedGradeStr: string | null = null;
   if (isPartialPaper) {
@@ -553,24 +783,78 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
     }
   };
 
+  const boundaryProvenanceText = (() => {
+    if (!isPastPaperWithBoundaries) return '';
+    if (grading?.boundariesSource === 'estimated') {
+      const seriesLabel = examInfo?.examSeries ? `${examInfo.examSeries} ` : '';
+      return `Estimated boundaries (official ${seriesLabel}boundaries not yet published)`;
+    }
+    const sourceMeta = [examInfo?.examBoard, examInfo?.examSeries].filter(Boolean).join(' ');
+    return sourceMeta ? `Source: Official ${sourceMeta} Grade Boundaries` : 'Source: Official Grade Boundaries';
+  })();
+
+  const headerBadgeText =
+    resolvedSource.type === 'official'
+      ? `Official Scheme${resolvedSource.shortLabel ? ` · ${resolvedSource.shortLabel}` : ''}`
+      : resolvedSource.type === 'user_uploaded'
+        ? `Your Scheme · ${resolvedSource.fileName || resolvedSource.shortLabel || 'Uploaded'}`
+        : resolvedSource.type === 'modified'
+          ? 'Official Scheme (Modified)'
+          : 'General Scheme';
+
+  const headerBadgeTooltip =
+    resolvedSource.type === 'official'
+      ? `Marked against Official Mark Scheme: ${resolvedSource.label}${schemeQuestions.length > 0 ? ' — Click to view scheme' : ''}`
+      : resolvedSource.type === 'user_uploaded'
+        ? `Marked using your uploaded mark scheme: ${resolvedSource.fileName || resolvedSource.label}${schemeQuestions.length > 0 ? ' — Click to view scheme' : ''}`
+        : resolvedSource.type === 'modified'
+          ? `Marked against official scheme adapted for modified questions (${resolvedSource.label})`
+          : 'Marked with AI General Mark Scheme';
+
   return (
-    <div className="tmua-summary-card">
-      {/* Header Row */}
+    <div className={`tmua-summary-card tier-${summaryTier}`}>
+      {/* Single-Line Header Row: Title on left + Merged Clickable Source/View Pill on right */}
       <div className="tmua-summary-header">
         <div className="tmua-summary-title">
           <Sparkles size={15} className="tmua-sparkle-icon" />
-          <span>AI PERFORMANCE SUMMARY</span>
+          <span className="summary-title-desktop">AI PERFORMANCE SUMMARY</span>
+          <span className="summary-title-compact">SUMMARY</span>
         </div>
-        {examInfo && examInfo.examBoard && (
-          <div className="tmua-exam-pills">
-            {examInfo.examBoard && <span className="tmua-pill">{examInfo.examBoard}</span>}
-            {examInfo.subject && <span className="tmua-pill">{examInfo.subject}</span>}
-            {examInfo.examCode && <span className="tmua-pill strong">{examInfo.examCode}</span>}
-            {examInfo.examSeries && <span className="tmua-pill">{examInfo.examSeries}</span>}
-            {examInfo.tier && examInfo.tier !== 'N/A' && <span className="tmua-pill">{examInfo.tier}</span>}
-            {examInfo.isModified && <span className="tmua-pill modified">Modified</span>}
-          </div>
-        )}
+
+        <div className="tmua-header-provenance">
+          {schemeQuestions.length > 0 ? (
+            <button
+              type="button"
+              className={`tmua-source-badge clickable source-${resolvedSource.type}`}
+              onClick={() => setShowSchemeModal(true)}
+              title={headerBadgeTooltip}
+            >
+              {resolvedSource.type === 'user_uploaded'
+                ? <FileCheck2 size={13} className="tmua-source-icon" />
+                : resolvedSource.type !== 'general'
+                  ? <ShieldCheck size={13} className="tmua-source-icon" />
+                  : null}
+              <span className="tmua-source-text">{headerBadgeText}</span>
+              <span className="tmua-source-divider" aria-hidden="true" />
+              <span className="tmua-source-action">
+                <span>View</span>
+                <ArrowUpRight size={12} />
+              </span>
+            </button>
+          ) : (
+            <span
+              className={`tmua-source-badge source-${resolvedSource.type}`}
+              title={headerBadgeTooltip}
+            >
+              {resolvedSource.type === 'user_uploaded'
+                ? <FileCheck2 size={13} className="tmua-source-icon" />
+                : resolvedSource.type !== 'general'
+                  ? <ShieldCheck size={13} className="tmua-source-icon" />
+                  : null}
+              <span className="tmua-source-text">{headerBadgeText}</span>
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Multi-Paper / Multi-Subject Switcher Pill Bar */}
@@ -613,9 +897,8 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
         </div>
       )}
 
-      {/* Main 2-Column Body: Left (2/3) Metrics + Right (1/3) Radar */}
-      <div className="tmua-summary-grid">
-        {/* LEFT COLUMN (~65%) */}
+      {/* Main Body: 2-Column only when Radar has >=3 real assessed axes; otherwise full-width clean layout */}
+      <div className={`tmua-summary-grid ${showRadarChart ? '' : 'single-column'}`}>
         <div className="tmua-left-col">
           {/* Hero Metric, Progress Bar & Official Past Paper Grade Boundary Table */}
           <div className="tmua-hero-box">
@@ -628,6 +911,12 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
                 <span className="tmua-hero-pct">{score.percentage}%</span>
               </div>
               <div className="tmua-hero-badges">
+                {isFullMarksOverall && !isPastPaperWithBoundaries && (
+                  <span className="tmua-full-marks-pill">
+                    <CheckCircle2 size={13} />
+                    <span>Full Marks</span>
+                  </span>
+                )}
                 {isPastPaperWithBoundaries && (
                   <div className={`tmua-grade-badge ${!hasAchievedGrade ? 'na' : ''}`}>
                     {gradeAchieved === 'Partial Paper' ? (
@@ -661,17 +950,19 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
                   title={`${score.awardedMarks}/${score.totalMarks} (${score.percentage}%)`}
                 />
               </div>
-              <div className="tmua-Scale-labels">
-                <span>0%</span>
-                <span>25%</span>
-                <span>50%</span>
-                <span>75%</span>
-                <span>100%</span>
-              </div>
+              {summaryTier !== 'compact' && (
+                <div className="tmua-Scale-labels">
+                  <span>0%</span>
+                  <span>25%</span>
+                  <span>50%</span>
+                  <span>75%</span>
+                  <span>100%</span>
+                </div>
+              )}
             </div>
 
-            {/* Official Past Paper Grade Boundary Table (Always shown when boundaries exist in DB) */}
-            {isPastPaperWithBoundaries && (
+            {/* Official Past Paper Grade Boundary Table (shown on Full tier / full papers with boundaries) */}
+            {isPastPaperWithBoundaries && summaryTier === 'full' && (
               <div className="tmua-grade-table-wrapper">
                 <table className="tmua-grade-table">
                   <tbody>
@@ -699,12 +990,44 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
                     </tr>
                   </tbody>
                 </table>
+                {boundaryProvenanceText && (
+                  <div className={`tmua-boundary-caption ${grading?.boundariesSource === 'estimated' ? 'estimated' : 'official'}`}>
+                    {boundaryProvenanceText}
+                  </div>
+                )}
               </div>
             )}
           </div>
 
-          {/* 3 Compact Stat Pills */}
-          {isPastPaperWithBoundaries ? (
+          {/* Standard Tier (2-5 Qs): Compact clickable Question Score Pills */}
+          {summaryTier === 'standard' && Array.isArray(questionBreakdown) && questionBreakdown.length > 1 && (
+            <div className="tmua-question-pills-row">
+              {questionBreakdown.map((qb, idx) => {
+                const isFull = qb.total > 0 && qb.awarded >= qb.total;
+                const isZero = qb.total > 0 && qb.awarded === 0;
+                return (
+                  <button
+                    key={idx}
+                    type="button"
+                    className={`tmua-q-pill ${isFull ? 'full' : isZero ? 'zero' : 'partial'}`}
+                    onClick={() => {
+                      const cleanQ = String(qb.q).replace(/^Q/i, '');
+                      setExpandedQuestionKey(String(qb.q));
+                      onQuestionClick?.(cleanQ);
+                      scrollToCoachingCard(cleanQ);
+                    }}
+                    title={`Jump to Q${qb.q}`}
+                  >
+                    <span className="q-pill-num">{formatSummaryQuestionChip(qb.q)}</span>
+                    <span className="q-pill-score">{qb.awarded}/{qb.total}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Full Tier KPI Row: 3 distinct, non-duplicate stats (no more 4x repeated Grade!) */}
+          {summaryTier === 'full' && (
             <div className="tmua-stat-pills-row">
               <div className="tmua-stat-card">
                 <div className="tmua-stat-value">
@@ -712,39 +1035,84 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
                 </div>
                 <div className="tmua-stat-label">Full marks questions</div>
               </div>
-              <div className="tmua-stat-card">
-                <div className={`tmua-stat-value ${!hasAchievedGrade ? 'stat-fallback' : ''}`}>{gradeAchieved}</div>
-                <div className="tmua-stat-label">Grade Achieved</div>
-              </div>
-              <div className="tmua-stat-card">
-                <div className={`tmua-stat-value ${!predictedGrade || predictedGrade === 'N/A' ? 'stat-fallback' : ''}`}>{predictedGrade}</div>
-                <div className="tmua-stat-label">Predicted Grade</div>
-              </div>
-            </div>
-          ) : (
-            <div className="tmua-stat-pills-row">
-              <div className="tmua-stat-card">
-                <div className="tmua-stat-value">{score.questionsTotal}</div>
-                <div className="tmua-stat-label">Questions marked</div>
-              </div>
+
+              {nextGradeTarget ? (
+                <div className="tmua-stat-card">
+                  <div className="tmua-stat-value">
+                    {nextGradeTarget.isTopGrade ? 'Top' : `+${nextGradeTarget.marksNeeded}`}
+                  </div>
+                  <div className="tmua-stat-label">
+                    {nextGradeTarget.isTopGrade
+                      ? 'Highest grade band'
+                      : `Marks to Grade ${nextGradeTarget.nextGrade}`}
+                  </div>
+                </div>
+              ) : isPartialPaper && predictedGrade !== 'N/A' ? (
+                <div className="tmua-stat-card">
+                  <div className="tmua-stat-value">{predictedGrade}</div>
+                  <div className="tmua-stat-label">Predicted Grade</div>
+                </div>
+              ) : (
+                <div className="tmua-stat-card">
+                  <div className="tmua-stat-value">
+                    {score.questionsAttempted} <span className="tmua-stat-sub">/ {score.questionsTotal}</span>
+                  </div>
+                  <div className="tmua-stat-label">Questions attempted</div>
+                </div>
+              )}
+
               <div className="tmua-stat-card">
                 <div className="tmua-stat-value">
-                  {score.questionsFullMarks} <span className="tmua-stat-sub">/ {score.questionsTotal}</span>
+                  {score.questionsAttempted < score.questionsTotal
+                    ? `${score.questionsTotal - score.questionsAttempted}`
+                    : `${score.percentage}%`}
                 </div>
-                <div className="tmua-stat-label">Full marks</div>
-              </div>
-              <div className="tmua-stat-card">
-                <div className="tmua-stat-value">{score.percentage}%</div>
-                <div className="tmua-stat-label">Overall accuracy</div>
+                <div className="tmua-stat-label">
+                  {score.questionsAttempted < score.questionsTotal ? 'Unattempted' : 'Overall accuracy'}
+                </div>
               </div>
             </div>
           )}
 
-          {/* Concise Mastered & Focus Next Chips */}
-          {(mastered.length > 0 || focusNext.length > 0) && (
+          {/* Actionable "Marks to Recover" (hidden on Compact 1-Q tier & 100% scores) + lightweight Strengths on Full tier */}
+          {summaryTier !== 'compact' && (visibleFocusNext.length > 0 || (summaryTier === 'full' && mastered.length > 0)) && (
             <div className="tmua-insights-box">
-              {mastered.length > 0 && (
+              {visibleFocusNext.length > 0 && (
                 <div className="tmua-insight-row">
+                  <div className="tmua-insight-heading focus">
+                    <Target size={14} />
+                    <span>Marks to Recover</span>
+                  </div>
+                  <div className="tmua-insight-chips">
+                    {visibleFocusNext.map((f, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        className="tmua-insight-chip focus"
+                        onClick={() => {
+                          if (f.q) {
+                            const cleanQ = String(f.q).replace(/^Q/i, '');
+                            setExpandedQuestionKey(String(f.q));
+                            onQuestionClick?.(cleanQ);
+                            scrollToCoachingCard(cleanQ);
+                          }
+                        }}
+                        title={f.q ? `Jump to ${formatSummaryQuestionChip(String(f.q))}` : undefined}
+                      >
+                        {f.q && <span className="chip-q">{formatSummaryQuestionChip(String(f.q))}</span>}
+                        {typeof f.marksLost === 'number' && f.marksLost > 0 && (
+                          <span className="chip-lost">-{f.marksLost}</span>
+                        )}
+                        <span>{f.text}</span>
+                        {f.q && <ArrowRight size={12} className="chip-arrow" />}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {summaryTier === 'full' && mastered.length > 0 && (
+                <div className="tmua-insight-row compact-strengths">
                   <div className="tmua-insight-heading mastered">
                     <CheckCircle2 size={14} />
                     <span>Strengths</span>
@@ -771,46 +1139,116 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
                   </div>
                 </div>
               )}
-
-              {focusNext.length > 0 && (
-                <div className="tmua-insight-row">
-                  <div className="tmua-insight-heading focus">
-                    <Target size={14} />
-                    <span>Focus Next</span>
-                  </div>
-                  <div className="tmua-insight-chips">
-                    {focusNext.map((f, idx) => (
-                      <button
-                        key={idx}
-                        type="button"
-                        className="tmua-insight-chip focus"
-                        onClick={() => {
-                          if (f.q) {
-                            const cleanQ = String(f.q).replace(/^Q/i, '');
-                            setExpandedQuestionKey(String(f.q));
-                            onQuestionClick?.(cleanQ);
-                            scrollToCoachingCard(cleanQ);
-                          }
-                        }}
-                      >
-                        {f.q && <span className="chip-q">{formatSummaryQuestionChip(String(f.q))}</span>}
-                        <span>{f.text}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
           )}
         </div>
 
-        {/* RIGHT COLUMN (~35%): Radar Chart */}
-        {radar && radar.length >= 3 && (
+        {/* RIGHT COLUMN (~35%): Radar Chart (only rendered when >=3 axes are truly assessed) */}
+        {showRadarChart && (
           <div className="tmua-right-col">
             <TopicRadarChart data={radar} />
           </div>
         )}
       </div>
+
+      {/* 1-Click View Mark Scheme Modal (Instant, Zero-LLM-Cost Proof) */}
+      {showSchemeModal && (
+        <div
+          className="tmua-scheme-modal-backdrop"
+          onClick={() => setShowSchemeModal(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Mark Scheme Used"
+        >
+          <div className="tmua-scheme-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="tmua-scheme-modal-header">
+              <div className="tmua-scheme-modal-title">
+                <BookOpen size={16} />
+                <span>Mark Scheme Used</span>
+                <span className={`tmua-source-badge source-${resolvedSource.type}`}>
+                  {resolvedSource.label || 'Official Mark Scheme'}
+                </span>
+              </div>
+              <button
+                type="button"
+                className="tmua-scheme-modal-close"
+                onClick={() => setShowSchemeModal(false)}
+                aria-label="Close mark scheme modal"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="tmua-scheme-modal-body">
+              {schemeQuestions.map((sq, idx) => (
+                <div key={idx} className="tmua-scheme-item">
+                  <div className="tmua-scheme-item-header">
+                    <span className="tmua-scheme-q-label">
+                      {formatSummaryQuestionChip(sq.q)}
+                    </span>
+                    {typeof sq.marks === 'number' && sq.marks > 0 && (
+                      <span className="tmua-scheme-q-marks">
+                        {sq.marks} {sq.marks === 1 ? 'mark' : 'marks'}
+                      </span>
+                    )}
+                  </div>
+                  <div className="tmua-scheme-item-content">
+                    {(() => {
+                      const blocks = parseMarkSchemeBlocks(sq.scheme);
+                      const hasStructuredPoints = blocks.some(b => b.kind === 'point');
+                      if (!hasStructuredPoints) {
+                        return (
+                          <MarkdownMathRenderer
+                            content={sq.scheme}
+                            className="chat-message-renderer"
+                            options={{ throwOnError: false, errorColor: '#cc0000' }}
+                          />
+                        );
+                      }
+                      return (
+                        <div className="tmua-scheme-points-list">
+                          {blocks.map((block, bIdx) => {
+                            if (block.kind === 'subpart') {
+                              return (
+                                <div key={bIdx} className="tmua-scheme-subpart-header">
+                                  <span>{block.label}</span>
+                                  {block.marks && <span className="tmua-scheme-subpart-marks">{block.marks}</span>}
+                                </div>
+                              );
+                            }
+                            if (block.kind === 'point') {
+                              return (
+                                <div key={bIdx} className="tmua-scheme-point-row">
+                                  <div className="tmua-scheme-point-body">
+                                    <MarkdownMathRenderer
+                                      content={block.body}
+                                      className="chat-message-renderer"
+                                      options={{ throwOnError: false, errorColor: '#cc0000' }}
+                                    />
+                                  </div>
+                                  <span className="tmua-scheme-point-code">{block.code}</span>
+                                </div>
+                              );
+                            }
+                            return (
+                              <div key={bIdx} className="tmua-scheme-text-block">
+                                <MarkdownMathRenderer
+                                  content={block.body}
+                                  className="chat-message-renderer"
+                                  options={{ throwOnError: false, errorColor: '#cc0000' }}
+                                />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 3-Part Examiner Coaching Block for Level-of-Response Questions */}
       {questionCoaching && questionCoaching.length > 0 && (

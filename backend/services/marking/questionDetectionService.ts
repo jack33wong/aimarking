@@ -8,7 +8,14 @@
  */
 
 import { getFirestore } from '../../config/firebase.js';
-import { normalizeTextForComparison, normalizeSubQuestionPart, generateGenericTitleFromText, getBaseQuestionNumber } from '../../utils/TextNormalizationUtils.js';
+import {
+  normalizeTextForComparison,
+  normalizeSubQuestionPart,
+  generateGenericTitleFromText,
+  stripLatexAndMathForTitle,
+  sanitizePaperCodeForTitle,
+  getBaseQuestionNumber
+} from '../../utils/TextNormalizationUtils.js';
 import { getShortSubjectName, getShortExamBoard } from './MarkingHelpers.js';
 import * as stringSimilarity from 'string-similarity';
 import { isPaperAllowedBySubjectGate, type GateableSubjectKey } from '../../config/subjectProfiles.js';
@@ -1169,14 +1176,36 @@ export function buildExamPaperStructure(detectionResults: any[]) {
 }
 
 /**
- * Generate a descriptive session title from detection results
+ * Generate a canonical, space-friendly session title from detection results.
+ * Pattern puts high-signal identifiers first (`Primary · Secondary`) so all 3 UI surfaces
+ * (Sidebar, Session Header, Task Details) stay consistent even when truncated.
  */
 export function generateSessionTitleFromDetectionResults(detectionResults: any[], mode: 'Marking' | 'Question'): string {
-  const { examPapers, totalMarks } = buildExamPaperStructure(detectionResults);
+  const { examPapers } = buildExamPaperStructure(detectionResults);
 
   if (examPapers.length === 0) {
-    return `${mode} - ${new Date().toLocaleDateString()}`;
+    return mode === 'Marking' ? 'Untitled Paper' : 'Untitled Question';
   }
+
+  const formatQRange = (questions: any[]): string => {
+    const qNums: number[] = Array.from(new Set(
+      questions
+        .map((q: any) => {
+          const clean = String(q?.questionNumber ?? q ?? '').replace(/^p\d+[·.\-]\s*q?/i, '');
+          return parseInt(clean, 10);
+        })
+        .filter((n: number) => !isNaN(n) && n > 0)
+    )).sort((a, b) => a - b);
+
+    if (qNums.length === 1) return `Q${qNums[0]}`;
+    if (qNums.length > 1) return `Q${qNums[0]}–Q${qNums[qNums.length - 1]}`;
+    return '';
+  };
+
+  const isMeaningfulMeta = (val: any): boolean => {
+    const s = String(val || '').trim();
+    return Boolean(s) && !/^(n\/a|unknown|none|general|generic question)$/i.test(s);
+  };
 
   // Support Rescue Logic: Find all valid (non-generic) past papers in the batch
   const validPapers = examPapers.filter(p =>
@@ -1195,63 +1224,43 @@ export function generateSessionTitleFromDetectionResults(detectionResults: any[]
   );
 
   if (validPaper) {
-    // Pattern: (Modified) + Exam Series + Exam Code(s) + Board Short + Subject Short + Tier
+    // Canonical Pattern: {Modified }{Board} {Subject} {CleanCode} · {Series} {Tier} {QRange}
     const p = validPaper;
-    const seriesList = Array.from(new Set(validPapers.map(vp => vp.examSeries).filter(Boolean)));
-    const seriesPart = seriesList.length === 1 ? seriesList[0] : (p.examSeries || '');
-    const codePart = Array.from(new Set(validPapers.map(vp => vp.examCode).filter(Boolean))).join(', ');
-    const boardList = Array.from(new Set(validPapers.map(vp => getShortExamBoard(vp.examBoard)).filter(Boolean)));
+    const seriesList = Array.from(new Set(validPapers.map(vp => vp.examSeries).filter(isMeaningfulMeta)));
+    const seriesPart = seriesList.length === 1 ? seriesList[0] : (isMeaningfulMeta(p.examSeries) ? p.examSeries : '');
+    const codePart = Array.from(
+      new Set(validPapers.map(vp => sanitizePaperCodeForTitle(vp.examCode)).filter(isMeaningfulMeta))
+    ).join(', ');
+    const boardList = Array.from(new Set(validPapers.map(vp => getShortExamBoard(vp.examBoard)).filter(isMeaningfulMeta)));
     const boardPart = boardList.join(' / ');
     const subjectPart = Array.from(
-      new Set(validPapers.map(vp => getShortSubjectName(vp.subject || '')).filter(Boolean))
+      new Set(validPapers.map(vp => getShortSubjectName(vp.subject || '')).filter(isMeaningfulMeta))
     ).join(' & ');
     const tierList = Array.from(
-      new Set(
-        validPapers
-          .map(vp => String(vp.tier || '').trim())
-          .filter(t => t && !/^(n\/a|unknown|none)$/i.test(t))
-      )
+      new Set(validPapers.map(vp => String(vp.tier || '').trim()).filter(isMeaningfulMeta))
     );
     const tierPart = tierList.length === 1 ? tierList[0] : '';
 
     // Question Range (only for single-paper sessions; multi-paper sessions list the paper codes instead)
-    let qRange = '';
-    if (validPapers.length === 1) {
-      const qNums = p.questions
-        .map((q: any) => {
-          const clean = String(q.questionNumber || '').replace(/^p\d+[·.\-]\s*q?/i, '');
-          return parseInt(clean, 10);
-        })
-        .filter((n: any) => !isNaN(n))
-        .sort((a: any, b: any) => a - b);
+    const qRange = validPapers.length === 1 ? formatQRange(p.questions || []) : '';
 
-      if (qNums.length === 1) {
-        qRange = ` Q${qNums[0]}`;
-      } else if (qNums.length > 1) {
-        qRange = ` Q${qNums[0]} to Q${qNums[qNums.length - 1]}`;
-      }
-    }
-
-    const baseTitle = `${seriesPart} ${codePart} ${boardPart} ${subjectPart} ${tierPart}`.replace(/\s+/g, ' ').trim();
     const modifiedPrefix = hasModifiedQuestion ? 'Modified ' : '';
-    return `${modifiedPrefix}${baseTitle}${qRange} ${totalMarks} marks`.replace(/\s+/g, ' ').trim();
+    const primary = `${modifiedPrefix}${[boardPart, subjectPart, codePart].filter(Boolean).join(' ')}`.replace(/\s+/g, ' ').trim();
+    const secondary = [seriesPart, tierPart, qRange].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+
+    if (primary && secondary) return `${primary} · ${secondary}`;
+    if (primary) return primary;
   }
 
   if (hasModifiedQuestion) {
-    const allQNums = Array.from(new Set(
-      detectionResults
-        .map((dr: any) => parseInt(String(dr?.question?.questionNumber || dr?.detectionResult?.match?.questionNumber || ''), 10))
-        .filter((n: number) => !isNaN(n))
-    )).sort((a, b) => a - b);
-
-    let qRange = '';
-    if (allQNums.length === 1) {
-      qRange = ` Q${allQNums[0]}`;
-    } else if (allQNums.length > 1) {
-      qRange = ` Q${allQNums[0]} to Q${allQNums[allQNums.length - 1]}`;
-    }
-
-    return `Modified Paper${qRange}`.replace(/\s+/g, ' ').trim();
+    const qRange = formatQRange(
+      detectionResults.map((dr: any) => dr?.question?.questionNumber || dr?.detectionResult?.match?.questionNumber || '')
+    );
+    const firstSubject = examPapers
+      .map(p => getShortSubjectName(p.subject || ''))
+      .find(isMeaningfulMeta);
+    const primary = firstSubject ? `${firstSubject} (Modified)` : 'Modified Paper';
+    return qRange ? `${primary} · ${qRange}` : primary;
   }
 
   // Fallback when DB match was missed, but hint/subject metadata is present (e.g., WMA14/01)
@@ -1262,47 +1271,31 @@ export function generateSessionTitleFromDetectionResults(detectionResults: any[]
     p.examCode !== 'N/A'
   );
   if (hintPapers.length > 0) {
-    const codePart = Array.from(new Set(hintPapers.map(hp => hp.examCode).filter(Boolean))).join(', ');
+    const codePart = Array.from(
+      new Set(hintPapers.map(hp => sanitizePaperCodeForTitle(hp.examCode)).filter(isMeaningfulMeta))
+    ).join(', ');
     const boardPart = Array.from(
-      new Set(
-        hintPapers
-          .map(hp => getShortExamBoard(hp.examBoard))
-          .filter(b => b && !/^(unknown|n\/a)$/i.test(b))
-      )
+      new Set(hintPapers.map(hp => getShortExamBoard(hp.examBoard)).filter(isMeaningfulMeta))
     ).join(' / ');
     const subjectPart = Array.from(
-      new Set(
-        hintPapers
-          .map(hp => getShortSubjectName(hp.subject || ''))
-          .filter(s => s && !/^(general|generic question|unknown|n\/a)$/i.test(s))
-      )
+      new Set(hintPapers.map(hp => getShortSubjectName(hp.subject || '')).filter(isMeaningfulMeta))
     ).join(' & ');
+    const seriesPart = Array.from(
+      new Set(hintPapers.map(hp => hp.examSeries).filter(isMeaningfulMeta))
+    )[0] || '';
+    const qRange = hintPapers.length === 1 ? formatQRange(hintPapers[0].questions || []) : '';
 
-    let qRange = '';
-    if (hintPapers.length === 1) {
-      const qNums = hintPapers[0].questions
-        .map((q: any) => {
-          const clean = String(q.questionNumber || '').replace(/^p\d+[·.\-]\s*q?/i, '');
-          return parseInt(clean, 10);
-        })
-        .filter((n: any) => !isNaN(n))
-        .sort((a: any, b: any) => a - b);
-
-      if (qNums.length === 1) {
-        qRange = ` Q${qNums[0]}`;
-      } else if (qNums.length > 1) {
-        qRange = ` Q${qNums[0]} to Q${qNums[qNums.length - 1]}`;
-      }
-    }
-
-    const marksPart = totalMarks > 0 ? ` ${totalMarks} marks` : '';
-    const metaTitle = `${codePart} ${boardPart} ${subjectPart}${qRange}${marksPart}`.replace(/\s+/g, ' ').trim();
-    if (metaTitle) {
-      return metaTitle;
-    }
+    const primary = [boardPart, subjectPart, codePart].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    const secondary = [seriesPart, qRange].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    if (primary && secondary) return `${primary} · ${secondary}`;
+    if (primary) return primary;
   }
 
-  // All papers are generic or unknown. Pick the first question/sub-question line with readable prose (no LaTeX, no math)
+  // All papers are generic or unknown. Pick the first question/sub-question line with readable prose.
+  const detectedSubject = examPapers
+    .map(p => getShortSubjectName(p.subject || ''))
+    .find(isMeaningfulMeta);
+
   const candidateTexts: string[] = [];
   for (const dr of detectionResults) {
     const q = dr?.question;
@@ -1313,8 +1306,8 @@ export function generateSessionTitleFromDetectionResults(detectionResults: any[]
       }
     }
   }
-  const firstProseText = candidateTexts.find(t => generateGenericTitleFromText(t, mode) !== `${mode} - ${new Date().toLocaleDateString()}`) || candidateTexts[0] || '';
-  return generateGenericTitleFromText(firstProseText, mode);
+  const firstProseText = candidateTexts.find(t => Boolean(stripLatexAndMathForTitle(t))) || candidateTexts[0] || '';
+  return generateGenericTitleFromText(firstProseText, mode, 48, { subject: detectedSubject });
 }
 
 /**

@@ -43,7 +43,7 @@ import UsageTracker from '../../utils/UsageTracker.js';
 import { UserFacingError, type DetectedPaperGroup } from '../../utils/UserFacingError.js';
 
 import type { MarkingSessionContext, QuestionSessionContext } from '../../types/sessionManagement.js';
-import { getBaseQuestionNumber, extractQuestionNumberFromFilename } from '../../utils/TextNormalizationUtils.js';
+import { getBaseQuestionNumber, extractQuestionNumberFromFilename, formatRejectionTitle } from '../../utils/TextNormalizationUtils.js';
 import { formatMarkingSchemeAsBullets } from '../../config/prompts.js';
 
 import { resolveModelTier, resolveExecutionPlan, getDefaultModel } from '../../config/aiModels.js';
@@ -3458,6 +3458,11 @@ export class MarkingPipelineService {
                         questionDetection: options.markingScheme,
                         // 🛡️ SAFE TITLE FALLBACK: Use custom text, OR the filename, OR a safe default
                         globalQuestionText: options.customText || (files && files[0] ? files[0].originalname : 'Rejected Document'),
+                        sessionTitleOverride: formatRejectionTitle(
+                            guidedRejectionReason,
+                            detectedAcademicSubjectName,
+                            isUnsupportedWithoutScheme
+                        ),
                         mode: 'Question', // Fallback to Question Mode so no marking UI is rendered
                         allQuestionResults: [],
                         files,
@@ -6472,6 +6477,20 @@ export class MarkingPipelineService {
                         ...(isModifiedPaperForOutput ? { isModified: true } : {})
                     } : undefined;
 
+                    const hasUserUploadedScheme =
+                        interceptedSchemeImages.length > 0 || deferredSchemePdfFiles.length > 0;
+                    const uploadedSchemeFileName =
+                        deferredSchemePdfFiles[0]?.originalname ||
+                        (interceptedSchemeMeta[0] as any)?.originalFileName ||
+                        undefined;
+                    const markingSource = hasUserUploadedScheme
+                        ? {
+                            type: 'user_uploaded' as const,
+                            label: uploadedSchemeFileName || 'Uploaded Mark Scheme',
+                            ...(uploadedSchemeFileName ? { fileName: uploadedSchemeFileName } : {})
+                        }
+                        : undefined;
+
                     const summary = await SessionManagementService.generateMasterPerformanceSummary(
                         allQuestionResults,
                         actualModel,
@@ -6480,7 +6499,8 @@ export class MarkingPipelineService {
                         isRealPastPaperForOutput && !isModifiedPaperForOutput ? preGradeResult.predictedGrade : undefined,
                         isRealPastPaperForOutput && !isModifiedPaperForOutput ? preGradeResult.boundaries : undefined,
                         { totalMarks: preTotal, awardedMarks: preOverall, scoreText: preScoreText },
-                        examInfo
+                        examInfo,
+                        markingSource
                     );
                     return { summary, durationMs: Date.now() - summaryStart, startTime: summaryStart };
                 } catch (err) {

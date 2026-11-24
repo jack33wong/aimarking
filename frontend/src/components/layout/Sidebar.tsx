@@ -557,8 +557,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     let title = session.title || 'Chat Session';
     title = title.replace(/:::[^\s\n]+/g, '');
     title = title.replace(/\*\*/g, '').replace(/###/g, '').trim();
-    const maxLength = 50;
-    return title.length > maxLength ? title.substring(0, maxLength) + '...' : title;
+    return title || 'Chat Session';
   };
 
   const getLastMessage = (session: any) => {
@@ -788,9 +787,12 @@ const Sidebar: React.FC<SidebarProps> = ({
                                   style={{ width: '100%' }}
                                 />
                               ) : (
-                                <>
+                                <span
+                                  className="mark-history-item-title-text"
+                                  title={getSessionTitle(session)}
+                                >
                                   {getSessionTitle(session)}
-                                </>
+                                </span>
                               )}
                             </div>
                             <div className="mark-history-status-indicators">

@@ -12,6 +12,7 @@ import {
   getBaseQuestionNumber,
   normalizeSubQuestionPart,
   generateGenericTitleFromText,
+  sanitizePaperCodeForTitle,
   combineQuestionAndPart
 } from '../../utils/TextNormalizationUtils.js';
 import { ZoneUtils } from '../../utils/ZoneUtils.js';
@@ -326,9 +327,9 @@ export function areSubjectsCompatible(subjectA?: string | null, subjectB?: strin
 export { combineQuestionAndPart };
 
 // Common function to generate session titles for non-past-paper images
-export function generateNonPastPaperTitle(extractedQuestionText: string | undefined, mode: 'Question' | 'Marking'): string {
+export function generateNonPastPaperTitle(extractedQuestionText: string | undefined, mode: 'Question' | 'Marking', subject?: string): string {
   // Use shared utility for consistent title generation
-  return generateGenericTitleFromText(extractedQuestionText, mode, 30);
+  return generateGenericTitleFromText(extractedQuestionText, mode, 48, { subject });
 }
 
 // Helper function to setup progress tracker for question mode
@@ -627,16 +628,23 @@ export function generateSessionTitle(questionDetection: any, extractedQuestionTe
   if (questionDetection?.found && questionDetection.match) {
     const { board, examSeries, tier, subject, qualification, paperCode } = questionDetection.match;
 
-    // Pattern: Exam Series + Exam Code + Board Short + Subject Short + Tier
-    const seriesPart = examSeries || '';
-    const codePart = paperCode || '';
-    const boardPart = getShortExamBoard(board);
-    const subjectPart = getShortSubjectName(subject || qualification || '');
-    const tierPart = tier ? `${tier}` : '';
+    const isMeaningful = (v: any) => Boolean(v && !/^(n\/a|unknown|none|general|generic question)$/i.test(String(v).trim()));
+    const boardPart = isMeaningful(board) ? getShortExamBoard(board) : '';
+    const subjectPart = isMeaningful(subject || qualification) ? getShortSubjectName(subject || qualification || '') : '';
+    const codePart = isMeaningful(paperCode) ? sanitizePaperCodeForTitle(paperCode) : '';
+    const seriesPart = isMeaningful(examSeries) ? String(examSeries).trim() : '';
+    const tierPart = isMeaningful(tier) ? String(tier).trim() : '';
 
-    return `${seriesPart} ${codePart} ${boardPart} ${subjectPart} ${tierPart}`.replace(/\s+/g, ' ').trim();
+    const primary = [boardPart, subjectPart, codePart].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    const secondary = [seriesPart, tierPart].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+
+    if (primary && secondary) return `${primary} · ${secondary}`;
+    if (primary) return primary;
   }
-  return generateNonPastPaperTitle(extractedQuestionText, mode);
+  const detectedSubject = questionDetection?.match?.subject
+    ? getShortSubjectName(questionDetection.match.subject)
+    : undefined;
+  return generateNonPastPaperTitle(extractedQuestionText, mode, detectedSubject);
 }
 
 /**

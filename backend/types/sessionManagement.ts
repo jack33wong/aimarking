@@ -15,6 +15,7 @@ export interface SessionContext {
   questionDetection: any;
   globalQuestionText: string;
   mode: 'Marking' | 'Question';
+  sessionTitleOverride?: string;
 }
 
 export interface MarkingSessionContext extends SessionContext {

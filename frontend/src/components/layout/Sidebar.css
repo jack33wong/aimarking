@@ -640,17 +640,25 @@
   /* Slightly larger readability */
   color: var(--text-primary);
   font-weight: 500;
-  white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
   line-height: 1.3;
   text-align: left !important;
   display: flex;
   align-items: center;
   flex: 1;
+  min-width: 0;
   margin: 0;
   padding: 0;
   position: relative;
+}
+
+.mark-history-item-title-text {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Last Message */

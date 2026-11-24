@@ -269,7 +269,8 @@ const SessionHeader: React.FC = () => {
 
   const displaySession = currentSession;
 
-  // Helper to render the formatted title with colored parts
+  // Helper to render the canonical sessionTitle consistently with Sidebar & Task Details.
+  // Splits on the canonical " · " (or " • ") separator for two-tone styling.
   const renderFormattedTitle = () => {
     if (isProcessing) {
       return (
@@ -279,8 +280,23 @@ const SessionHeader: React.FC = () => {
       );
     }
 
-    const detectedQuestion = getDetectedQuestion();
+    const cleanTitle = (sessionTitle || '').replace(/:::[^\s\n]+/g, '').replace(/\*\*/g, '').replace(/###/g, '').trim();
 
+    // Canonical format: "Primary · Secondary" (or "Primary • Secondary")
+    const separatorMatch = cleanTitle.match(/^(.+?)\s+[·•]\s+(.+)$/);
+    if (separatorMatch) {
+      return (
+        <>
+          <span className="title-main">{separatorMatch[1]}</span>
+          <span className="title-separator"> · </span>
+          <span className="title-secondary">{separatorMatch[2]}</span>
+        </>
+      );
+    }
+
+    // Legacy sessions without " · ": keep sessionTitle as title-main (so it always matches
+    // Sidebar & Task Details and respects manual renames), and only append missing series/tier metadata.
+    const detectedQuestion = getDetectedQuestion();
     if (detectedQuestion && detectedQuestion.found) {
       let examBoard: any, subject: any, examCode: any, examSeries: any, tier: any;
 
@@ -322,17 +338,20 @@ const SessionHeader: React.FC = () => {
         examCode === 'Unknown' ||
         examCode === 'N/A';
 
-      const baseMainTitle = (examBoard && subject && !isGeneric)
-        ? [examBoard, subject, examCode].filter(Boolean).join(' ')
-        : sessionTitle;
+      const baseMainTitle = cleanTitle || [examBoard, subject, examCode].filter(Boolean).join(' ');
       const mainTitle = (detectedQuestion.isModifiedPaper && baseMainTitle && !/^modified\b/i.test(baseMainTitle))
         ? `Modified ${baseMainTitle}`
         : baseMainTitle;
 
+      const lowerMain = mainTitle.toLowerCase();
       const subtitleParts = [];
       if (!isGeneric) {
-        if (examSeries && examSeries !== 'N/A' && examSeries !== 'General') subtitleParts.push(examSeries);
-        if (tier && tier !== 'N/A') subtitleParts.push(tier);
+        if (examSeries && examSeries !== 'N/A' && examSeries !== 'General' && !lowerMain.includes(String(examSeries).toLowerCase())) {
+          subtitleParts.push(examSeries);
+        }
+        if (tier && tier !== 'N/A' && !lowerMain.includes(String(tier).toLowerCase())) {
+          subtitleParts.push(tier);
+        }
       }
 
       return (
@@ -340,19 +359,16 @@ const SessionHeader: React.FC = () => {
           <span className="title-main">{mainTitle}</span>
           {subtitleParts.length > 0 && (
             <>
-              <span className="title-separator"> • </span>
-              <span className="title-secondary">{subtitleParts.join(' • ')}</span>
+              <span className="title-separator"> · </span>
+              <span className="title-secondary">{subtitleParts.join(' · ')}</span>
             </>
           )}
         </>
       );
     }
-    
-    // Fallback if no detected question
+
     return (
-      <>
-        <span className="title-main">{sessionTitle}</span>
-      </>
+      <span className="title-main">{cleanTitle || sessionTitle}</span>
     );
   };
 
@@ -368,7 +384,7 @@ const SessionHeader: React.FC = () => {
             <Menu size={20} />
           </button>
         )}
-        <h1 className="session-title">
+        <h1 className="session-title" title={isProcessing ? 'Processing...' : sessionTitle}>
           {renderFormattedTitle()}
         </h1>
       </div>

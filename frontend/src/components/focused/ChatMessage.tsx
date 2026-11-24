@@ -924,6 +924,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
                   <PerformanceSummaryPanel
                     rawSummary={(message as any).performanceSummary}
                     MarkdownMathRenderer={MarkdownMathRenderer}
+                    detectedQuestion={message.detectedQuestion}
                     onQuestionClick={(qNum) => {
                       engagementTracker.recordSummaryChipClick();
                       engagementTracker.recordQuestionNavigation();
@@ -931,7 +932,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
                     }}
                   />
                 )}
-                {hasYourWork ? (
+                {!((message as any).performanceSummary && /^marking completed\s*-\s*see results below\.?$/i.test(processedContent.trim())) && (hasYourWork ? (
                   <div className="has-your-work-outer-container">
                     <div className={(message.detectedQuestion as any)?.isGuest ? 'guest-blur-enabled' : ''} style={{ position: 'relative' }}>
                       <MarkdownMathRenderer
@@ -1121,7 +1122,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
                       </div>
                     )}
                   </div>
-                )}
+                ))}
               </div>
             );
           })()}

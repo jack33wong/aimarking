@@ -127,25 +127,28 @@ html.dark .follow-up-chat-input-container.follow-up-bottom::before {
   var(--background-gray-main) 100%);
 }
 
-/* Follow-up Bar Container Sizing (Preserves Manus 16px Frame from UnifiedChatInput.css) */
+/* Follow-up Bar Container Sizing (Matches Manus AI Centered Column & Left/Right Rails) */
 .follow-up-chat-input-container.follow-up-bottom .followup-chat-input-bar {
-  padding: 8px 12px;
+  padding: 8px 32px;
   position: relative !important;
   left: auto !important;
   right: auto !important;
   bottom: auto !important;
-  width: 85% !important;
+  width: 100% !important;
   background: transparent !important;
   pointer-events: auto !important;
   margin: 0 auto 16px auto !important;
-  max-width: 820px;
+  max-width: 720px;
+  box-sizing: border-box;
   border-radius: 16px;
   box-shadow: none !important;
 }
 
 .split-mode .follow-up-chat-input-container.follow-up-bottom .followup-chat-input-bar {
-  width: 96% !important;
-  max-width: none;
+  width: 100% !important;
+  max-width: 720px;
+  padding: 8px 32px;
+  box-sizing: border-box;
 }
 
 .follow-up-chat-input-container.follow-up-bottom .followup-single-line-container {
@@ -521,9 +524,10 @@ html.dark .follow-up-chat-input-container.follow-up-bottom::before {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-width: 1100px;
+  max-width: 720px;
   width: 100%;
   margin: 0 auto;
+  box-sizing: border-box;
   background: transparent;
   border-radius: 0;
   border: none;
@@ -531,9 +535,12 @@ html.dark .follow-up-chat-input-container.follow-up-bottom::before {
 }
 
 .split-mode .chat-messages {
-  padding-left: 12px;
-  padding-right: 12px;
+  padding-left: 32px;
+  padding-right: 32px;
+  max-width: 720px;
   width: 100%;
+  margin: 0 auto;
+  box-sizing: border-box;
 }
 
 /* ==========================================================================
@@ -905,10 +912,12 @@ html.dark .follow-up-chat-input-container.follow-up-bottom::before {
   width: 100%;
 }
 
-.chat-message.assistant .chat-message-bubble:has(.homework-annotated-image) {
+.chat-message.assistant .chat-message-bubble:has(.homework-annotated-image),
+.chat-message.assistant .chat-message-bubble:has(.tmua-summary-card) {
   background: transparent;
   box-shadow: none;
   border: none;
+  padding: 0;
 }
 
 .content-image,
@@ -1444,6 +1453,11 @@ html.dark .follow-up-chat-input-container.follow-up-bottom::before {
     padding-right: 10px;
     padding-top: 8px;
     padding-bottom: 130px;
+  }
+
+  .follow-up-chat-input-container.follow-up-bottom .followup-chat-input-bar {
+    padding: 8px 10px;
+    max-width: 100%;
   }
 
   .chat-panel-layout {
