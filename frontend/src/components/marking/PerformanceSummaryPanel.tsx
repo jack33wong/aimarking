@@ -1330,16 +1330,30 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
                         {hasScoredRow && (
                           <tr>
                             <th>Scored</th>
-                            {resolvedRows.map((r, idx) => (
-                              <td key={idx}>{typeof r.awarded === 'number' ? r.awarded : '–'}</td>
-                            ))}
+                            {resolvedRows.map((r, idx) => {
+                              const hasVal = typeof r.awarded === 'number';
+                              const scoreClass = !hasVal || r.max <= 0
+                                ? ''
+                                : r.awarded! >= r.max
+                                  ? 'tmua-scheme-score-full'
+                                  : r.awarded! === 0
+                                    ? 'tmua-scheme-score-zero'
+                                    : 'tmua-scheme-score-partial';
+                              return (
+                                <td key={idx} className={scoreClass}>
+                                  {hasVal ? r.awarded : '–'}
+                                </td>
+                              );
+                            })}
                             <td className="tmua-scheme-total-col">{totalAwardedMarks}</td>
                           </tr>
                         )}
                         <tr>
                           <th>{hasScoredRow ? 'Max' : 'Marks'}</th>
                           {resolvedRows.map((r, idx) => (
-                            <td key={idx}>{r.max > 0 ? r.max : '–'}</td>
+                            <td key={idx} className={hasScoredRow ? 'tmua-scheme-max-cell' : undefined}>
+                              {r.max > 0 ? r.max : '–'}
+                            </td>
                           ))}
                           <td className="tmua-scheme-total-col">{maxTotalMarks > 0 ? maxTotalMarks : '–'}</td>
                         </tr>

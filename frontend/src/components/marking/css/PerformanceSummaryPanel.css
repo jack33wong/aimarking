@@ -1803,6 +1803,25 @@ html.dark .tmua-source-label.source-general {
   border-left: 1px solid var(--border-main, rgba(148, 163, 184, 0.25));
 }
 
+.tmua-scheme-score-full {
+  color: var(--function-success);
+  font-weight: 700;
+}
+
+.tmua-scheme-score-partial {
+  color: var(--function-warning);
+  font-weight: 700;
+}
+
+.tmua-scheme-score-zero {
+  color: var(--function-error);
+  font-weight: 700;
+}
+
+.tmua-scheme-max-cell {
+  color: var(--text-secondary);
+}
+
 .tmua-scheme-general-note {
   font-size: 13px;
   line-height: 1.5;
