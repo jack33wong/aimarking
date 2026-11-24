@@ -9,7 +9,7 @@ import {
   ShieldCheck,
   FileCheck2,
   ArrowRight,
-  ArrowUpRight,
+  ChevronRight,
   BookOpen,
   X
 } from 'lucide-react';
@@ -793,14 +793,23 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
     return sourceMeta ? `Source: Official ${sourceMeta} Grade Boundaries` : 'Source: Official Grade Boundaries';
   })();
 
-  const headerBadgeText =
+  const sourceLabelText =
     resolvedSource.type === 'official'
-      ? `Official Scheme${resolvedSource.shortLabel ? ` · ${resolvedSource.shortLabel}` : ''}`
+      ? 'Marked with Official Mark Scheme'
       : resolvedSource.type === 'user_uploaded'
-        ? `Your Scheme · ${resolvedSource.fileName || resolvedSource.shortLabel || 'Uploaded'}`
+        ? 'Marked with Your Mark Scheme'
         : resolvedSource.type === 'modified'
-          ? 'Official Scheme (Modified)'
-          : 'General Scheme';
+          ? 'Marked with Official Scheme (Modified)'
+          : 'Marked with General Mark Scheme';
+
+  const schemeChipCode =
+    resolvedSource.type === 'user_uploaded'
+      ? (resolvedSource.fileName || resolvedSource.shortLabel || '')
+      : resolvedSource.type === 'general'
+        ? ''
+        : (resolvedSource.shortLabel || '');
+
+  const showSchemeChip = Boolean(schemeChipCode) || schemeQuestions.length > 0;
 
   const headerBadgeTooltip =
     resolvedSource.type === 'official'
@@ -813,7 +822,7 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
 
   return (
     <div className={`tmua-summary-card tier-${summaryTier}`}>
-      {/* Single-Line Header Row: Title on left + Merged Clickable Source/View Pill on right */}
+      {/* Single-Line Split Header (desktop/split) / Clean 2-Line Stack (mobile ≤480px) */}
       <div className="tmua-summary-header">
         <div className="tmua-summary-title">
           <Sparkles size={15} className="tmua-sparkle-icon" />
@@ -822,37 +831,35 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
         </div>
 
         <div className="tmua-header-provenance">
-          {schemeQuestions.length > 0 ? (
-            <button
-              type="button"
-              className={`tmua-source-badge clickable source-${resolvedSource.type}`}
-              onClick={() => setShowSchemeModal(true)}
-              title={headerBadgeTooltip}
-            >
-              {resolvedSource.type === 'user_uploaded'
-                ? <FileCheck2 size={13} className="tmua-source-icon" />
-                : resolvedSource.type !== 'general'
-                  ? <ShieldCheck size={13} className="tmua-source-icon" />
-                  : null}
-              <span className="tmua-source-text">{headerBadgeText}</span>
-              <span className="tmua-source-divider" aria-hidden="true" />
-              <span className="tmua-source-action">
-                <span>View</span>
-                <ArrowUpRight size={12} />
+          <span
+            className={`tmua-source-label source-${resolvedSource.type}`}
+            title={headerBadgeTooltip}
+          >
+            {resolvedSource.type === 'user_uploaded'
+              ? <FileCheck2 size={13} className="tmua-source-icon" />
+              : resolvedSource.type !== 'general'
+                ? <ShieldCheck size={13} className="tmua-source-icon" />
+                : null}
+            <span className="tmua-source-label-text">{sourceLabelText}</span>
+          </span>
+
+          {showSchemeChip && (
+            schemeQuestions.length > 0 ? (
+              <button
+                type="button"
+                className="tmua-scheme-chip clickable"
+                onClick={() => setShowSchemeModal(true)}
+                title={headerBadgeTooltip}
+                aria-label={`View mark scheme${schemeChipCode ? ` for ${schemeChipCode}` : ''}`}
+              >
+                <span className="tmua-scheme-chip-code">{schemeChipCode || 'Scheme'}</span>
+                <ChevronRight size={12} className="tmua-scheme-chip-chevron" />
+              </button>
+            ) : (
+              <span className="tmua-scheme-chip" title={headerBadgeTooltip}>
+                <span className="tmua-scheme-chip-code">{schemeChipCode}</span>
               </span>
-            </button>
-          ) : (
-            <span
-              className={`tmua-source-badge source-${resolvedSource.type}`}
-              title={headerBadgeTooltip}
-            >
-              {resolvedSource.type === 'user_uploaded'
-                ? <FileCheck2 size={13} className="tmua-source-icon" />
-                : resolvedSource.type !== 'general'
-                  ? <ShieldCheck size={13} className="tmua-source-icon" />
-                  : null}
-              <span className="tmua-source-text">{headerBadgeText}</span>
-            </span>
+            )
           )}
         </div>
       </div>

@@ -40,7 +40,7 @@ describe('PerformanceSummaryPanel 3-tier layout & provenance', () => {
       />
     );
 
-    expect(screen.getByText('General Scheme')).toBeInTheDocument();
+    expect(screen.getByText('Marked with General Mark Scheme')).toBeInTheDocument();
     expect(screen.getByText('Apply isosceles triangle rules in circle theorems.')).toBeInTheDocument();
     expect(screen.queryByText('MASTERY BY TOPIC')).not.toBeInTheDocument();
     expect(screen.queryByText('Questions marked')).not.toBeInTheDocument();
@@ -105,8 +105,9 @@ describe('PerformanceSummaryPanel 3-tier layout & provenance', () => {
       />
     );
 
-    // Single-line merged clickable provenance badge + boundary caption
-    expect(screen.getByText('Official Scheme · CIE 0610/41')).toBeInTheDocument();
+    // Split provenance label + [Exam Code | View] chip + boundary caption
+    expect(screen.getByText('Marked with Official Mark Scheme')).toBeInTheDocument();
+    expect(screen.getByText('CIE 0610/41')).toBeInTheDocument();
     expect(screen.getByText(/Estimated boundaries/i)).toBeInTheDocument();
 
     // Non-duplicate KPIs: Next Grade Gap (+7 to Grade 9) instead of duplicate Grade Achieved / Predicted Grade
@@ -121,8 +122,8 @@ describe('PerformanceSummaryPanel 3-tier layout & provenance', () => {
     // Radar shown because >= 3 assessed axes
     expect(screen.getByText('MASTERY BY TOPIC')).toBeInTheDocument();
 
-    // 1-Click View Scheme modal opened directly from the merged pill (showing full exam meta in modal header)
-    fireEvent.click(screen.getByText('View'));
+    // 1-Click View Scheme modal opened directly from the [CIE 0610/41 ›] chip (showing full exam meta in modal header)
+    fireEvent.click(screen.getByText('CIE 0610/41'));
     expect(screen.getByText('Mark Scheme Used')).toBeInTheDocument();
     expect(screen.getByText('CIE Biology 0610/41 (May/June 2026)')).toBeInTheDocument();
     expect(screen.getByText(/Identify trophic level/i)).toBeInTheDocument();
@@ -161,7 +162,8 @@ describe('PerformanceSummaryPanel 3-tier layout & provenance', () => {
       />
     );
 
-    expect(screen.getByText('Official Scheme · Edexcel 9MA0/02')).toBeInTheDocument();
+    expect(screen.getByText('Marked with Official Mark Scheme')).toBeInTheDocument();
+    expect(screen.getByText('Edexcel 9MA0/02')).toBeInTheDocument();
   });
 
   it('shows user-uploaded mark scheme filename badge', () => {
@@ -190,7 +192,8 @@ describe('PerformanceSummaryPanel 3-tier layout & provenance', () => {
       />
     );
 
-    expect(screen.getByText('Your Scheme · 9MA0_02_MS.pdf')).toBeInTheDocument();
+    expect(screen.getByText('Marked with Your Mark Scheme')).toBeInTheDocument();
+    expect(screen.getByText('9MA0_02_MS.pdf')).toBeInTheDocument();
     expect(screen.getByText('Full Marks')).toBeInTheDocument();
   });
 });
