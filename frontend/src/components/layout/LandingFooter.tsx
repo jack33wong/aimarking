@@ -21,13 +21,21 @@ export const LandingFooter: React.FC = () => {
                     </div>
 
                     <div className="footer-column">
-                        <span className="footer-label">Resources</span>
+                        <span className="footer-label">UK Exams</span>
                         <Link to="/mark-aqa-gcse-maths-past-papers" className="footer-link">AQA Maths Marking</Link>
                         <Link to="/mark-edexcel-gcse-maths-past-papers" className="footer-link">Edexcel Maths Marking</Link>
                         <Link to="/mark-ocr-gcse-maths-past-papers" className="footer-link">OCR Maths Marking</Link>
                         <Link to="/mark-aqa-gcse-english-language-past-papers" className="footer-link">AQA English Marking</Link>
-                        <Link to="/mark-edexcel-gcse-english-language-past-papers" className="footer-link">Edexcel English Marking</Link>
-                        <Link to="/mark-ocr-gcse-english-language-past-papers" className="footer-link">OCR English Marking</Link>
+                        <Link to="/exams/sqa-national-5" className="footer-link">SQA National 5</Link>
+                    </div>
+
+                    <div className="footer-column">
+                        <span className="footer-label">International</span>
+                        <Link to="/exams/cambridge-igcse" className="footer-link">Cambridge IGCSE</Link>
+                        <Link to="/exams/international-a-level" className="footer-link">International A-Level (IAL)</Link>
+                        <Link to="/exams/cambridge-o-level" className="footer-link">Cambridge O Level</Link>
+                        <Link to="/exams/ib-diploma" className="footer-link">IB Diploma (HL/SL)</Link>
+                        <Link to="/exams/ap-stem-frq" className="footer-link">AP® STEM FRQ</Link>
                     </div>
 
                     <div className="footer-column">

@@ -1,7 +1,16 @@
 import ApiClient from './apiClient';
 import API_CONFIG from '../config/api';
 
-interface ExamMetadata {
+export interface PaperMetaItem {
+    qualification: string;
+    board: string;
+    subject: string;
+    code: string;
+    series: string;
+    tier: string;
+}
+
+export interface ExamMetadata {
     boards: string[];
     qualifications: string[];
     tiers: string[];
@@ -9,7 +18,10 @@ interface ExamMetadata {
     codes: string[];
     subjects?: string[];
     boardSubjects?: Record<string, string[]>;
+    qualificationBoards?: Record<string, string[]>;
+    qualificationBoardSubjects?: Record<string, Record<string, string[]>>;
     paperSubjects?: Record<string, string>;
+    paperMeta?: Record<string, PaperMetaItem>;
 }
 
 class ConfigService {

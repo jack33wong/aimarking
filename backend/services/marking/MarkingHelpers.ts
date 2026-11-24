@@ -81,45 +81,125 @@ export function getShortExamBoard(board: string | undefined): string {
 }
 
 /**
+ * Canonical qualification levels supported across handwritten UK & International exams.
+ */
+export type CanonicalQualification =
+  | 'GCSE'
+  | 'IGCSE'
+  | 'A-Level'
+  | 'IAL'
+  | 'AS-Level'
+  | 'International AS'
+  | 'O Level'
+  | 'National 5'
+  | 'Level 3'
+  | 'IB'
+  | 'AP';
+
+/**
+ * Infers canonical qualification from explicit qualification string, subject text, exam board, and paper code.
+ */
+export function detectCanonicalQualification(params: {
+  rawQual?: string | null;
+  rawSubject?: string | null;
+  board?: string | null;
+  paperCode?: string | null;
+}): CanonicalQualification {
+  const qual = String(params.rawQual || '').trim().toLowerCase();
+  const subj = String(params.rawSubject || '').trim().toLowerCase();
+  const board = String(params.board || '').trim().toLowerCase();
+  const code = String(params.paperCode || '').trim().toLowerCase();
+  const combined = `${qual} ${subj}`;
+
+  // 1. Explicit international / global qualifications first (highest specificity)
+  if (/\b(?:international\s+a[- ]?level|ial)\b/i.test(combined)) return 'IAL';
+  if (/\b(?:international\s+as(?:\s+level)?|ias)\b/i.test(combined)) return 'International AS';
+  if (/\b(?:international\s+gcse|igcse)\b/i.test(combined)) return 'IGCSE';
+  if (/\b(?:gce\s+)?o[- ]?level\b/i.test(combined)) return 'O Level';
+  if (/\b(?:national\s*5|nat\s*5)\b/i.test(combined)) return 'National 5';
+  if (/\b(?:ib\s*diploma|ibdp|international\s+baccalaureate|\bib\b)\b/i.test(combined)) return 'IB';
+  if (/\b(?:advanced\s+placement|\bap\b|ap®)\b/i.test(combined)) return 'AP';
+  if (/\b(?:level\s*3|core\s+maths|mathematical\s+studies)\b/i.test(combined)) return 'Level 3';
+
+  // 2. Board + Paper Code heuristics (prevents CIE IGCSE/O-Level/IAL or Edexcel IAL/IGCSE falling back to GCSE)
+  const isCie = board === 'cie' || board.includes('cambridge');
+  const isEdexcel = board.includes('edexcel') || board === 'pearson';
+  const isSqa = board === 'sqa' || board.includes('scottish');
+  const isIbBoard = board === 'ib' || board === 'ibo' || board.includes('international baccalaureate');
+  const isApBoard = board.includes('college board') || board === 'ap';
+
+  if (isIbBoard) return 'IB';
+  if (isApBoard) return 'AP';
+  if (isSqa) return 'National 5';
+
+  // Edexcel International A-Level / IAS codes (WMA, WME, WST, WFM, WDM, WPH, WCH, WBI, WEC, WEN...)
+  if (/^w[a-z]{2}\d/i.test(code)) {
+    return /\bas\b/i.test(combined) ? 'International AS' : 'IAL';
+  }
+  // Edexcel International GCSE codes (4MA1, 4BI1, 4CH1, 4PH1, 4EA1, 4ET1, etc.)
+  if (isEdexcel && /^4[a-z]{2}\d/i.test(code)) return 'IGCSE';
+
+  // Cambridge (CIE) 4-digit syllabus codes
+  if (isCie && /^\d{4}\b/.test(code)) {
+    const prefix2 = code.substring(0, 2);
+    if (['04', '05', '06', '09'].includes(prefix2)) return 'IGCSE';
+    if (['11', '20', '21', '22', '32', '40', '50', '51', '71'].includes(prefix2)) return 'O Level';
+    if (['90', '92', '93', '94', '96', '97', '99'].includes(prefix2)) {
+      return /\bas\b/i.test(combined) ? 'International AS' : 'IAL';
+    }
+  }
+
+  // UK Level 3 Core Maths codes (AQA 1350, Edexcel 7MC0, OCR H868/H869)
+  if (/^(1350|7mc0|h868|h869)\b/i.test(code)) return 'Level 3';
+
+  // UK AS-Level codes & explicit text
+  if (/\b(?:gce\s+)?as[- ]?level\b/i.test(combined) || /^(7356|8ma0|8fm0|h230|h630)\b/i.test(code)) {
+    return 'AS-Level';
+  }
+
+  // UK A-Level codes & explicit text
+  if (
+    /\b(?:gce\s+)?a[- ]?level\b/i.test(combined) ||
+    /^(7357|7367|9ma0|9fm0|h240|h640|7408|7405|7402|9ph0|9ch0|9bi0)\b/i.test(code)
+  ) {
+    return 'A-Level';
+  }
+
+  return 'GCSE';
+}
+
+/**
  * Normalizes subject and qualification by stripping qualification labels (e.g. "GCSE", "A-Level", "IGCSE", "(9-1)")
  * out of the subject string, while ensuring the qualification field is accurately captured.
  */
 export function cleanSubjectAndQualification(
   rawSubject: string | undefined | null,
-  rawQual?: string | undefined | null
+  rawQual?: string | undefined | null,
+  context?: { board?: string | null; paperCode?: string | null }
 ): { subject: string; qualification: string } {
   let subject = String(rawSubject || '').trim();
-  let qualification = String(rawQual || '').trim();
+  const rawQualStr = String(rawQual || '').trim();
+  const isQualEmpty = !rawQualStr || /^(unknown|n\/a|none|uploaded|custom)$/i.test(rawQualStr);
 
-  const isQualEmpty = !qualification || /^(unknown|n\/a|none|uploaded|custom)$/i.test(qualification);
+  const qualification = detectCanonicalQualification({
+    rawQual: isQualEmpty ? '' : rawQualStr,
+    rawSubject: subject,
+    board: context?.board,
+    paperCode: context?.paperCode
+  });
 
-  // 1. Detect qualification from subject if qualification is missing, generic, or conflicting
-  if (/\b(?:gce\s+)?a[- ]?level\b/i.test(subject)) {
-    if (isQualEmpty || /gcse/i.test(qualification)) {
-      qualification = 'A-Level';
-    }
-  } else if (/\bas[- ]?level\b/i.test(subject)) {
-    if (isQualEmpty) {
-      qualification = 'AS-Level';
-    }
-  } else if (/\b(?:international\s+gcse|igcse)\b/i.test(subject)) {
-    if (isQualEmpty) {
-      qualification = 'IGCSE';
-    }
-  } else if (/\bgcse\b/i.test(subject)) {
-    if (isQualEmpty) {
-      qualification = 'GCSE';
-    }
-  } else if (isQualEmpty) {
-    qualification = 'GCSE';
-  }
-
-  // 2. Strip qualification words, prefixes, and suffixes from subject
+  // Strip qualification words, prefixes, and suffixes from subject
   subject = subject
+    .replace(/\b(?:cambridge\s+)?international\s+a[- ]?level\b/gi, '')
+    .replace(/\b(?:cambridge\s+)?international\s+as(?:\s+level)?\b/gi, '')
     .replace(/\b(?:gce\s+)?a[- ]?level\b/gi, '')
-    .replace(/\bas[- ]?level\b/gi, '')
-    .replace(/\binternational\s+gcse\b/gi, '')
+    .replace(/\b(?:gce\s+)?as[- ]?level\b/gi, '')
+    .replace(/\b(?:cambridge\s+|pearson\s+edexcel\s+)?international\s+gcse\b/gi, '')
     .replace(/\bi?gcse\b/gi, '')
+    .replace(/\b(?:gce\s+|cambridge\s+)?o[- ]?level\b/gi, '')
+    .replace(/\b(?:sqa\s+)?national\s*5\b/gi, '')
+    .replace(/\b(?:ib\s*diploma|ibdp|international\s+baccalaureate|\bib\b)\b/gi, '')
+    .replace(/\b(?:advanced\s+placement|ap®|\bap\b)\b/gi, '')
     .replace(/\(\s*9\s*[-–]\s*1\s*\)/g, '')
     .replace(/\b9\s*[-–]\s*1\b/g, '')
     .replace(/\blevel\s+(?:1\/2|[123])\b/gi, '')
@@ -129,12 +209,6 @@ export function cleanSubjectAndQualification(
     .replace(/\s{2,}/g, ' ')
     .trim();
 
-  // 3. Standardize qualification formatting
-  if (/^a[- ]?level$/i.test(qualification)) qualification = 'A-Level';
-  else if (/^as[- ]?level$/i.test(qualification)) qualification = 'AS-Level';
-  else if (/^igcse$/i.test(qualification)) qualification = 'IGCSE';
-  else if (/^gcse(\s*\(9-1\))?$/i.test(qualification)) qualification = 'GCSE';
-
   return { subject, qualification };
 }
 
@@ -143,7 +217,7 @@ export function cleanSubjectAndQualification(
  * Official examination boards whose genuine past papers and mark schemes are eligible for auto-cataloging.
  */
 export const WHITELISTED_OFFICIAL_EXAM_BOARD_REGEX =
-  /^(aqa|edexcel|pearson|pearson\s+edexcel|ocr|wjec|eduqas|cie|cambridge|cambridge\s+international|cambridge\s+assessment|ccea|ib)\b/i;
+  /^(aqa|edexcel|pearson|pearson\s+edexcel|ocr|wjec|eduqas|cie|cambridge|cambridge\s+international|cambridge\s+assessment|ccea|sqa|scottish\s+qualifications\s+authority|ib|ibo|international\s+baccalaureate|college\s+board|ap|advanced\s+placement)\b/i;
 
 export function isWhitelistedOfficialExamBoard(board?: string | null): boolean {
   const b = String(board || '').trim();

@@ -346,8 +346,10 @@ function AppContent() {
         <Route path="/mark-edexcel-gcse-english-language-past-papers" element={<EdexcelLandingPage />} />
         <Route path="/mark-ocr-gcse-english-language-past-papers" element={<OcrLandingPage />} />
 
-        <Route path="/mark-:examBoard-gcse-maths-past-papers" element={<ProgrammaticLandingPage />} />
-        <Route path="/mark-:examBoard-gcse-maths-past-papers/:year" element={<ProgrammaticLandingPage />} />
+        {/* Dedicated UK & International Handwritten Exam Landing Pages (React Router v6 full-segment params) */}
+        <Route path="/exams/:examSlug" element={<ProgrammaticLandingPage />} />
+        <Route path="/exams/:qualification/:examBoard/:subject" element={<ProgrammaticLandingPage />} />
+        <Route path="/exams/:qualification/:examBoard/:subject/:year" element={<ProgrammaticLandingPage />} />
 
         {/* Legacy SEO Routes (Keep for compatibility) */}
         <Route path="/gcse-maths-marking/:examBoard" element={<ProgrammaticLandingPage />} />

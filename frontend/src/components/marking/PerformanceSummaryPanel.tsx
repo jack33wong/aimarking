@@ -52,13 +52,14 @@ interface QuestionCoachingItem {
 
 interface SummaryV2Payload {
   _type: 'AI_SUMMARY_V2';
-  level: 'GCSE' | 'ALEVEL';
+  level: 'GCSE' | 'ALEVEL' | string;
   subjectKey?: string;
   headline?: string;
   tooDenseWarning?: boolean;
   examInfo?: {
     examBoard?: string;
     examSeries?: string;
+    qualification?: string;
     subject?: string;
     examCode?: string;
     tier?: string;

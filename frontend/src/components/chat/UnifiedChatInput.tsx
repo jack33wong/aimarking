@@ -108,6 +108,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   const [chatInput, setChatInput] = useState<string>('');
   const [selectedPaper, setSelectedPaper] = useState<string | null>(null);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [selectedQualification, setSelectedQualification] = useState<string | null>(null);
   const [selectedBoard, setSelectedBoard] = useState<string | null>(null);
   const [selectedSubject, setSelectedSubject] = useState<string | null>(null);
 
@@ -165,7 +166,17 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     codes: string[];
     subjects?: string[];
     boardSubjects?: Record<string, string[]>;
+    qualificationBoards?: Record<string, string[]>;
+    qualificationBoardSubjects?: Record<string, Record<string, string[]>>;
     paperSubjects?: Record<string, string>;
+    paperMeta?: Record<string, {
+      qualification: string;
+      board: string;
+      subject: string;
+      code: string;
+      series: string;
+      tier: string;
+    }>;
   }
   const [metadata, setMetadata] = useState<LocalExamMetadata>({
     boards: [],
@@ -175,7 +186,10 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     codes: [],
     subjects: [],
     boardSubjects: {},
+    qualificationBoards: {},
+    qualificationBoardSubjects: {},
     paperSubjects: {},
+    paperMeta: {},
   });
 
   const normalizeSubjectName = useCallback((raw: string) => {
@@ -187,37 +201,71 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       .replace(/(^|[\s:\-\/(])([a-z])/g, (_, sep, ch) => `${sep}${ch.toUpperCase()}`);
   }, []);
 
+  const getPaperQualification = useCallback((paperStr: string) => {
+    const metaQual = metadata.paperMeta?.[paperStr]?.qualification;
+    if (metaQual) return metaQual;
+    const knownQuals = [
+      'International AS', 'A-Level', 'AS-Level', 'IGCSE', 'IAL',
+      'O Level', 'National 5', 'Level 3', 'GCSE', 'IB', 'AP'
+    ];
+    for (const q of knownQuals) {
+      if (paperStr.startsWith(`${q} `)) return q;
+    }
+    return 'GCSE';
+  }, [metadata.paperMeta]);
+
+  const getPaperBoard = useCallback((paperStr: string) => {
+    const metaBoard = metadata.paperMeta?.[paperStr]?.board;
+    if (metaBoard) return metaBoard;
+    const firstPart = paperStr.split(' - ')[0] || '';
+    const qual = getPaperQualification(paperStr);
+    return firstPart.startsWith(`${qual} `) ? firstPart.slice(qual.length + 1).trim() : firstPart.trim();
+  }, [metadata.paperMeta, getPaperQualification]);
+
   const getPaperSubject = useCallback((paperStr: string) => {
+    const metaSubject = metadata.paperMeta?.[paperStr]?.subject;
+    if (metaSubject) return normalizeSubjectName(metaSubject);
     const dbSubject = metadata.paperSubjects?.[paperStr];
     if (dbSubject) return normalizeSubjectName(dbSubject);
     return isEnglishPaper(paperStr) ? 'English Language' : 'Mathematics';
-  }, [metadata.paperSubjects, isEnglishPaper, normalizeSubjectName]);
+  }, [metadata.paperMeta, metadata.paperSubjects, isEnglishPaper, normalizeSubjectName]);
 
   const formatPaperDisplayLabel = useCallback((paperStr: string) => {
+    const pm = metadata.paperMeta?.[paperStr];
+    if (pm) {
+      const subjectLabel = normalizeSubjectName(pm.subject || getPaperSubject(paperStr));
+      const detailParts = [pm.board, pm.code, pm.series].filter(Boolean).join(' - ');
+      const tierSuffix = pm.tier ? `, ${pm.tier}` : '';
+      return `${pm.qualification} ${subjectLabel} · ${detailParts}${tierSuffix}`;
+    }
     if (/math|english/i.test(paperStr)) return paperStr;
     const subjectLabel = getPaperSubject(paperStr);
-    if (paperStr.startsWith('GCSE ')) {
-      return `GCSE ${subjectLabel} • ${paperStr.slice(5)}`;
+    const qual = getPaperQualification(paperStr);
+    if (paperStr.startsWith(`${qual} `)) {
+      return `${qual} ${subjectLabel} · ${paperStr.slice(qual.length + 1)}`;
     }
-    if (paperStr.startsWith('A-Level ')) {
-      return `A-Level ${subjectLabel} • ${paperStr.slice(8)}`;
-    }
-    return `${subjectLabel} • ${paperStr}`;
-  }, [getPaperSubject]);
+    return `${subjectLabel} · ${paperStr}`;
+  }, [metadata.paperMeta, normalizeSubjectName, getPaperSubject, getPaperQualification]);
 
   const parsePaperCardMeta = useCallback((paperStr: string) => {
+    const pm = metadata.paperMeta?.[paperStr];
+    if (pm) {
+      const subjectLabel = normalizeSubjectName(pm.subject || getPaperSubject(paperStr));
+      const title = `${pm.board} ${pm.code}`.trim();
+      const leftMeta = `${pm.qualification} ${subjectLabel}`.trim();
+      const seriesWithTier = pm.tier ? `${pm.series}, ${pm.tier}` : pm.series;
+      const subtitle = seriesWithTier ? `${leftMeta} · ${seriesWithTier}` : leftMeta;
+      return { title, subtitle };
+    }
+
     const subjectLabel = getPaperSubject(paperStr);
     const parts = paperStr.split(' - ').map((s) => s.trim());
 
     if (parts.length >= 2) {
-      let qual = '';
+      const qual = getPaperQualification(paperStr);
       let board = parts[0];
-      if (board.startsWith('A-Level ')) {
-        qual = 'A-Level';
-        board = board.slice(8).trim();
-      } else if (board.startsWith('GCSE ')) {
-        qual = 'GCSE';
-        board = board.slice(5).trim();
+      if (board.startsWith(`${qual} `)) {
+        board = board.slice(qual.length + 1).trim();
       }
       const code = parts[1];
       const series = parts.slice(2).join(' - ');
@@ -231,17 +279,41 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       title: paperStr,
       subtitle: subjectLabel,
     };
-  }, [getPaperSubject]);
+  }, [metadata.paperMeta, normalizeSubjectName, getPaperSubject, getPaperQualification]);
+
+  const availableBoards = useMemo(() => {
+    if (selectedQualification && metadata.qualificationBoards?.[selectedQualification]?.length) {
+      return metadata.qualificationBoards[selectedQualification];
+    }
+    if (selectedQualification) {
+      const unique = new Set<string>();
+      (metadata.papers || []).forEach((p) => {
+        if (getPaperQualification(p) === selectedQualification) {
+          const b = getPaperBoard(p);
+          if (b) unique.add(b);
+        }
+      });
+      return Array.from(unique).sort();
+    }
+    return metadata.boards || [];
+  }, [selectedQualification, metadata.qualificationBoards, metadata.boards, metadata.papers, getPaperQualification, getPaperBoard]);
 
   const availableSubjects = useMemo(() => {
-    const rawList: string[] =
-      selectedBoard && metadata.boardSubjects?.[selectedBoard]?.length
-        ? metadata.boardSubjects[selectedBoard]
-        : metadata.subjects && metadata.subjects.length > 0
-          ? metadata.subjects
-          : (metadata.papers || [])
-              .filter((p) => !selectedBoard || p.toLowerCase().includes(selectedBoard.toLowerCase()))
-              .map((p) => getPaperSubject(p));
+    let rawList: string[] = [];
+    if (selectedQualification && selectedBoard && metadata.qualificationBoardSubjects?.[selectedQualification]?.[selectedBoard]?.length) {
+      rawList = metadata.qualificationBoardSubjects[selectedQualification][selectedBoard];
+    } else if (selectedQualification && !selectedBoard && metadata.qualificationBoardSubjects?.[selectedQualification]) {
+      rawList = Object.values(metadata.qualificationBoardSubjects[selectedQualification]).flat();
+    } else if (!selectedQualification && selectedBoard && metadata.boardSubjects?.[selectedBoard]?.length) {
+      rawList = metadata.boardSubjects[selectedBoard];
+    } else if (!selectedQualification && !selectedBoard && metadata.subjects && metadata.subjects.length > 0) {
+      rawList = metadata.subjects;
+    } else {
+      rawList = (metadata.papers || [])
+        .filter((p) => (!selectedQualification || getPaperQualification(p) === selectedQualification) &&
+                       (!selectedBoard || getPaperBoard(p).toLowerCase() === selectedBoard.toLowerCase()))
+        .map((p) => getPaperSubject(p));
+    }
 
     const unique = new Set<string>();
     rawList.forEach((s) => {
@@ -249,13 +321,33 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       if (normalized) unique.add(normalized);
     });
     return Array.from(unique).sort();
-  }, [selectedBoard, metadata.boardSubjects, metadata.subjects, metadata.papers, getPaperSubject, normalizeSubjectName]);
+  }, [selectedQualification, selectedBoard, metadata.qualificationBoardSubjects, metadata.boardSubjects, metadata.subjects, metadata.papers, getPaperQualification, getPaperBoard, getPaperSubject, normalizeSubjectName]);
+
+  const handleQualificationSelect = (qual: string | null) => {
+    setSelectedQualification(qual);
+    setHighlightedIndex(-1);
+    if (qual && selectedBoard) {
+      const validBoards = metadata.qualificationBoards?.[qual];
+      if (validBoards && !validBoards.includes(selectedBoard)) {
+        setSelectedBoard(null);
+      }
+    }
+    if (qual && selectedSubject) {
+      const qBoards = metadata.qualificationBoardSubjects?.[qual];
+      const validSubs = qBoards ? Object.values(qBoards).flat() : null;
+      if (validSubs && !validSubs.includes(selectedSubject)) {
+        setSelectedSubject(null);
+      }
+    }
+  };
 
   const handleBoardSelect = (board: string | null) => {
     setSelectedBoard(board);
     setHighlightedIndex(-1);
     if (board && selectedSubject) {
-      const boardSubs = metadata.boardSubjects?.[board];
+      const boardSubs = selectedQualification
+        ? metadata.qualificationBoardSubjects?.[selectedQualification]?.[board]
+        : metadata.boardSubjects?.[board];
       if (boardSubs && !boardSubs.includes(selectedSubject)) {
         setSelectedSubject(null);
       }
@@ -324,15 +416,19 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     if (mode !== 'first-time') return [];
 
     // If autocomplete is closed and no text/filters are active, skip computing suggestions
-    if (!showAutocomplete && chatInput.trim().length === 0 && selectedTags.length === 0 && !selectedBoard && !selectedSubject) {
+    if (!showAutocomplete && chatInput.trim().length === 0 && selectedTags.length === 0 && !selectedQualification && !selectedBoard && !selectedSubject) {
       return [];
     }
 
     let filtered = metadata.papers;
 
+    if (selectedQualification) {
+      filtered = filtered.filter((p) => getPaperQualification(p) === selectedQualification);
+    }
+
     if (selectedBoard) {
       const boardLower = selectedBoard.toLowerCase();
-      filtered = filtered.filter((p) => p.toLowerCase().includes(boardLower));
+      filtered = filtered.filter((p) => getPaperBoard(p).toLowerCase() === boardLower || p.toLowerCase().includes(boardLower));
     }
 
     if (selectedSubject) {
@@ -418,7 +514,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       if (dateA.month !== dateB.month) return dateB.month - dateA.month;
       return a.localeCompare(b);
     }).slice(0, 10);
-  }, [metadata.papers, metadata.boards, metadata.qualifications, metadata.tiers, selectedTags, selectedBoard, selectedSubject, getPaperSubject, chatInput, mode, showAutocomplete, normalizePaperSearch]);
+  }, [metadata.papers, metadata.boards, metadata.qualifications, metadata.tiers, selectedTags, selectedQualification, selectedBoard, selectedSubject, getPaperQualification, getPaperBoard, getPaperSubject, chatInput, mode, showAutocomplete, normalizePaperSearch]);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1666,42 +1762,81 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
 
       {mode === 'first-time' && showAutocomplete && (
         <div className="past-papers-gallery" ref={dropdownRef}>
-          {/* Level 1: Exam Boards (loaded from DB) */}
-          <div className="past-papers-gallery-top">
-            <div className="past-papers-tabs" role="tablist" aria-label="Exam boards">
+          {/* Level 1: Qualifications / Exam Levels (loaded dynamically from DB) */}
+          {metadata.qualifications.length > 0 && (
+            <div className="past-papers-gallery-top">
+              <div className="past-papers-tabs" role="tablist" aria-label="Exam levels">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={selectedQualification === null}
+                  className={`past-papers-tab ${selectedQualification === null ? 'active' : ''}`}
+                  onClick={() => handleQualificationSelect(null)}
+                >
+                  All Levels
+                </button>
+                {metadata.qualifications.map((qual: string) => (
+                  <button
+                    key={qual}
+                    type="button"
+                    role="tab"
+                    aria-selected={selectedQualification === qual}
+                    className={`past-papers-tab ${selectedQualification === qual ? 'active' : ''}`}
+                    onClick={() => handleQualificationSelect(selectedQualification === qual ? null : qual)}
+                  >
+                    {qual}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="autocomplete-close-btn"
+                onClick={() => setShowAutocomplete(false)}
+                title="Close Past Papers"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          )}
+
+          {/* Level 2: Exam Boards (dynamically cascaded from selected Level) */}
+          <div className={metadata.qualifications.length > 0 ? 'past-papers-subfilters' : 'past-papers-gallery-top'}>
+            <div className={metadata.qualifications.length > 0 ? 'past-papers-subfilters' : 'past-papers-tabs'} role="tablist" aria-label="Exam boards">
               <button
                 type="button"
                 role="tab"
                 aria-selected={selectedBoard === null}
-                className={`past-papers-tab ${selectedBoard === null ? 'active' : ''}`}
+                className={`${metadata.qualifications.length > 0 ? 'past-papers-subtab' : 'past-papers-tab'} ${selectedBoard === null ? 'active' : ''}`}
                 onClick={() => handleBoardSelect(null)}
               >
-                All
+                All Boards
               </button>
-              {metadata.boards.map((board: string) => (
+              {availableBoards.map((board: string) => (
                 <button
                   key={board}
                   type="button"
                   role="tab"
                   aria-selected={selectedBoard === board}
-                  className={`past-papers-tab ${selectedBoard === board ? 'active' : ''}`}
+                  className={`${metadata.qualifications.length > 0 ? 'past-papers-subtab' : 'past-papers-tab'} ${selectedBoard === board ? 'active' : ''}`}
                   onClick={() => handleBoardSelect(selectedBoard === board ? null : board)}
                 >
                   {board}
                 </button>
               ))}
             </div>
-            <button
-              type="button"
-              className="autocomplete-close-btn"
-              onClick={() => setShowAutocomplete(false)}
-              title="Close Past Papers"
-            >
-              <X size={16} />
-            </button>
+            {metadata.qualifications.length === 0 && (
+              <button
+                type="button"
+                className="autocomplete-close-btn"
+                onClick={() => setShowAutocomplete(false)}
+                title="Close Past Papers"
+              >
+                <X size={16} />
+              </button>
+            )}
           </div>
 
-          {/* Level 2: Subjects (loaded from DB) */}
+          {/* Level 3: Subjects (dynamically cascaded from Level + Board) */}
           {availableSubjects.length > 0 && (
             <div className="past-papers-subfilters" role="tablist" aria-label="Subjects">
               <button
@@ -2122,7 +2257,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
                                   ? "Search or select a past paper to explain its mark scheme (e.g. 1MA1/2H, 8700/1)..."
                                   : (imageFile || imageFiles.length > 0)
                                     ? "Add instructions or press send to mark..."
-                                    : "Drop an exam paper, photo, or enter an exam code (e.g. 1MA1/2H)..."
+                                    : "Drop an exam paper, mark scheme, or enter a code (e.g. 1MA1/2H, 0610/41)..."
                   }
                   disabled={isProcessing}
                   className="followup-text-input"

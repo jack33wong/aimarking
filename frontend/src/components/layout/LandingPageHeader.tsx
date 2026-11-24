@@ -31,12 +31,15 @@ export const LandingPageHeader: React.FC = () => {
                                 <svg className="chevron" width="12" height="12" viewBox="0 0 12 12"><path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="2" fill="none" /></svg>
                             </button>
                             <div className="dropdown-menu">
-                                <Link to="/mark-aqa-gcse-maths-past-papers" onClick={() => setIsMenuOpen(false)}>AQA Maths Marking</Link>
-                                <Link to="/mark-edexcel-gcse-maths-past-papers" onClick={() => setIsMenuOpen(false)}>Edexcel Maths Marking</Link>
-                                <Link to="/mark-ocr-gcse-maths-past-papers" onClick={() => setIsMenuOpen(false)}>OCR Maths Marking</Link>
-                                <Link to="/mark-aqa-gcse-english-language-past-papers" onClick={() => setIsMenuOpen(false)}>AQA English Marking</Link>
-                                <Link to="/mark-edexcel-gcse-english-language-past-papers" onClick={() => setIsMenuOpen(false)}>Edexcel English Marking</Link>
-                                <Link to="/mark-ocr-gcse-english-language-past-papers" onClick={() => setIsMenuOpen(false)}>OCR English Marking</Link>
+                                <Link to="/mark-aqa-gcse-maths-past-papers" onClick={() => setIsMenuOpen(false)}>AQA GCSE &amp; A-Level Maths</Link>
+                                <Link to="/mark-edexcel-gcse-maths-past-papers" onClick={() => setIsMenuOpen(false)}>Edexcel GCSE &amp; A-Level Maths</Link>
+                                <Link to="/mark-ocr-gcse-maths-past-papers" onClick={() => setIsMenuOpen(false)}>OCR GCSE &amp; A-Level Maths</Link>
+                                <Link to="/mark-aqa-gcse-english-language-past-papers" onClick={() => setIsMenuOpen(false)}>AQA GCSE English Language</Link>
+                                <Link to="/exams/cambridge-igcse" onClick={() => setIsMenuOpen(false)}>Cambridge IGCSE &amp; O Level</Link>
+                                <Link to="/exams/international-a-level" onClick={() => setIsMenuOpen(false)}>International A-Level (IAL)</Link>
+                                <Link to="/exams/sqa-national-5" onClick={() => setIsMenuOpen(false)}>SQA National 5</Link>
+                                <Link to="/exams/ib-diploma" onClick={() => setIsMenuOpen(false)}>IB Diploma (HL / SL)</Link>
+                                <Link to="/exams/ap-stem-frq" onClick={() => setIsMenuOpen(false)}>AP® STEM FRQ</Link>
                             </div>
                         </div>
                     )}

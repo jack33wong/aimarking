@@ -20,6 +20,7 @@ export interface LibraryItem {
   sessionTitle: string;
   date: string; // Format: "MM/DD"
   favorite: boolean;
+  qualification: string;
   examBoard: string;
   subject: string;
   examSeries: string;
@@ -52,13 +53,14 @@ const LibraryPage: React.FC<LibraryPageProps> = ({ setSidebarOpen }) => {
   const [sessions, setSessions] = useState<UnifiedSession[]>([]);
   const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [selectedQualification, setSelectedQualification] = useState<string>('ALL');
   const [filterFavorites, setFilterFavorites] = useState<boolean>(false);
   const [selectedImageSession, setSelectedImageSession] = useState<{ images: SessionImage[]; initialIndex: number } | null>(null);
   const [isImageModeOpen, setIsImageModeOpen] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
 
   // Extract exam metadata from session
-  const getExamMetadata = (session: UnifiedSession): { examBoard: string; subject: string; examSeries: string; examCode: string; tier: string } => {
+  const getExamMetadata = (session: UnifiedSession): { qualification: string; examBoard: string; subject: string; examSeries: string; examCode: string; tier: string } => {
     // Check session-level detectedQuestion first
     if (session.detectedQuestion?.found) {
       const dq = (session as any).detectedQuestion;
@@ -67,6 +69,7 @@ const LibraryPage: React.FC<LibraryPageProps> = ({ setSidebarOpen }) => {
       if (dq.examPapers?.length > 0) {
         const firstExamPaper = dq.examPapers[0];
         return {
+          qualification: firstExamPaper.qualification || dq.qualification || 'GCSE',
           examBoard: firstExamPaper.examBoard || 'Unknown',
           subject: firstExamPaper.subject || 'Unknown',
           examSeries: firstExamPaper.examSeries || 'Unknown',
@@ -78,6 +81,7 @@ const LibraryPage: React.FC<LibraryPageProps> = ({ setSidebarOpen }) => {
       // Handle flat structure (from denormalization)
       if (dq.examBoard || dq.subject) {
         return {
+          qualification: dq.qualification || 'GCSE',
           examBoard: dq.examBoard || 'Unknown',
           subject: dq.subject || 'Unknown',
           examSeries: dq.examSeries || 'Unknown',
@@ -96,6 +100,7 @@ const LibraryPage: React.FC<LibraryPageProps> = ({ setSidebarOpen }) => {
       // Return a default "General Marking" metadata instead of null
       // This prevents thousands of sessions from being silently skipped
       return {
+        qualification: 'General',
         examBoard: 'General',
         subject: 'General Marking',
         examSeries: 'Other',
@@ -107,6 +112,7 @@ const LibraryPage: React.FC<LibraryPageProps> = ({ setSidebarOpen }) => {
     // Use first exam paper for grouping
     const firstExamPaper = assistantMessage.detectedQuestion.examPapers[0];
     return {
+      qualification: (firstExamPaper as any).qualification || 'GCSE',
       examBoard: firstExamPaper.examBoard || 'Unknown',
       subject: firstExamPaper.subject || 'Unknown',
       examSeries: firstExamPaper.examSeries || 'Unknown',
@@ -223,15 +229,25 @@ const LibraryPage: React.FC<LibraryPageProps> = ({ setSidebarOpen }) => {
     setLibraryItems(items);
   }, [sessions]);
 
-  // Filter library items based on search and favorites
+  const availableQualifications = Array.from(
+    new Set(libraryItems.map(item => item.qualification).filter(q => q && q !== 'General'))
+  ).sort();
+
+  // Filter library items based on qualification, search, and favorites
   const getFilteredGroupedLibrary = (): GroupedLibrary => {
     let filteredItems = libraryItems;
+
+    // Apply qualification filter
+    if (selectedQualification !== 'ALL') {
+      filteredItems = filteredItems.filter(item => item.qualification === selectedQualification);
+    }
 
     // Apply search filter
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
       filteredItems = filteredItems.filter(item =>
         item.sessionTitle.toLowerCase().includes(query) ||
+        item.qualification.toLowerCase().includes(query) ||
         item.examBoard.toLowerCase().includes(query) ||
         item.subject.toLowerCase().includes(query) ||
         item.examSeries.toLowerCase().includes(query) ||
@@ -308,7 +324,7 @@ const LibraryPage: React.FC<LibraryPageProps> = ({ setSidebarOpen }) => {
     <div className="library-page">
       <SEO
         title="Session Library"
-        description="View and manage your past AI marking sessions. Access graded GCSE maths papers and feedback."
+        description="View and manage your past AI marking sessions across GCSE, IGCSE, A-Level, IAL, IB, AP, and National 5 papers."
       />
       {/* Header */}
       <div className="library-header">
@@ -329,7 +345,24 @@ const LibraryPage: React.FC<LibraryPageProps> = ({ setSidebarOpen }) => {
           {/* Filter controls */}
           <div className="library-filters">
             <div className="filter-dropdown">
-              <span>All</span>
+              <select
+                aria-label="Filter by exam level"
+                value={selectedQualification}
+                onChange={(e) => setSelectedQualification(e.target.value)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'inherit',
+                  font: 'inherit',
+                  cursor: 'pointer',
+                  outline: 'none'
+                }}
+              >
+                <option value="ALL">All Levels</option>
+                {availableQualifications.map((q) => (
+                  <option key={q} value={q}>{q}</option>
+                ))}
+              </select>
             </div>
             <button
               className={`favorite-filter-btn ${filterFavorites ? 'active' : ''}`}

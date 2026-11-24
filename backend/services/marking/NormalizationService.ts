@@ -11,12 +11,17 @@ export class NormalizationService {
         if (!board) return '';
         const normalized = board.toLowerCase().trim();
         // Map common variations
-        if (normalized.includes('edexcel')) return 'Pearson Edexcel';
+        if (normalized.includes('edexcel') || normalized === 'pearson') return 'Pearson Edexcel';
         if (normalized.includes('aqa')) return 'AQA';
         if (normalized.includes('ocr')) return 'OCR';
         if (normalized.includes('wjec')) return 'WJEC';
         if (normalized.includes('eduqas')) return 'Eduqas';
-        return board; // Return original if no match
+        if (normalized === 'cie' || normalized.includes('cambridge')) return 'CIE';
+        if (normalized === 'ccea') return 'CCEA';
+        if (normalized === 'sqa' || normalized.includes('scottish qualifications')) return 'SQA';
+        if (normalized === 'ib' || normalized === 'ibo' || normalized.includes('international baccalaureate')) return 'IB';
+        if (normalized.includes('college board') || normalized === 'ap' || normalized.includes('advanced placement')) return 'College Board';
+        return board.trim(); // Return original if no match
     }
 
     /**

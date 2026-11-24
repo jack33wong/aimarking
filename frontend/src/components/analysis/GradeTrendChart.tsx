@@ -263,9 +263,14 @@ const GradeTrendChart: React.FC<GradeTrendChartProps> = ({
   const plotWidth = chartWidth - padding.left - padding.right;
   const plotHeight = chartHeight - padding.top - padding.bottom;
 
-  // Grade range (1-10 for GCSE, adjust as needed)
+  // Dynamic grade range: supports AP (1-5), IB (1-7), GCSE/A-Level/IGCSE (1-10)
+  const highestObserved = chartData.reduce((m, p) => Math.max(m, p.grade), 0);
   const minGrade = 1;
-  const maxGrade = 10;
+  const maxGrade = highestObserved > 0 && highestObserved <= 5
+    ? 5
+    : highestObserved > 5 && highestObserved <= 7
+      ? 7
+      : 10;
 
   // Get unique paper codes for legend
   const paperCodes = useMemo(() => {

@@ -617,3 +617,34 @@
         font-size: 0.7rem;
        }
 }
+
+/* Handwritten Exam Levels Pill Strip */
+.hero-exam-levels-strip {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 18px;
+    max-width: 780px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.hero-exam-level-pill {
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px solid rgba(15, 23, 42, 0.14);
+    background: rgba(255, 255, 255, 0.85);
+    color: #334155;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.18s ease;
+}
+
+.hero-exam-level-pill:hover {
+    border-color: #7f00ff;
+    color: #7f00ff;
+    background: rgba(127, 0, 255, 0.06);
+    transform: translateY(-1px);
+}

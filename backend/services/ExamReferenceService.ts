@@ -1,4 +1,5 @@
 import { getFirestore } from '../config/firebase.js';
+import { detectCanonicalQualification } from './marking/MarkingHelpers.js';
 
 export class ExamReferenceService {
     private static db = getFirestore();
@@ -124,7 +125,7 @@ export class ExamReferenceService {
         console.log(`ℹ️ [EXAM-REF] Searching papers with variations: ${JSON.stringify(searchVariations)}`);
 
         // Common "fluff" words that users type but aren't strictly in the database metadata
-        const stopWords = new Set(['gcse', 'igcse', 'alevel', 'a-level', 'tier', 'paper', 'exam', 'the', 'for']);
+        const stopWords = new Set(['gcse', 'igcse', 'alevel', 'a-level', 'ial', 'as', 'olevel', 'o-level', 'ib', 'ap', 'national', 'level', 'tier', 'paper', 'exam', 'the', 'for']);
         const normalize = (t: string) => t.toLowerCase()
             .replace(/\bmathematics\b/g, 'maths')
             .replace(/\benglish language\b/g, 'englang')
@@ -279,23 +280,60 @@ export class ExamReferenceService {
             if (monthMap[monthCode]) formattedSeries = `${monthMap[monthCode]} ${year}`;
         }
 
-        const rawQual = (meta.qualification || meta.subject || '').toLowerCase();
-        const code = (meta.exam_code || meta.code || '').toLowerCase();
+        const board = String(meta.exam_board || meta.board || '').trim();
+        const code = String(meta.exam_code || meta.paperCode || meta.code || '').trim().toLowerCase();
+        const qualification = detectCanonicalQualification({
+            rawQual: meta.qualification,
+            rawSubject: meta.subject,
+            board,
+            paperCode: code
+        });
 
-        // Robust Qualification Detection: Check explicit metadata and common A-Level code patterns
-        const isAlevel = rawQual.includes('a level') || rawQual.includes('alevel') ||
-            code.startsWith('7357') || code.startsWith('7356') || code.startsWith('7367') || // AQA
-            code.startsWith('9ma0') || code.startsWith('8ma0') || code.startsWith('9fm0') || code.startsWith('8fm0') || // Edexcel
-            code.startsWith('wma') || code.startsWith('wme') || code.startsWith('wst') || code.startsWith('wfm') || code.startsWith('wdm') || // Edexcel IAL Maths
-            code.startsWith('h240') || code.startsWith('h230') || code.startsWith('h640') || code.startsWith('h630'); // OCR
+        const isAlevel = qualification === 'A-Level' || qualification === 'IAL' || qualification === 'AS-Level' || qualification === 'International AS';
+        const isGcse = qualification === 'GCSE';
+        const isIgcse = qualification === 'IGCSE';
+        const isCie = board.toLowerCase() === 'cie' || board.toLowerCase().includes('cambridge');
 
         let formattedTier = '';
         let tierCode = 'All';
+        let rawTier = String(meta.tier || '').trim().toLowerCase();
 
-        if (!isAlevel) {
-            let rawTier = (meta.tier || '').toLowerCase();
-
-            // Fallback: Extract Tier from code suffix (e.g. 8300/1F -> Foundation)
+        if (qualification === 'IB') {
+            if (/\bhl\b|higher\s+level/i.test(rawTier) || /\bhl\b/i.test(code)) {
+                formattedTier = 'HL';
+                tierCode = 'HL';
+            } else if (/\bsl\b|standard\s+level/i.test(rawTier) || /\bsl\b/i.test(code)) {
+                formattedTier = 'SL';
+                tierCode = 'SL';
+            }
+        } else if (qualification === 'AP') {
+            if (/frq|free[- ]?response/i.test(rawTier) || /frq/i.test(code)) {
+                formattedTier = 'FRQ';
+                tierCode = 'FRQ';
+            }
+        } else if (isIgcse && isCie) {
+            // Cambridge IGCSE uses Extended / Core (papers 2/4/6 are Extended, 1/3/5 are Core)
+            if (/extended|higher|ext\b/i.test(rawTier)) {
+                formattedTier = 'Extended';
+                tierCode = 'Ext';
+            } else if (/core|foundation/i.test(rawTier)) {
+                formattedTier = 'Core';
+                tierCode = 'Core';
+            } else {
+                const variantMatch = code.match(/\/(\d)\d$/);
+                if (variantMatch) {
+                    const comp = parseInt(variantMatch[1], 10);
+                    if ([2, 4, 6].includes(comp)) {
+                        formattedTier = 'Extended';
+                        tierCode = 'Ext';
+                    } else if ([1, 3, 5].includes(comp)) {
+                        formattedTier = 'Core';
+                        tierCode = 'Core';
+                    }
+                }
+            }
+        } else if (isGcse || isIgcse) {
+            // UK GCSE & Edexcel IGCSE use Higher Tier / Foundation Tier
             if (!rawTier || (rawTier !== 'h' && rawTier !== 'f' && rawTier !== 'higher' && rawTier !== 'foundation')) {
                 const codeMatch = code.match(/([fh])($|\s|\/)/);
                 if (codeMatch) rawTier = codeMatch[1];
@@ -310,13 +348,11 @@ export class ExamReferenceService {
             }
         }
 
-        const isGcse = !isAlevel && (rawQual.includes('gcse') || !!formattedTier || !rawQual || rawQual === 'mathematics' || rawQual === 'maths');
-
         return {
             series: formattedSeries,
             tier: formattedTier,
             tierCode: tierCode,
-            qualification: isAlevel ? 'A-Level' : 'GCSE',
+            qualification,
             isAlevel,
             isGcse
         };

@@ -63,6 +63,62 @@
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>
+  <url>
+    <loc>https://aimarking.ai/mark-aqa-gcse-english-language-past-papers</loc>
+    <lastmod>2026-11-24</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://aimarking.ai/mark-edexcel-gcse-english-language-past-papers</loc>
+    <lastmod>2026-11-24</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://aimarking.ai/mark-ocr-gcse-english-language-past-papers</loc>
+    <lastmod>2026-11-24</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+
+  <!-- International & Handwritten Exam Landing Pages -->
+  <url>
+    <loc>https://aimarking.ai/exams/cambridge-igcse</loc>
+    <lastmod>2026-11-24</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://aimarking.ai/exams/cambridge-o-level</loc>
+    <lastmod>2026-11-24</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://aimarking.ai/exams/international-a-level</loc>
+    <lastmod>2026-11-24</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://aimarking.ai/exams/sqa-national-5</loc>
+    <lastmod>2026-11-24</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://aimarking.ai/exams/ib-diploma</loc>
+    <lastmod>2026-11-24</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://aimarking.ai/exams/ap-stem-frq</loc>
+    <lastmod>2026-11-24</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
 
   <!-- Legal & Login -->
   <url>

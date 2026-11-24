@@ -91,8 +91,22 @@ const ImageMagnifier = ({
 
 /* --- Data --- */
 const HERO_SEGMENTS = [
-    { text: "Instantly Mark Your Exam Past Papers" },
-    { text: "GCSE & A-Level", className: "hero-highlight" }
+    { text: "Instantly Mark Your Handwritten Exam Papers" },
+    { text: "GCSE · IGCSE · A-Level · IB · AP®", className: "hero-highlight" }
+];
+
+const HANDWRITTEN_EXAM_LEVELS = [
+    { label: 'GCSE', slug: 'gcse', to: null },
+    { label: 'IGCSE', slug: 'igcse', to: '/exams/cambridge-igcse' },
+    { label: 'A-Level', slug: 'a-level', to: null },
+    { label: 'IAL', slug: 'ial', to: '/exams/international-a-level' },
+    { label: 'AS-Level', slug: 'as-level', to: null },
+    { label: 'International AS', slug: 'international-as', to: '/exams/international-a-level' },
+    { label: 'O Level', slug: 'o-level', to: '/exams/cambridge-o-level' },
+    { label: 'National 5', slug: 'national-5', to: '/exams/sqa-national-5' },
+    { label: 'Level 3 Core Maths', slug: 'level-3', to: null },
+    { label: 'IB Diploma', slug: 'ib', to: '/exams/ib-diploma' },
+    { label: 'AP® STEM FRQ', slug: 'ap', to: '/exams/ap-stem-frq' }
 ];
 
 
@@ -133,7 +147,7 @@ export const LandingPage: React.FC = () => {
 
                     <div className="hero-new-feature-pill" onClick={() => navigate('/app')}>
                         <span className="pill-badge">NEW</span>
-                        <span className="pill-text">Upload any subject + mark scheme</span>
+                        <span className="pill-text">UK &amp; International handwritten exams + auto-growing library</span>
                         <span className="pill-arrow">→</span>
                     </div>
 
@@ -147,7 +161,7 @@ export const LandingPage: React.FC = () => {
 
                     {/* BLOCK 1: Subtitle (Immediate start after typing) */}
                     <p className="hero-main-subtitle anim-item delay-1">
-                        Built-in official AQA, Edexcel &amp; OCR mark schemes and grade boundaries for <strong>GCSE &amp; A-Level Maths</strong> and <strong>GCSE English Language</strong>—or upload <strong>any subject</strong> together with its mark scheme (mark scheme pages never count toward your page limit).
+                        Built-in official mark schemes and grade boundaries for <strong>GCSE &amp; A-Level Maths</strong> and <strong>GCSE English Language</strong>—plus upload <strong>any handwritten past paper &amp; official mark scheme</strong> across IGCSE, IAL, O Level, National 5, IB, and AP® STEM FRQs (mark scheme pages never count toward your limit).
                     </p>
 
                     <div className="hero-cta-group">
@@ -168,8 +182,32 @@ export const LandingPage: React.FC = () => {
                             </button>
 
                             <p className="hero-trust-microcopy">
-                                Supports GCSE & A-Level (Edexcel, AQA, OCR). No credit card required.
+                                Supports AQA, Edexcel, OCR, Cambridge (CIE), SQA, IB &amp; College Board AP® STEM FRQs. No credit card required.
                             </p>
+
+                            <div className="hero-exam-levels-strip" aria-label="Supported handwritten exam levels">
+                                {HANDWRITTEN_EXAM_LEVELS.map((lvl) => (
+                                    <button
+                                        key={lvl.slug}
+                                        type="button"
+                                        className="hero-exam-level-pill"
+                                        onClick={() => {
+                                            if (lvl.to) {
+                                                navigate(lvl.to);
+                                                return;
+                                            }
+                                            const el = document.getElementById('supported-papers');
+                                            if (el) {
+                                                el.scrollIntoView({ behavior: 'smooth' });
+                                            } else {
+                                                navigate('/app?action=select');
+                                            }
+                                        }}
+                                    >
+                                        {lvl.label}
+                                    </button>
+                                ))}
+                            </div>
                         </div>
                     </div>
                 </div>

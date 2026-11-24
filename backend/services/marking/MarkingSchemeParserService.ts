@@ -478,11 +478,11 @@ CRITICAL EXTRACTION RULES FOR 100% MARKING ACCURACY:
 Output JSON Schema:
 {
   "examDetails": {
-    "board": "AQA | Edexcel | OCR | WJEC | CIE | Custom",
-    "subject": "Exact academic subject name ONLY, WITHOUT any qualification prefix or suffix (e.g. 'Combined Science: Trilogy', 'Biology', 'Chemistry', 'Physics', 'Geography', 'History', 'Computer Science'). NEVER include 'GCSE', 'A-Level', 'IGCSE', or '(9-1)' in subject.",
-    "qualification": "GCSE | A-Level | IGCSE",
+    "board": "AQA | Pearson Edexcel | OCR | WJEC | Eduqas | CIE | SQA | IB | College Board | Custom",
+    "subject": "Exact academic subject name ONLY, WITHOUT any qualification prefix or suffix (e.g. 'Combined Science: Trilogy', 'Biology', 'Chemistry', 'Physics', 'Geography', 'History', 'Computer Science', 'Calculus AB'). NEVER include 'GCSE', 'A-Level', 'IGCSE', 'IAL', 'O Level', 'IB', 'AP', 'National 5', or '(9-1)' in subject.",
+    "qualification": "GCSE | IGCSE | A-Level | IAL | AS-Level | International AS | O Level | National 5 | Level 3 | IB | AP",
     "paperCode": "Paper code if visible, else 'Uploaded'",
-    "tier": "Higher | Foundation | N/A",
+    "tier": "Higher | Foundation | Extended | Core | HL | SL | FRQ | N/A",
     "exam_series": "Exam series if visible, else 'N/A'",
     "paperTotalMarks": "Integer total/maximum mark for the WHOLE paper ONLY if explicitly printed in the document (e.g. 'Total for paper: 100', 'Maximum mark: 80'), else null",
     "isUnofficialOrPractice": "boolean — true ONLY if the document itself is a synthetic/practice, mock, predicted, or rewritten mark scheme (e.g. MarkMe, SaveMyExams, 'Practice Paper', 'Predicted Paper', 'Not produced or endorsed by AQA/Edexcel', 'June 2024 Format'); false for genuine official exam board mark schemes even if they carry third-party archive watermarks/footers like 'PapaCambridge', 'GCE Guide', 'Dynamic Papers', or 'PMT'",
@@ -1458,12 +1458,13 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
             if (!db) return null;
 
             const details = parsedObj.examDetails || {};
-            const { subject: cleanSubj, qualification: cleanQual } = cleanSubjectAndQualification(
-                details.subject,
-                details.qualification
-            );
             const board = String(details.board || '').trim();
             const paperCode = String(details.paperCode || '').trim().toUpperCase();
+            const { subject: cleanSubj, qualification: cleanQual } = cleanSubjectAndQualification(
+                details.subject,
+                details.qualification,
+                { board, paperCode }
+            );
             const examSeries = String(details.exam_series || details.date || 'Unknown').trim();
             const subject = cleanSubj;
             const qualification = (cleanQual || 'GCSE').replace(/\s*\(9-1\)\s*/gi, '').trim() || 'GCSE';
@@ -1613,12 +1614,13 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
             if (!db) return;
 
             const details = parsedScheme.examDetails || {};
-            const { subject: cleanSubj, qualification: cleanQual } = cleanSubjectAndQualification(
-                details.subject,
-                details.qualification
-            );
             const board = String(details.board || '').trim();
             const paperCode = String(details.paperCode || '').trim().toUpperCase();
+            const { subject: cleanSubj, qualification: cleanQual } = cleanSubjectAndQualification(
+                details.subject,
+                details.qualification,
+                { board, paperCode }
+            );
             const examSeries = String(details.exam_series || details.date || 'Unknown').trim();
             const subject = cleanSubj;
             const qualification = (cleanQual || 'GCSE').replace(/\s*\(9-1\)\s*/gi, '').trim() || 'GCSE';

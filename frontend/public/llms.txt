@@ -1,13 +1,17 @@
 # AI Marking (aimarking.ai)
-An AI-powered tool specifically designed for marking GCSE Mathematics past papers.
+An AI-powered platform for marking handwritten exam past papers across UK and International qualifications.
+
+## Supported Handwritten Exam Levels
+- UK: GCSE, A-Level, AS-Level, SQA National 5, Level 3 Core Maths
+- International: Cambridge & Edexcel IGCSE, International A-Level (IAL), International AS, Cambridge O Level, IB Diploma (HL/SL), and College Board AP® Hybrid STEM Free-Response (FRQ)
 
 ## Key Features
-- Supports Edexcel, AQA, and OCR GCSE Maths.
-- Handwriting recognition: Marks scanned or photographed student work.
-- Instant Feedback: Provides step-by-step guidance on where marks were lost.
-- Accuracy: Matches human examiner marking logic with 98% similarity.
+- Built-in official AQA, Pearson Edexcel & OCR past papers and mark schemes (GCSE & A-Level Maths, GCSE English Language) plus an auto-growing official library from verified user uploads.
+- Bring-Your-Own Mark Scheme: Upload any handwritten past paper together with its official mark scheme PDF (mark scheme pages never count toward page limits).
+- Dual Marking Engine: Spatial handwriting/equation/graph marking + Levels-of-Response (LoR) essay rubric evaluation.
+- Instant Examiner Feedback: Line-by-line annotations, step-by-step guidance, and multi-scale grade tracking.
 
 ## Target Audience
-- GCSE Students (Year 10/11)
-- Private Maths Tutors
+- Secondary & Sixth-Form Students (UK & International)
+- Private Tutors & Tuition Centres
 - Secondary School Teachers

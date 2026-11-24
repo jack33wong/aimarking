@@ -531,36 +531,50 @@ export class GradeBoundaryService {
    */
   private static normalizeSubjectName(subject: string): string {
     return subject.toLowerCase()
-      .replace(/\b(gcse|a-level|alevel|as-level|a2-level|igcse|international|advanced)\b/g, '')
+      .replace(/\b(gcse|a-level|alevel|as-level|a2-level|igcse|ial|o-level|olevel|national\s*5|level\s*3|ib|ibdp|ap|international|advanced)\b/g, '')
       .replace(/\s+/g, ' ')
       .trim();
   }
 
   /**
    * Normalize tier for matching
-   * Handles variations like "Higher Tier", "Higher", "higher", "Foundation Tier", etc.
+   * Handles variations like "Higher Tier", "Extended", "Core", "HL", "SL", "FRQ"
    */
   private static normalizeTier(tier: string): string {
     if (!tier) return '';
 
-    const normalized = tier.toLowerCase().trim();
+    let normalized = tier.toLowerCase().trim();
 
     // Remove "tier" suffix if present (e.g., "higher tier" -> "higher")
     if (normalized.endsWith(' tier')) {
-      return normalized.slice(0, -5).trim();
+      normalized = normalized.slice(0, -5).trim();
     }
+
+    if (normalized === 'ext' || normalized === 'extended') return 'extended';
+    if (normalized === 'core') return 'core';
+    if (normalized === 'hl' || normalized === 'higher level') return 'hl';
+    if (normalized === 'sl' || normalized === 'standard level') return 'sl';
+    if (normalized === 'frq' || normalized === 'free response' || normalized === 'free-response') return 'frq';
 
     return normalized;
   }
 
   /**
-   * Normalize qualification for matching (e.g., "GCSE", "A-Level", "IGCSE")
+   * Normalize qualification for matching across UK & International handwritten exams
    */
   private static normalizeQualification(q?: string | null): string {
     if (!q) return '';
     const s = q.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (s === 'ial' || s.includes('internationalalevel')) return 'ial';
+    if (s === 'ias' || s.includes('internationalas')) return 'international-as';
+    if (s.includes('aslevel')) return 'as-level';
     if (s.includes('alevel') || s.includes('advanced')) return 'a-level';
     if (s.includes('igcse') || s.includes('internationalgcse')) return 'igcse';
+    if (s.includes('olevel')) return 'o-level';
+    if (s.includes('national5') || s === 'nat5') return 'national-5';
+    if (s.includes('level3') || s.includes('coremaths')) return 'level-3';
+    if (s === 'ib' || s === 'ibdp' || s.includes('internationalbaccalaureate')) return 'ib';
+    if (s === 'ap' || s.includes('advancedplacement')) return 'ap';
     if (s.includes('gcse')) return 'gcse';
     return s;
   }
