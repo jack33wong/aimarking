@@ -925,6 +925,7 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
                     rawSummary={(message as any).performanceSummary}
                     MarkdownMathRenderer={MarkdownMathRenderer}
                     detectedQuestion={message.detectedQuestion}
+                    markingContext={(message as any).markingContext}
                     onQuestionClick={(qNum) => {
                       engagementTracker.recordSummaryChipClick();
                       engagementTracker.recordQuestionNavigation();

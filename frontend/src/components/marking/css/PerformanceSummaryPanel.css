@@ -233,8 +233,8 @@
 
 .tmua-hero-score-group {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  gap: 10px;
   flex-shrink: 0;
   min-width: 0;
 }
@@ -248,6 +248,37 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   letter-spacing: -0.01em;
+}
+
+.tmua-hero-Raw.tmua-score-fraction {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 34px;
+}
+
+.tmua-fraction-num {
+  font-size: 0.72em;
+  line-height: 0.95;
+  padding: 0 3px;
+}
+
+.tmua-fraction-bar {
+  width: 100%;
+  min-width: 26px;
+  height: 2.5px;
+  border-radius: 999px;
+  background: var(--function-error);
+  transform: rotate(-4deg);
+}
+
+.tmua-fraction-den {
+  font-size: 0.62em;
+  line-height: 0.95;
+  opacity: 0.92;
+  padding: 0 3px;
 }
 
 .score-marks-label {
@@ -1686,4 +1717,131 @@ html.dark .tmua-source-label.source-general {
 .tmua-scheme-chip.clickable:hover .tmua-scheme-chip-chevron {
   color: var(--text-primary);
   transform: translateX(1px);
+}
+
+/* Mark Scheme Modal: Pinned Top Bar for Question & Marks Overview Table */
+.tmua-scheme-overview-bar {
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border-main, rgba(148, 163, 184, 0.2));
+  background: var(--background-card, #ffffff);
+  flex-shrink: 0;
+}
+
+.tmua-scheme-overview-wrapper {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border-main, rgba(148, 163, 184, 0.22));
+  border-radius: 10px;
+  background: var(--bg-surface-1, rgba(148, 163, 184, 0.05));
+  flex-shrink: 0;
+}
+
+.tmua-scheme-overview-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.tmua-scheme-overview-table th,
+.tmua-scheme-overview-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.14));
+  border-right: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.14));
+  white-space: nowrap;
+}
+
+.tmua-scheme-overview-table tr:last-child th,
+.tmua-scheme-overview-table tr:last-child td {
+  border-bottom: none;
+}
+
+.tmua-scheme-overview-table td:last-child {
+  border-right: none;
+}
+
+.tmua-scheme-overview-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--background-card, #ffffff);
+  position: sticky;
+  left: 0;
+  z-index: 2;
+}
+
+.tmua-scheme-q-cell {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.tmua-scheme-jump-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-weight: 700;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+
+.tmua-scheme-jump-btn:hover {
+  color: var(--text-brand, #7c3aed);
+  text-decoration: underline;
+}
+
+.tmua-scheme-total-col {
+  font-weight: 700;
+  color: var(--text-primary);
+  background: var(--background-card, #ffffff);
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  border-left: 1px solid var(--border-main, rgba(148, 163, 184, 0.25));
+}
+
+.tmua-scheme-general-note {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border-main, rgba(148, 163, 184, 0.2));
+  background: var(--bg-surface-1, rgba(148, 163, 184, 0.05));
+}
+
+/* Compact Stacked Teacher Fraction inside Stat Cards */
+.tmua-stat-fraction {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  gap: 2px;
+  min-width: 24px;
+}
+
+.tmua-stat-fraction-num {
+  font-size: 0.78em;
+  line-height: 0.95;
+  padding: 0 2px;
+}
+
+.tmua-stat-fraction-bar {
+  width: 100%;
+  min-width: 20px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--function-error);
+  transform: rotate(-4deg);
+}
+
+.tmua-stat-fraction-den {
+  font-size: 0.66em;
+  line-height: 0.95;
+  opacity: 0.88;
+  padding: 0 2px;
 }

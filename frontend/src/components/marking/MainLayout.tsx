@@ -897,7 +897,11 @@ const MainLayout: React.FC<MainLayoutProps> = ({ noIndex = false }) => {
                     {hasScoredQuestions && totalMax > 0 && (
                       <span className="ribbon-thumbnail-total-score">
                         <span className="ribbon-thumbnail-total-label">Total:</span>
-                        <span className="ribbon-thumbnail-total-value">{totalAwarded}/{totalMax}</span>
+                        <span className="ribbon-thumbnail-total-value">
+                          {totalAwarded}
+                          <span className="ribbon-score-slash">/</span>
+                          {totalMax}
+                        </span>
                         {ribbonGrade && (
                           <>
                             <span className="ribbon-thumbnail-total-sep">·</span>

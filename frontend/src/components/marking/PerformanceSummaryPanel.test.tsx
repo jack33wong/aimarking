@@ -91,6 +91,7 @@ describe('PerformanceSummaryPanel 3-tier layout & provenance', () => {
           examCode: '0610/41',
           examSeries: 'May/June 2026',
           questions: [
+            { questionNumber: '1', marks: 12, markingScheme: '- B1: Diffusion rate increases with SA:V' },
             { questionNumber: '5', marks: 8, markingScheme: '- M1: Identify trophic level\n- A1: Correct pyramid of biomass' },
           ],
         },
@@ -122,10 +123,13 @@ describe('PerformanceSummaryPanel 3-tier layout & provenance', () => {
     // Radar shown because >= 3 assessed axes
     expect(screen.getByText('MASTERY BY TOPIC')).toBeInTheDocument();
 
-    // 1-Click View Scheme modal opened directly from the [CIE 0610/41 ›] chip (showing full exam meta in modal header)
+    // 1-Click View Scheme modal opened directly from the [CIE 0610/41 ›] chip (showing full exam meta + Question/Marks total table)
     fireEvent.click(screen.getByText('CIE 0610/41'));
     expect(screen.getByText('Mark Scheme Used')).toBeInTheDocument();
     expect(screen.getByText('CIE Biology 0610/41 (May/June 2026)')).toBeInTheDocument();
+    expect(screen.getByText('Question')).toBeInTheDocument();
+    expect(screen.getByText('Total')).toBeInTheDocument();
+    expect(screen.getByText('20')).toBeInTheDocument();
     expect(screen.getByText(/Identify trophic level/i)).toBeInTheDocument();
     expect(screen.getByText('M1')).toHaveClass('tmua-scheme-point-code');
     expect(screen.getByText('A1')).toHaveClass('tmua-scheme-point-code');
@@ -195,5 +199,51 @@ describe('PerformanceSummaryPanel 3-tier layout & provenance', () => {
     expect(screen.getByText('Marked with Your Mark Scheme')).toBeInTheDocument();
     expect(screen.getByText('9MA0_02_MS.pdf')).toBeInTheDocument();
     expect(screen.getByText('Full Marks')).toBeInTheDocument();
+  });
+
+  it('shows Breakdown chip and Question/Marks total table for non-official General Mark Scheme multi-question papers (e.g. 51 / 112)', () => {
+    const payload = {
+      _type: 'AI_SUMMARY_V2',
+      level: 'GCSE',
+      headline: 'Solid attempt across custom worksheet.',
+      markingSource: { type: 'general', label: 'General Mark Scheme' },
+      score: {
+        awardedMarks: 51,
+        totalMarks: 112,
+        percentage: 46,
+        questionsTotal: 2,
+        questionsFullMarks: 0,
+        questionsAttempted: 2,
+      },
+      radar: [],
+      mastered: [],
+      focusNext: [],
+    };
+
+    const markingContext = {
+      questionResults: [
+        { number: '1', earnedMarks: 30, totalMarks: 60, hasScheme: false, scheme: '[GENERIC_GCSE_LOGIC]\n[INSTRUCTION]: CHIEF EXAMINER — Generic Rubric Mode' },
+        { number: '2', earnedMarks: 21, totalMarks: 52, hasScheme: false, scheme: '[GENERIC_GCSE_LOGIC]\nRAW OCR BLOCKS' },
+      ],
+    };
+
+    render(
+      <PerformanceSummaryPanel
+        rawSummary={JSON.stringify(payload)}
+        MarkdownMathRenderer={MockMarkdown}
+        markingContext={markingContext}
+      />
+    );
+
+    expect(screen.getByText('Marked with General Mark Scheme')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Breakdown'));
+    expect(screen.getByText('Mark Scheme Used')).toBeInTheDocument();
+    expect(screen.getByText('Q1')).toBeInTheDocument();
+    expect(screen.getByText('Q2')).toBeInTheDocument();
+    expect(screen.getByText('Scored')).toBeInTheDocument();
+    expect(screen.getAllByText('51').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('112').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/no official or custom mark scheme was attached/i)).toBeInTheDocument();
+    expect(screen.queryByText(/GENERIC_GCSE_LOGIC|CHIEF EXAMINER|RAW OCR BLOCKS/i)).not.toBeInTheDocument();
   });
 });

@@ -1544,9 +1544,27 @@ export class SVGOverlayService {
       const circleY = circleRadius + (config.marginTop * scaleFactor) + (index * verticalGap);
 
       const circle = `<circle cx="${circleX}" cy="${circleY}" r="${circleRadius}" fill="rgba(255, 255, 255, 0.90)" stroke="#ff0000" stroke-width="${strokeWidth}" opacity="0.9"/>`;
-      const textYAdjust = scoreFontSize * 0.35;
-      const text = `<text x="${circleX}" y="${circleY + textYAdjust}" text-anchor="middle" dominant-baseline="middle" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${scoreFontSize}" font-weight="bold" transform="rotate(-2.5, ${circleX}, ${circleY})">${scoreText}</text>`;
-      svg += circle + text;
+      const fractionMatch = String(scoreText).trim().match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
+      if (fractionMatch) {
+        const [, numStr, denStr] = fractionMatch;
+        const fracFontSize = Math.max(7, Math.round(scoreFontSize * 0.82));
+        const barHalfW = Math.max(6, Math.round(circleRadius * 0.46));
+        const barStroke = Math.max(1.2, Number((strokeWidth * 0.65).toFixed(1)));
+        const numY = Math.round(circleY - circleRadius * 0.22);
+        const barY = Math.round(circleY + circleRadius * 0.04);
+        const denY = Math.round(circleY + circleRadius * 0.44);
+        const fractionGroup =
+          `<g transform="rotate(-2.5, ${circleX}, ${circleY})">` +
+          `<text x="${circleX}" y="${numY}" text-anchor="middle" dominant-baseline="middle" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${fracFontSize}" font-weight="bold">${this.escapeXml(numStr)}</text>` +
+          `<line x1="${circleX - barHalfW}" y1="${barY}" x2="${circleX + barHalfW}" y2="${barY}" stroke="#ff0000" stroke-width="${barStroke}" stroke-linecap="round"/>` +
+          `<text x="${circleX}" y="${denY}" text-anchor="middle" dominant-baseline="middle" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${Math.max(6, Math.round(fracFontSize * 0.92))}" font-weight="bold">${this.escapeXml(denStr)}</text>` +
+          `</g>`;
+        svg += circle + fractionGroup;
+      } else {
+        const textYAdjust = scoreFontSize * 0.35;
+        const text = `<text x="${circleX}" y="${circleY + textYAdjust}" text-anchor="middle" dominant-baseline="middle" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${scoreFontSize}" font-weight="bold" transform="rotate(-2.5, ${circleX}, ${circleY})">${this.escapeXml(scoreText)}</text>`;
+        svg += circle + text;
+      }
     });
     return svg;
   }
@@ -1651,10 +1669,30 @@ export class SVGOverlayService {
       }
     }
 
-    const textY = marginTop + fontSize;
-    const estimatedTextWidth = this.estimateTextWidth(totalScoreText, fontSize);
-    let underlineStartX: number, underlineEndX: number;
+    const fractionMatch = String(totalScoreText).trim().match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)(.*)$/);
+    const isStackedFraction = Boolean(fractionMatch);
+    const numStr = fractionMatch ? fractionMatch[1] : '';
+    const denStr = fractionMatch ? fractionMatch[2] : '';
+    const suffixStr = fractionMatch ? fractionMatch[3].trim() : '';
 
+    // Compute stacked fraction dimensions (or single-line fallback)
+    const numFontSize = isStackedFraction ? Math.max(12, Math.round(fontSize * 0.78)) : fontSize;
+    const denFontSize = isStackedFraction ? Math.max(11, Math.round(fontSize * 0.70)) : fontSize;
+    const suffixFontSize = Math.max(10, Math.round(fontSize * 0.42));
+    const fracBarGap = Math.max(3, Math.round(fontSize * 0.14));
+    const fracBarStroke = Math.max(1.8, Number((strokeWidth * 0.9).toFixed(1)));
+
+    const fractionColWidth = isStackedFraction
+      ? Math.max(
+          this.estimateTextWidth(numStr, numFontSize),
+          this.estimateTextWidth(denStr, denFontSize),
+          Math.round(fontSize * 0.95)
+        ) + Math.round(fontSize * 0.24)
+      : this.estimateTextWidth(totalScoreText, fontSize);
+    const suffixWidth = suffixStr ? this.estimateTextWidth(` ${suffixStr}`, suffixFontSize) : 0;
+    const estimatedTextWidth = fractionColWidth + suffixWidth;
+
+    let underlineStartX: number, underlineEndX: number;
     if (isTopLeft) {
       underlineStartX = textX;
       underlineEndX = textX + estimatedTextWidth;
@@ -1663,17 +1701,19 @@ export class SVGOverlayService {
       underlineEndX = textX;
     }
 
+    const scoreBlockHeight = isStackedFraction
+      ? numFontSize + fracBarGap * 2 + fracBarStroke + denFontSize
+      : fontSize;
+    const textY = marginTop + scoreBlockHeight;
     const underlineY1 = textY + underlineOffset;
     const underlineY2 = textY + underlineOffset + underlineSpacing;
 
     // Optional teacher-style red handwritten grade stamp on Meta / Front Cover page for past papers
-    // Stacked right-aligned directly below the double-underlined total score so it never collides
-    // with centered exam board logos (e.g. Cambridge, Edexcel, AQA, OCR).
     const cleanGrade = typeof gradeText === 'string' ? gradeText.trim() : '';
     const shouldDrawGrade = Boolean(!isTopLeft && hasMetaPage && cleanGrade && cleanGrade !== 'N/A' && cleanGrade !== 'Partial Paper');
     let gradeSvg = '';
     let groupLeftX = underlineStartX;
-    let totalHeight = fontSize + underlineOffset + underlineSpacing + strokeWidth;
+    let totalHeight = scoreBlockHeight + underlineOffset + underlineSpacing + strokeWidth;
 
     if (shouldDrawGrade) {
       const isNumericGrade = /^\d+(\.\d+)?$/.test(cleanGrade);
@@ -1702,11 +1742,30 @@ export class SVGOverlayService {
     const pivotX = Math.round((groupLeftX + underlineEndX) / 2);
     const pivotY = Math.round(marginTop + totalHeight * 0.5);
 
-    const text = `<text x="${textX}" y="${textY}" text-anchor="${textAnchor}" dominant-baseline="baseline" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${fontSize}" font-weight="bold">${this.escapeXml(totalScoreText)}</text>`;
+    let scoreSvg = '';
+    if (isStackedFraction) {
+      const fracCenterX = Math.round(underlineStartX + fractionColWidth / 2);
+      const numY = Math.round(marginTop + numFontSize);
+      const barY = Math.round(numY + fracBarGap);
+      const denY = Math.round(barY + fracBarGap + denFontSize * 0.88);
+      const barInset = Math.round(fontSize * 0.06);
+      scoreSvg =
+        `<text x="${fracCenterX}" y="${numY}" text-anchor="middle" dominant-baseline="baseline" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${numFontSize}" font-weight="bold">${this.escapeXml(numStr)}</text>` +
+        `<line x1="${underlineStartX + barInset}" y1="${barY}" x2="${underlineStartX + fractionColWidth - barInset}" y2="${barY}" stroke="#ff0000" stroke-width="${fracBarStroke}" stroke-linecap="round" opacity="0.95"/>` +
+        `<text x="${fracCenterX}" y="${denY}" text-anchor="middle" dominant-baseline="baseline" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${denFontSize}" font-weight="bold">${this.escapeXml(denStr)}</text>`;
+      if (suffixStr) {
+        const suffixX = underlineStartX + fractionColWidth + Math.round(fontSize * 0.14);
+        const suffixY = Math.round(barY + suffixFontSize * 0.35);
+        scoreSvg += `<text x="${suffixX}" y="${suffixY}" text-anchor="start" dominant-baseline="baseline" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${suffixFontSize}" font-weight="bold">${this.escapeXml(suffixStr)}</text>`;
+      }
+    } else {
+      scoreSvg = `<text x="${textX}" y="${textY}" text-anchor="${textAnchor}" dominant-baseline="baseline" fill="#ff0000" font-family="${this.CONFIG.fontFamily}" font-size="${fontSize}" font-weight="bold">${this.escapeXml(totalScoreText)}</text>`;
+    }
+
     const underline1 = `<line x1="${underlineStartX}" y1="${underlineY1}" x2="${underlineEndX}" y2="${underlineY1}" stroke="#ff0000" stroke-width="${strokeWidth}" opacity="0.9"/>`;
     const underline2 = `<line x1="${underlineStartX}" y1="${underlineY2}" x2="${underlineEndX}" y2="${underlineY2}" stroke="#ff0000" stroke-width="${strokeWidth}" opacity="0.9"/>`;
 
-    return `<g transform="rotate(-2.5, ${pivotX}, ${pivotY})">${gradeSvg}${text}${underline1}${underline2}</g>`;
+    return `<g transform="rotate(-2.5, ${pivotX}, ${pivotY})">${gradeSvg}${scoreSvg}${underline1}${underline2}</g>`;
   }
 
   private static createRubricStampsSVG(

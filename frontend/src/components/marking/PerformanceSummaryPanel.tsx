@@ -105,6 +105,7 @@ interface PerformanceSummaryPanelProps {
   rawSummary: string;
   MarkdownMathRenderer: React.ElementType;
   detectedQuestion?: any;
+  markingContext?: any;
   onQuestionClick?: (qNum: string) => void;
   activeQuestionId?: string | null;
 }
@@ -504,30 +505,11 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
   rawSummary,
   MarkdownMathRenderer,
   detectedQuestion,
+  markingContext,
   onQuestionClick,
   activeQuestionId: propActiveQuestionId
 }) => {
   const [showSchemeModal, setShowSchemeModal] = useState(false);
-
-  const schemeQuestions = useMemo(() => {
-    const papers = detectedQuestion?.examPapers;
-    if (!Array.isArray(papers)) return [];
-    const list: Array<{ q: string; marks?: number; scheme: string; paperTitle?: string }> = [];
-    papers.forEach((p: any) => {
-      (p.questions || []).forEach((q: any) => {
-        const schemeText = typeof q?.markingScheme === 'string' ? q.markingScheme.trim() : '';
-        if (schemeText) {
-          list.push({
-            q: String(q.questionNumber || ''),
-            marks: q.marks,
-            scheme: schemeText,
-            paperTitle: p.paperTitle || [p.examBoard, p.examCode, p.examSeries].filter(Boolean).join(' ')
-          });
-        }
-      });
-    });
-    return list;
-  }, [detectedQuestion]);
   let contextActiveQuestionId: string | null = null;
   try {
     const markingPage = useMarkingPage();
@@ -583,6 +565,91 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
     }
     return parsedV2;
   }, [parsedV2, summaryTabs, selectedPaperTab]);
+
+  // Collect mark scheme entries:
+  // 1) Official / user-uploaded per-question markingScheme text when available (never leaking internal prompts)
+  // 2) Fallback for non-official / General Mark Scheme multi-question papers (2+ Qs)
+  const isInternalPromptText = (text: string): boolean =>
+    /\[GENERIC_[A-Z_]+\]|\[INSTRUCTION\]|CHIEF EXAMINER|RAW OCR BLOCKS|\[SUB-QUESTION BUDGETS\]/i.test(text);
+
+  const { items: schemeQuestions, hasCriteria: hasSchemeCriteria } = useMemo<{
+    items: Array<{ q: string; marks?: number; awarded?: number; scheme: string; paperTitle?: string }>;
+    hasCriteria: boolean;
+  }>(() => {
+    const papers = detectedQuestion?.examPapers;
+    const withSchemeText: Array<{ q: string; marks?: number; awarded?: number; scheme: string; paperTitle?: string }> = [];
+    if (Array.isArray(papers)) {
+      papers.forEach((p: any) => {
+        (p.questions || []).forEach((q: any, idx: number) => {
+          const schemeText = typeof q?.markingScheme === 'string' ? q.markingScheme.trim() : '';
+          if (schemeText && !isInternalPromptText(schemeText)) {
+            const rawNum = q.questionNumber ?? q.number ?? q.q ?? String(idx + 1);
+            withSchemeText.push({
+              q: String(rawNum).replace(/^Q/i, '').trim() || String(idx + 1),
+              marks: Number(q.marks) || 0,
+              scheme: schemeText,
+              paperTitle: p.paperTitle || [p.examBoard, p.examCode, p.examSeries].filter(Boolean).join(' ')
+            });
+          }
+        });
+      });
+    }
+    if (withSchemeText.length > 0) {
+      return { items: withSchemeText, hasCriteria: true };
+    }
+
+    // Fallback for non-official / General Mark Scheme multi-question papers (e.g. 51 / 112)
+    const breakdown = activeV2?.questionBreakdown;
+    if (Array.isArray(breakdown) && breakdown.length >= 2) {
+      return {
+        items: breakdown.map((qb, idx) => ({
+          q: String(qb.q || idx + 1).replace(/^Q/i, '').trim() || String(idx + 1),
+          marks: Number(qb.total) || 0,
+          awarded: Number(qb.awarded) || 0,
+          scheme: ''
+        })),
+        hasCriteria: false
+      };
+    }
+
+    const ctxResults = markingContext?.questionResults;
+    if (Array.isArray(ctxResults) && ctxResults.length >= 2) {
+      let anyRealScheme = false;
+      const mapped = ctxResults.map((qr: any, idx: number) => {
+        const rawNum = qr.number ?? qr.questionNumber ?? qr.q ?? String(idx + 1);
+        const cleanNum = String(rawNum).replace(/^Q/i, '').trim() || String(idx + 1);
+        const rawScheme = typeof qr.scheme === 'string' ? qr.scheme.trim() : '';
+        const safeScheme = rawScheme && qr.hasScheme !== false && !isInternalPromptText(rawScheme) ? rawScheme : '';
+        if (safeScheme) anyRealScheme = true;
+        return {
+          q: cleanNum,
+          marks: Number(qr.totalMarks ?? qr.score?.totalMarks ?? 0),
+          awarded: Number(qr.earnedMarks ?? qr.score?.awardedMarks ?? qr.marks ?? 0),
+          scheme: safeScheme
+        };
+      });
+      return { items: mapped, hasCriteria: anyRealScheme };
+    }
+
+    if (Array.isArray(papers)) {
+      const fallbackQs: Array<{ q: string; marks?: number; scheme: string }> = [];
+      papers.forEach((p: any) => {
+        (p.questions || []).forEach((q: any, idx: number) => {
+          const rawNum = q.questionNumber ?? q.number ?? q.q ?? String(idx + 1);
+          fallbackQs.push({
+            q: String(rawNum).replace(/^Q/i, '').trim() || String(idx + 1),
+            marks: Number(q.marks) || 0,
+            scheme: ''
+          });
+        });
+      });
+      if (fallbackQs.length >= 2) {
+        return { items: fallbackQs, hasCriteria: false };
+      }
+    }
+
+    return { items: [], hasCriteria: false };
+  }, [detectedQuestion, activeV2, markingContext]);
 
   // Sort grade boundaries descending (highest grade 9 / A* on the left, matching original database table)
   const sortedBoundariesDesc = useMemo(() => {
@@ -852,7 +919,7 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
                 title={headerBadgeTooltip}
                 aria-label={`View mark scheme${schemeChipCode ? ` for ${schemeChipCode}` : ''}`}
               >
-                <span className="tmua-scheme-chip-code">{schemeChipCode || 'Scheme'}</span>
+                <span className="tmua-scheme-chip-code">{schemeChipCode || 'Breakdown'}</span>
                 <ChevronRight size={12} className="tmua-scheme-chip-chevron" />
               </button>
             ) : (
@@ -911,9 +978,13 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
           <div className="tmua-hero-box">
             <div className="tmua-hero-top">
               <div className="tmua-hero-score-group">
-                <span className="tmua-hero-Raw">
-                  <span className="score-raw-desktop">{score.awardedMarks} / {score.totalMarks} <span className="score-marks-label">marks</span></span>
-                  <span className="score-raw-mobile">{score.awardedMarks}/{score.totalMarks}</span>
+                <span
+                  className="tmua-hero-Raw tmua-score-fraction"
+                  aria-label={`${score.awardedMarks} out of ${score.totalMarks} marks`}
+                >
+                  <span className="tmua-fraction-num">{score.awardedMarks}</span>
+                  <span className="tmua-fraction-bar" aria-hidden="true" />
+                  <span className="tmua-fraction-den">{score.totalMarks}</span>
                 </span>
                 <span className="tmua-hero-pct">{score.percentage}%</span>
               </div>
@@ -1038,7 +1109,14 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
             <div className="tmua-stat-pills-row">
               <div className="tmua-stat-card">
                 <div className="tmua-stat-value">
-                  {score.questionsFullMarks} <span className="tmua-stat-sub">/ {score.questionsTotal}</span>
+                  <span
+                    className="tmua-stat-fraction"
+                    aria-label={`${score.questionsFullMarks} out of ${score.questionsTotal}`}
+                  >
+                    <span className="tmua-stat-fraction-num">{score.questionsFullMarks}</span>
+                    <span className="tmua-stat-fraction-bar" aria-hidden="true" />
+                    <span className="tmua-stat-fraction-den">{score.questionsTotal}</span>
+                  </span>
                 </div>
                 <div className="tmua-stat-label">Full marks questions</div>
               </div>
@@ -1062,7 +1140,14 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
               ) : (
                 <div className="tmua-stat-card">
                   <div className="tmua-stat-value">
-                    {score.questionsAttempted} <span className="tmua-stat-sub">/ {score.questionsTotal}</span>
+                    <span
+                      className="tmua-stat-fraction"
+                      aria-label={`${score.questionsAttempted} out of ${score.questionsTotal}`}
+                    >
+                      <span className="tmua-stat-fraction-num">{score.questionsAttempted}</span>
+                      <span className="tmua-stat-fraction-bar" aria-hidden="true" />
+                      <span className="tmua-stat-fraction-den">{score.questionsTotal}</span>
+                    </span>
                   </div>
                   <div className="tmua-stat-label">Questions attempted</div>
                 </div>
@@ -1185,9 +1270,92 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
                 <X size={16} />
               </button>
             </div>
+            {schemeQuestions.length >= 2 && (() => {
+              const breakdownMap = new Map<string, { awarded: number; total: number }>();
+              (questionBreakdown || []).forEach(qb => {
+                const key = String(qb.q || '').replace(/^Q/i, '').trim().toLowerCase();
+                if (key) breakdownMap.set(key, { awarded: Number(qb.awarded) || 0, total: Number(qb.total) || 0 });
+              });
+              (markingContext?.questionResults || []).forEach((qr: any, idx: number) => {
+                const key = String(qr.number ?? qr.questionNumber ?? idx + 1).replace(/^Q/i, '').trim().toLowerCase();
+                if (key && !breakdownMap.has(key)) {
+                  breakdownMap.set(key, {
+                    awarded: Number(qr.earnedMarks ?? qr.score?.awardedMarks ?? qr.marks ?? 0),
+                    total: Number(qr.totalMarks ?? qr.score?.totalMarks ?? 0)
+                  });
+                }
+              });
+
+              const resolvedRows = schemeQuestions.map(sq => {
+                const key = String(sq.q || '').replace(/^Q/i, '').trim().toLowerCase();
+                const fallback = breakdownMap.get(key);
+                const max = (typeof sq.marks === 'number' && sq.marks > 0) ? sq.marks : (fallback?.total ?? 0);
+                const awarded = typeof sq.awarded === 'number' ? sq.awarded : fallback?.awarded;
+                return { max, awarded };
+              });
+              const hasScoredRow = resolvedRows.some(r => typeof r.awarded === 'number');
+              const sumMax = resolvedRows.reduce((acc, r) => acc + r.max, 0);
+              const maxTotalMarks = sumMax > 0 ? sumMax : (score.totalMarks || 0);
+              const sumAwarded = resolvedRows.reduce((acc, r) => acc + (typeof r.awarded === 'number' ? r.awarded : 0), 0);
+              const totalAwardedMarks = hasScoredRow ? (sumAwarded || score.awardedMarks || 0) : 0;
+
+              return (
+                <div className="tmua-scheme-overview-bar">
+                  <div className="tmua-scheme-overview-wrapper">
+                    <table className="tmua-scheme-overview-table">
+                      <tbody>
+                        <tr>
+                          <th>Question</th>
+                          {schemeQuestions.map((sq, idx) => (
+                            <td key={idx}>
+                              {hasSchemeCriteria ? (
+                                <button
+                                  type="button"
+                                  className="tmua-scheme-jump-btn"
+                                  onClick={() => {
+                                    const el = document.getElementById(`scheme-modal-q-${idx}`);
+                                    el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                                  }}
+                                  title={`Jump to ${formatSummaryQuestionChip(sq.q)}`}
+                                >
+                                  {formatSummaryQuestionChip(sq.q)}
+                                </button>
+                              ) : (
+                                <span className="tmua-scheme-q-cell">{formatSummaryQuestionChip(sq.q)}</span>
+                              )}
+                            </td>
+                          ))}
+                          <td className="tmua-scheme-total-col">Total</td>
+                        </tr>
+                        {hasScoredRow && (
+                          <tr>
+                            <th>Scored</th>
+                            {resolvedRows.map((r, idx) => (
+                              <td key={idx}>{typeof r.awarded === 'number' ? r.awarded : '–'}</td>
+                            ))}
+                            <td className="tmua-scheme-total-col">{totalAwardedMarks}</td>
+                          </tr>
+                        )}
+                        <tr>
+                          <th>{hasScoredRow ? 'Max' : 'Marks'}</th>
+                          {resolvedRows.map((r, idx) => (
+                            <td key={idx}>{r.max > 0 ? r.max : '–'}</td>
+                          ))}
+                          <td className="tmua-scheme-total-col">{maxTotalMarks > 0 ? maxTotalMarks : '–'}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
             <div className="tmua-scheme-modal-body">
-              {schemeQuestions.map((sq, idx) => (
-                <div key={idx} className="tmua-scheme-item">
+              {!hasSchemeCriteria ? (
+                <div className="tmua-scheme-general-note">
+                  Marked using the AI General Mark Scheme — no official or custom mark scheme was attached for this paper. Attach an official past paper or upload a mark scheme to inspect exact M1/A1 mark points.
+                </div>
+              ) : schemeQuestions.map((sq, idx) => (
+                <div key={idx} id={`scheme-modal-q-${idx}`} className="tmua-scheme-item">
                   <div className="tmua-scheme-item-header">
                     <span className="tmua-scheme-q-label">
                       {formatSummaryQuestionChip(sq.q)}
