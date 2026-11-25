@@ -92,6 +92,10 @@ describe('Universal BYOMS Composite LoR, SPaG, Subject Family & Summary Safeguar
       expect(formatted).not.toContain('Mitosis vs. Meiosis');
       expect(formatted).toContain('[MAX SCORE: 15 (Content: 12 + SPaG: 3)]');
       expect(formatted).toContain('[SPaG RUBRIC (Separate 3 marks)]');
+      // Never leak synthetic Maths B1/B12 codes into Humanities schemes or duplicate LoR placeholder rows
+      expect(formatted).not.toContain('- B1:');
+      expect(formatted).not.toContain('- B12:');
+      expect(formatted).toContain('- 1 mark: D Sinful');
     });
 
     it('preserves Science tie-breakers for SCIENCE_DATA schemes', () => {
@@ -148,6 +152,30 @@ describe('Universal BYOMS Composite LoR, SPaG, Subject Family & Summary Safeguar
       expect(canonical.questions['1.5'].spagMaxMarks).toBe(3);
       expect(canonical.questions['1.5'].contentMaxMarks).toBe(12);
       expect(canonical.subQuestionMaxScores['1.5']).toBe(15);
+      // Legacy B1/B12 on RS must be replaced by native AO / mark labels
+      expect(canonical.questions['1.1'].marks[0].mark).toBe('1 mark');
+      expect(canonical.questions['1.5'].marks[0].mark).toBe('AO2');
+    });
+
+    it('preserves native Target AO1:1 / AO1:2 codes instead of B1 when sanitizing RS schemes', () => {
+      const rawParsed = {
+        examDetails: { board: 'AQA', subject: 'Religious Studies A', qualification: 'GCSE', paperCode: '8062/13' },
+        subQuestionMaxScores: { '1.1': 1, '1.3': 4 },
+        questions: {
+          '1.1': {
+            paradigm: 'KEYWORD_POINT',
+            marks: [{ mark: 'B1', answer: 'D Sinful', comments: 'Target: AO1:1' }]
+          },
+          '1.3': {
+            paradigm: 'KEYWORD_POINT',
+            marks: [{ mark: 'B1', answer: 'Simple explanation', comments: 'Target: AO1:2' }]
+          }
+        }
+      };
+
+      const canonical = (MarkingSchemeParserService as any).canonicalizeParsedScheme(rawParsed);
+      expect(canonical.questions['1.1'].marks[0].mark).toBe('AO1:1');
+      expect(canonical.questions['1.3'].marks[0].mark).toBe('AO1:2');
     });
   });
 

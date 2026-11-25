@@ -14,6 +14,7 @@ import {
     sanitizeUnofficialPaperFlag
 } from './MarkingHelpers.js';
 import { UserFacingError } from '../../utils/UserFacingError.js';
+import { resolveSubjectFamily } from '../../config/subjectProfiles.js';
 
 export interface AutoPersistenceAuditContext {
     userId?: string;
@@ -69,14 +70,28 @@ function isAutoPersistedDoc(data: any): boolean {
     return data.persistenceType === 'auto' || data.isAutoPersisted === true || data.autoCataloged === true;
 }
 
-/** Sums integer weights from mark codes, e.g. [B1, B2, M1, A1] -> 5. Bare numbers count as their value. */
+/** Sums integer weights from mark codes, e.g. [M1, A1, B2] -> 4, ["1 mark", "2 marks"] -> 3, ["AO1:1"] -> 1. */
 function sumMarkCodeWeights(marks: any): number {
     if (typeof marks === 'number') return marks;
     if (!Array.isArray(marks)) return 0;
     return marks.reduce((sum: number, m: any) => {
+        if (typeof m === 'object' && m !== null && typeof m.weight === 'number' && m.weight > 0) {
+            return sum + m.weight;
+        }
         const code = String(typeof m === 'object' && m !== null ? (m.mark ?? m.code ?? '') : m).trim();
-        const match = code.match(/^[A-Za-z]*\s*(\d+)$/);
-        return sum + (match ? Number(match[1]) : 0);
+        if (!code) return sum;
+        // Explicit mark count: "1 mark", "2 marks", "+1", "+2", "3m", "(2m)", "AO1:1 (1m)"
+        const explicitCount = code.match(/(?:^|\s|\()(?:\+)?(\d+)\s*(?:marks?|m)(?:\)|$|\b)/i);
+        if (explicitCount) return sum + Number(explicitCount[1]);
+        // Bare number or "+N": "1", "+2"
+        const bareNum = code.match(/^\+?(\d+)$/);
+        if (bareNum) return sum + Number(bareNum[1]);
+        // Standard Maths/Science mark codes: M1, A1, B2, P1, C1, SC1, FT1, K1, E1
+        const codeNum = code.match(/^(?:M|A|B|P|C|K|E|SC|FT)\s*(\d+)$/i);
+        if (codeNum) return sum + Number(codeNum[1]);
+        // Assessment Objective tag without explicit mark count (e.g. "AO1", "AO1:1", "AO1:2", "AO2") -> 1 mark per point
+        if (/^AO\d+(?::\d+)?$/i.test(code)) return sum + 1;
+        return sum;
     }, 0);
 }
 
@@ -462,18 +477,22 @@ CRITICAL EXTRACTION RULES FOR 100% MARKING ACCURACY:
    - Normalize question keys by removing spaces and parentheses: e.g., "1(a)(i)" -> "1ai", "Question 2 (b)" -> "2b", "03.4" -> "3.4" or "3d" (keep alphanumeric labels consistent with the paper, e.g. "1a", "1b", "2").
    - Every key in "questions" MUST have its exact integer maximum score recorded in "subQuestionMaxScores".
 
-2. THREE GRADING PARADIGMS (Classify each question/sub-question via "paradigm"):
-   - "CALCULATION_STEP": Mathematical, Physics, Chemistry, Biology, Geography, or Economics calculations using step/method marks (M1, A1, B1, P1, C1).
-     * CRITICAL: The sum of the integer weights of all "mark" codes in "marks" (e.g. M1 + M1 + M1 + A1 = 4, or M1 + A3 = 4) MUST equal "subQuestionMaxScores[key]". Extract every intermediate method step (unit conversion, substitution, rearrangement) as a separate "M1" entry and the final numerical answer as "A1" (or higher if a single step awards multiple marks).
+2. THREE GRADING PARADIGMS (Classify each question/sub-question via "paradigm") & NATIVE MARK CODES:
+   - **NEVER INVENT OR HARDCODE MATHS MARK CODES (\`B1\`/\`B2\`) FOR NON-MATHS SUBJECTS!** Preserve the EXACT mark notation printed in the uploaded mark scheme:
+     * If the mark scheme uses Assessment Objectives (e.g. \`AO1:1\`, \`AO1:2\`, \`AO2\`, \`AO3\`, \`AO4\`), use that exact AO tag as \`"mark"\` (e.g. \`"AO1:1"\`, \`"AO1:2"\`, \`"AO2"\`).
+     * If the mark scheme uses bare numbers (e.g. \`1\`, \`2\`) with no letter code, use \`"1 mark"\` / \`"2 marks"\` (NOT \`"B1"\`).
+     * ONLY use \`"M1"\`, \`"A1"\`, \`"B1"\`, \`"P1"\`, \`"C1"\` when the uploaded mark scheme actually prints those codes (e.g., Maths, Physics, Chemistry, Biology).
+   - "CALCULATION_STEP": Mathematical, Physics, Chemistry, Biology, Geography, or Economics calculations using step/method marks (M1, A1, B1, P1, C1, or bare mark counts).
+     * CRITICAL: The sum of the integer weights of all "mark" entries in "marks" (e.g. M1 + M1 + M1 + A1 = 4, or M1 + A3 = 4) MUST equal "subQuestionMaxScores[key]". Extract every intermediate method step (unit conversion, substitution, rearrangement) as a separate entry and the final numerical answer as the final entry.
    - "KEYWORD_POINT": Short-answer knowledge, definition, explanation, multiple-choice, table-completion, or "Any K from N" bullet-point schemes (Sciences, Humanities, CS, Business).
-     * If the mark column shows a bare number (e.g. "1") for a point/bullet, format "mark" as "B1" (or "M1"/"A1" if it is a calculation step).
-     * If a single bullet is worth 2 marks, split into atomic "B1" entries if separate criteria are given, or use "B2" if indivisible.
+     * Preserve the exact mark code/AO printed in the scheme (e.g. \`"AO1:1"\`, \`"1 mark"\`, or \`"B1"\` ONLY if literally printed as \`B1\`).
+     * If a single bullet is worth 2 marks, split into atomic 1-mark entries if separate criteria are given, or use \`"2 marks"\` / the printed 2-mark code if indivisible.
      * Preserve MANDATORY underlined or bold keywords from the scheme by wrapping them in **double asterisks** inside "answer".
      * Preserve ALL examiner boundary rules from the "Additional Guidance" / "Notes" / "Comments" column inside "comments": explicitly include "Accept: ...", "Allow: ...", "Reject: ...", "Do not accept: ...", "Ignore: ...", "ecf", "cao", or pool rules like "Any 2 from 4".
    - "LEVEL_OF_RESPONSE": Extended response / essay questions (e.g., 6-mark Science Extended Response, 8/9/12/16/20-mark Geography, History, RS, Business, or Literature questions) graded via Level bands (Level 1, Level 2, Level 3, Level 4).
      * Populate "levels": array of { "level": 1, "markRange": "1-2", "descriptor": "Verbatim band descriptor including any level cap rules" }.
      * Populate "indicativeContent": array of verbatim valid content points listed in the scheme.
-     * Also populate "marks" with one summary item per indicative content point (as "B1") or level descriptor so downstream consumers always have a non-empty "marks" array.
+     * Also populate "marks" with one summary entry using the scheme's actual AO or Level label (e.g. \`"AO2"\` or \`"Level of Response"\`, NEVER \`"B1"\`) so downstream consumers always have a non-empty "marks" array.
    - AUXILIARY MARKS (SPaG / QWC / Communication):
      * If a question states an additional separate mark allocation such as "[12 marks] [SPaG 3 marks]", "[+3 SPaG]", or "[SPaG 4 marks]", set "contentMaxMarks" to the content mark (e.g. 12), set "spagMaxMarks" to the SPaG mark (e.g. 3), AND set "subQuestionMaxScores[key]" to the COMBINED total (e.g. 15) so paper totals match the official exam!
 
@@ -507,7 +526,7 @@ Output JSON Schema:
       "answer": "Summary of expected answer",
       "marks": [
         {
-          "mark": "B1",
+          "mark": "Exact printed mark code/AO (e.g. '1 mark', 'AO1:1', or 'B1' only if printed)",
           "answer": "Verbatim marking point with **mandatory underlined** terms preserved",
           "comments": "Accept: ... | Reject: ... | Ignore: ... | Any 2 from 4"
         }
@@ -555,8 +574,8 @@ Output JSON Schema:
       ],
       "marks": [
         {
-          "mark": "B1",
-          "answer": "Indicative point 1",
+          "mark": "AO2 (or exact printed AO / Level label — never invent 'B1')",
+          "answer": "Level of Response summary",
           "comments": "Level of Response (Max 6 marks): L3 (5-6m), L2 (3-4m), L1 (1-2m)"
         }
       ]
@@ -663,6 +682,38 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
                         }
                     }
 
+                    // Sanitize legacy hardcoded Maths "B1"/"B2" mark codes on Humanities/English schemes
+                    // so uploaded schemes show their native AO / Level / mark labels (never synthetic B1).
+                    const parsedFamily = resolveSubjectFamily(
+                        parsedObj.examDetails?.subject,
+                        parsedObj.examDetails?.paperCode
+                    );
+                    if (
+                        (parsedFamily === 'HUMANITIES_ESSAY' || parsedFamily === 'ENGLISH_WRITING') &&
+                        Array.isArray(qObj.marks)
+                    ) {
+                        const isLoR =
+                            String(qObj.paradigm || '').toUpperCase() === 'LEVEL_OF_RESPONSE' ||
+                            (Array.isArray(qObj.levels) && qObj.levels.length > 0);
+                        qObj.marks = qObj.marks.map((m: any) => {
+                            if (!m || typeof m !== 'object') return m;
+                            const rawCode = String(m.mark || '').trim();
+                            if (!/^B\d+$/i.test(rawCode)) return m;
+                            const weight = parseInt(rawCode.slice(1), 10) || 1;
+                            const noteText = `${m.comments || ''} ${m.guidance || ''} ${m.answer || ''}`;
+                            const aoMatch = noteText.match(/\bTarget:\s*(AO\d+(?::\d+)?)/i) || noteText.match(/\b(AO\d+(?::\d+)?)\b/i);
+                            let nativeMark: string;
+                            if (isLoR) {
+                                nativeMark = aoMatch ? aoMatch[1] : 'Level of Response';
+                            } else if (aoMatch) {
+                                nativeMark = weight > 1 ? `${aoMatch[1]} (${weight} marks)` : aoMatch[1];
+                            } else {
+                                nativeMark = weight === 1 ? '1 mark' : `${weight} marks`;
+                            }
+                            return { ...m, mark: nativeMark };
+                        });
+                    }
+
                     normalizedQuestions[ck] = qObj;
                 } else {
                     normalizedQuestions[ck] = v;
@@ -680,7 +731,7 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
      */
     static computePdfBufferCacheKey(pdfBuffers: Buffer[]): string {
         const hash = crypto.createHash('sha256');
-        hash.update(`pdf_v1:${pdfBuffers.length}:`);
+        hash.update(`pdf_v2:${pdfBuffers.length}:`);
         for (const buf of pdfBuffers) {
             hash.update(`${buf.length}:`);
             hash.update(buf);
@@ -793,7 +844,7 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
 
         // Compute deterministic SHA-256 cache key across all scheme page images
         const hash = crypto.createHash('sha256');
-        hash.update(`v3:${base64Images.length}:`);
+        hash.update(`v4:${base64Images.length}:`);
         for (const img of base64Images) {
             // Sample prefix, middle, and suffix + length of each base64 page for fast (<1ms) collision-free hashing
             const len = img.length;

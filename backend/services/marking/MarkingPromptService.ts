@@ -173,13 +173,28 @@ ${subQBreakdown}`;
         const subGuidanceMap = anyScheme.subQuestionGuidanceMap || {};
         const hasSubQuestions = normalizedScheme.subQuestionMarks && Object.keys(normalizedScheme.subQuestionMarks).length > 0;
 
+        const subjectFamily = options?.subjectFamily;
+        const isHumanitiesOrEnglish = subjectFamily === 'HUMANITIES_ESSAY' || subjectFamily === 'ENGLISH_WRITING';
+
         const formatMarkLine = (m: any): string => {
             const notes = [m.comments, m.guidance]
                 .filter((c: any) => typeof c === 'string' && c.trim() !== '' && c.trim() !== 'Auto-balanced')
                 .join(' | ');
+            let markLabel = String(m.mark || '').trim();
+            // Never leak synthetic Maths "B1"/"B2" codes on Humanities/English schemes when AO or plain marks apply
+            if (isHumanitiesOrEnglish && /^B(\d+)$/i.test(markLabel)) {
+                const weight = parseInt(markLabel.slice(1), 10) || 1;
+                const aoMatch = notes.match(/\bTarget:\s*(AO\d+(?::\d+)?)/i) || notes.match(/\b(AO\d+(?::\d+)?)\b/i);
+                if (aoMatch) {
+                    markLabel = weight > 1 ? `${aoMatch[1]} (${weight} marks)` : aoMatch[1];
+                } else {
+                    markLabel = weight === 1 ? '1 mark' : `${weight} marks`;
+                }
+            }
+            const prefix = markLabel ? `- ${markLabel}: ` : '- ';
             return notes
-                ? `- ${m.mark}: ${m.answer} [Examiner Notes: ${notes}]\n`
-                : `- ${m.mark}: ${m.answer}\n`;
+                ? `${prefix}${m.answer} [Examiner Notes: ${notes}]\n`
+                : `${prefix}${m.answer}\n`;
         };
 
         const formatGuidanceBlock = (guidanceList?: any[]): string => {
@@ -284,7 +299,8 @@ ${subQBreakdown}`;
                 if (subMeta.paradigm) output += ` [PARADIGM: ${subMeta.paradigm}]`;
                 output += '\n';
 
-                if (subMeta.levels || subMeta.indicativeContent) {
+                const hasLevels = Array.isArray(subMeta.levels) && subMeta.levels.length > 0;
+                if (hasLevels || subMeta.indicativeContent) {
                     output += formatLevelsAndIndicative(subMeta.levels, subMeta.indicativeContent);
                 }
 
@@ -292,7 +308,7 @@ ${subQBreakdown}`;
                     output += formatSpagRubric(spagMax);
                 }
 
-                if (Array.isArray(marks)) {
+                if (Array.isArray(marks) && !hasLevels) {
                     marks.forEach((m: any) => {
                         output += formatMarkLine(m);
                     });
@@ -316,7 +332,8 @@ ${subQBreakdown}`;
             if (anyScheme.paradigm) output += ` [PARADIGM: ${anyScheme.paradigm}]`;
             output += '\n';
 
-            if (anyScheme.levels || anyScheme.indicativeContent) {
+            const hasStandaloneLevels = Array.isArray(anyScheme.levels) && anyScheme.levels.length > 0;
+            if (hasStandaloneLevels || anyScheme.indicativeContent) {
                 output += formatLevelsAndIndicative(anyScheme.levels, anyScheme.indicativeContent);
             }
 
@@ -324,9 +341,11 @@ ${subQBreakdown}`;
                 output += formatSpagRubric(standaloneSpagMax);
             }
 
-            normalizedScheme.marks.forEach((m: any) => {
-                output += formatMarkLine(m);
-            });
+            if (!hasStandaloneLevels) {
+                normalizedScheme.marks.forEach((m: any) => {
+                    output += formatMarkLine(m);
+                });
+            }
 
             if (anyScheme.guidance) {
                 output += formatGuidanceBlock(anyScheme.guidance);
@@ -356,8 +375,6 @@ ${subQBreakdown}`;
             : '';
 
         const tieBreakerRuleNum = hasProcessOrMethodMarks ? 5 : 3;
-        const subjectFamily = options?.subjectFamily;
-        const isHumanitiesOrEnglish = subjectFamily === 'HUMANITIES_ESSAY' || subjectFamily === 'ENGLISH_WRITING';
 
         const tieBreakerRules = isHumanitiesOrEnglish
             ? `> ${tieBreakerRuleNum}. **HUMANITIES & ESSAY EXAMINER TIE-BREAKER RULES**:

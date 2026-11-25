@@ -140,6 +140,7 @@ const shortenSubjectForDisplay = (subject?: string | null): string => {
 
 type ParsedSchemeBlock =
   | { kind: 'subpart'; label: string; marks?: string }
+  | { kind: 'section'; label: string }
   | { kind: 'point'; code: string; body: string }
   | { kind: 'text'; body: string };
 
@@ -152,20 +153,72 @@ const parseMarkSchemeBlocks = (scheme: string): ParsedSchemeBlock[] => {
     if (!line) continue;
 
     // Clean internal headers like "[2a] [MAX SCORE: 3] [PARADIGM: CALCULATION_STEP]"
+    // or "[1.5] [MAX SCORE: 15 (Content: 12 + SPaG: 3)] [PARADIGM: LEVEL_OF_RESPONSE]"
     const subpartMatch = line.match(/^\[([^\]]+)\]\s*(?:\[MAX SCORE:\s*([^\]]+)\])?(?:\s*\[PARADIGM:[^\]]+\])?$/i);
     if (subpartMatch) {
       const partId = subpartMatch[1].trim();
-      const maxScore = subpartMatch[2]?.trim();
+      const rawMaxScore = subpartMatch[2]?.trim();
+      // Ignore structural section headers like [LEVEL DESCRIPTORS], [INDICATIVE CONTENT], [SPaG RUBRIC (...)]
+      if (/^(?:LEVEL DESCRIPTORS|INDICATIVE CONTENT|SPaG RUBRIC|Additional Examiner Guidance)/i.test(partId)) {
+        blocks.push({ kind: 'section', label: partId });
+        continue;
+      }
+      let formattedMarks: string | undefined;
+      if (rawMaxScore) {
+        const splitMatch = rawMaxScore.match(/^(\d+)\s*(\(.+\))$/);
+        if (splitMatch) {
+          const totalNum = splitMatch[1];
+          formattedMarks = `${totalNum} ${totalNum === '1' ? 'mark' : 'marks'} ${splitMatch[2]}`;
+        } else if (/mark/i.test(rawMaxScore)) {
+          formattedMarks = rawMaxScore;
+        } else {
+          formattedMarks = `${rawMaxScore} ${rawMaxScore === '1' ? 'mark' : 'marks'}`;
+        }
+      }
       blocks.push({
         kind: 'subpart',
         label: `Part ${partId}`,
-        ...(maxScore ? { marks: `${maxScore} ${maxScore === '1' ? 'mark' : 'marks'}` } : {})
+        ...(formattedMarks ? { marks: formattedMarks } : {})
       });
       continue;
     }
 
-    // Parse mark-point bullets like "- M1: ...", "* A1: ...", "• B1: ...", "B1: ..."
-    const pointMatch = line.match(/^(?:[-*•]\s*)?\*{0,2}([A-Z]{1,4}\d+[a-z]?)\*{0,2}\s*[:\-–]\s*(.+)$/);
+    // Section headers with trailing colon like "[Additional Examiner Guidance]:"
+    const sectionHeaderMatch = line.match(/^\[([^\]]+)\]:?$/);
+    if (sectionHeaderMatch && /^(?:LEVEL DESCRIPTORS|INDICATIVE CONTENT|SPaG RUBRIC|Additional Examiner Guidance)/i.test(sectionHeaderMatch[1])) {
+      blocks.push({ kind: 'section', label: sectionHeaderMatch[1].trim() });
+      continue;
+    }
+
+    // Level descriptor bullets like "* Level 4 (10-12 marks): Well-argued response..."
+    const levelMatch = line.match(/^(?:[-*•]\s*)?(Level\s*\d+(?:\s*\([^)]+\))?|Band\s*\d+(?:\s*\([^)]+\))?)\s*:\s*(.+)$/i);
+    if (levelMatch) {
+      blocks.push({
+        kind: 'point',
+        code: levelMatch[1].trim(),
+        body: levelMatch[2].trim()
+      });
+      continue;
+    }
+
+    // SPaG band bullets like "* High performance (2-3 marks): ..." or "* 0 marks: ..."
+    const spagBandMatch = line.match(/^(?:[-*•]\s*)?((?:High|Intermediate|Threshold)\s+performance\s*\([^)]+\)|0\s+marks)\s*:\s*(.+)$/i);
+    if (spagBandMatch) {
+      blocks.push({
+        kind: 'point',
+        code: spagBandMatch[1].trim(),
+        body: spagBandMatch[2].trim()
+      });
+      continue;
+    }
+
+    // Parse mark-point bullets supporting ALL exam-board native codes:
+    // Maths/Science: M1, A1, B1, B2, P1, C1, SC1, FT1
+    // Humanities/English AOs: AO1, AO1:1, AO1:2, AO2, AO3, AO4, AO1:1 (2 marks)
+    // Plain mark counts: +1, +2, 1 mark, 2 marks, 1m, 2m, Level of Response, SPaG (3 marks)
+    const pointMatch = line.match(
+      /^(?:[-*•]\s*)?\*{0,2}((?:AO\d+(?::\d+)?(?:\s*\(\d+\s*(?:marks?|m)\))?|[A-Z]{1,4}\d+[a-z]?|\+\d+|\d+\s*(?:marks?|m)|SPaG(?:\s*\(\d+\s*(?:marks?|m)\))?|Level\s+of\s+Response))\*{0,2}\s*[:\-–]\s*(.+)$/i
+    );
     if (pointMatch) {
       blocks.push({
         kind: 'point',
@@ -1367,7 +1420,7 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
             <div className="tmua-scheme-modal-body">
               {!hasSchemeCriteria ? (
                 <div className="tmua-scheme-general-note">
-                  Marked using the AI General Mark Scheme — no official or custom mark scheme was attached for this paper. Attach an official past paper or upload a mark scheme to inspect exact M1/A1 mark points.
+                  Marked using the AI General Mark Scheme — no official or custom mark scheme was attached for this paper. Attach an official past paper or upload a mark scheme to inspect exact mark points and level descriptors.
                 </div>
               ) : schemeQuestions.map((sq, idx) => (
                 <div key={idx} id={`scheme-modal-q-${idx}`} className="tmua-scheme-item">
@@ -1384,7 +1437,7 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
                   <div className="tmua-scheme-item-content">
                     {(() => {
                       const blocks = parseMarkSchemeBlocks(sq.scheme);
-                      const hasStructuredPoints = blocks.some(b => b.kind === 'point');
+                      const hasStructuredPoints = blocks.some(b => b.kind === 'point' || b.kind === 'subpart' || b.kind === 'section');
                       if (!hasStructuredPoints) {
                         return (
                           <MarkdownMathRenderer
@@ -1402,6 +1455,13 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
                                 <div key={bIdx} className="tmua-scheme-subpart-header">
                                   <span>{block.label}</span>
                                   {block.marks && <span className="tmua-scheme-subpart-marks">{block.marks}</span>}
+                                </div>
+                              );
+                            }
+                            if (block.kind === 'section') {
+                              return (
+                                <div key={bIdx} className="tmua-scheme-subpart-header" style={{ fontSize: '0.72rem', opacity: 0.85, marginTop: '6px' }}>
+                                  <span>{block.label}</span>
                                 </div>
                               );
                             }
