@@ -109,7 +109,7 @@ ${formatPageMapForPrompt(pageMap)}${guidance}`;
       user: englishLoRUserPrompt
     },
     universalByoms: {
-      system: (subjectName: string = 'General Subject') => UNIVERSAL_BYOMS_MARKING_SYSTEM_PROMPT(subjectName),
+      system: (subjectName: string = 'General Subject', context?: any) => UNIVERSAL_BYOMS_MARKING_SYSTEM_PROMPT(subjectName, context),
       user: UNIVERSAL_BYOMS_MARKING_USER_PROMPT
     }
   },

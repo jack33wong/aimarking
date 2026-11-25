@@ -37,20 +37,46 @@ export class ScoreAuditor {
      */
     static enforceStrictBudget(
         annotations: any[],
-        scheme: any
+        scheme: any,
+        subQuestionRubrics?: Record<string, any> | null
     ): { annotations: any[], awardedMarks: number, inferredTotalMarks?: number } {
-        const sanitizeValue = (text: string) => {
-            const match = text.match(/[A-Z]+(\d+)/i);
-            if (match) return parseInt(match[1], 10);
-            const num = parseInt(text.replace(/\D/g, ''), 10);
-            return isNaN(num) ? 0 : num;
+        const normSubKey = (k: string) => String(k || '').trim().toLowerCase().replace(/^q/i, '').replace(/[()\s]/g, '').replace(/^0+(?=\d)/, '');
+
+        const rubricMap = new Map<string, any>();
+        if (subQuestionRubrics && typeof subQuestionRubrics === 'object') {
+            for (const [rk, rv] of Object.entries(subQuestionRubrics)) {
+                if (rv && typeof rv === 'object') {
+                    rubricMap.set(normSubKey(rk), rv);
+                }
+            }
+        }
+
+        const sanitizeValue = (text: string, action?: string) => {
+            const act = String(action || '').toLowerCase();
+            if (act === 'cross' || act === 'circle' || act === 'not_attempted') return 0;
+            const raw = String(text || '').trim();
+            if (!raw) return 0;
+            // Strip Assessment Objective and Level tags (e.g. AO1, AO2, L3) so AO2 is never misread as 2 marks
+            const stripped = raw.replace(/\b(?:AO|L)\d+\b/gi, ' ').trim();
+            const codeMatch = stripped.match(/\b[BMAPC](\d+)\b/i);
+            if (codeMatch) return parseInt(codeMatch[1], 10);
+            const plusMatch = stripped.match(/\+(\d+)/);
+            if (plusMatch) return parseInt(plusMatch[1], 10);
+            const fracMatch = stripped.match(/(\d+)\s*\/\s*\d+/);
+            if (fracMatch) return parseInt(fracMatch[1], 10);
+            const num = parseInt(stripped.replace(/\D/g, ''), 10);
+            if (!isNaN(num)) return num;
+            // Pure AO/label tick (e.g. "[AO1]" or "✓") on a point-based sub-question counts as 1 mark
+            return act === 'tick' ? 1 : 0;
         };
 
-        const countAttemptedWeight = (text: string) => {
+        const countAttemptedWeight = (text: string, action?: string) => {
+            const act = String(action || '').toLowerCase();
+            if (act === 'circle') return 0;
             const clean = (text || '').trim();
-            const zeroMatch = clean.match(/^[BMAPC]0$/i);
+            const zeroMatch = clean.match(/^[BMAPC]0$|^0$/i);
             if (zeroMatch) return 1;
-            return sanitizeValue(clean);
+            return sanitizeValue(clean, action);
         };
 
         const buckets: Record<string, any[]> = {};
@@ -67,8 +93,8 @@ export class ScoreAuditor {
         const hasIncompleteBudgets = Boolean(scheme?.hasIncompleteSubQuestionBudgets);
         const schemeTotalMarks = Number(scheme?.totalMarks || scheme?.parentQuestionMarks || 0);
         const rawTotalAwardedMarks = annotations.reduce((sum, a) => {
-            if (!a || a.action === 'cross' || a.action === 'not_attempted' || a.isUnattempted) return sum;
-            return sum + sanitizeValue(a.text || '0');
+            if (!a || a.action === 'cross' || a.action === 'circle' || a.action === 'not_attempted' || a.isUnattempted) return sum;
+            return sum + sanitizeValue(a.text || '0', a.action);
         }, 0);
         const bypassSubGuillotineForGeneric = Boolean(
             isGeneric && (
@@ -119,17 +145,39 @@ export class ScoreAuditor {
             }
 
             const effectiveSubBudget = bypassSubGuillotineForGeneric ? 99 : budget;
+            const normalizedBucketKey = normSubKey(subQ);
+            const matchedRubric = rubricMap.get(normalizedBucketKey);
+
+            if (matchedRubric) {
+                // LoR sub-question governed by subQuestionRubrics: preserve all qualitative/flaw/SPaG
+                // paragraph annotations and take score authoritatively from the rubric object.
+                anns.forEach(a => survivorList.push(a));
+                const contentAwarded = Math.max(0, Number(matchedRubric.awardedMarks || 0));
+                const spagAwarded = matchedRubric.spag ? Math.max(0, Number(matchedRubric.spag.awardedMarks || 0)) : 0;
+                const rubricMax = Math.max(0, Number(matchedRubric.maxMarks || 0)) + (matchedRubric.spag ? Math.max(0, Number(matchedRubric.spag.maxMarks || 0)) : 0);
+                const cap = hasExplicitSubBudget ? budget : (rubricMax > 0 ? rubricMax : effectiveSubBudget);
+                const subAwarded = cap < 99 ? Math.min(contentAwarded + spagAwarded, cap) : (contentAwarded + spagAwarded);
+                grandTotal += subAwarded;
+                rubricMap.delete(normalizedBucketKey);
+
+                if (hasExplicitSubBudget && !bypassSubGuillotineForGeneric) {
+                    inferredTotalMarks += budget;
+                } else if (rubricMax > 0) {
+                    inferredTotalMarks += rubricMax;
+                }
+                return;
+            }
 
             let currentVal = 0;
             let subInferredMax = 0;
             const survivors: any[] = [];
             for (const ann of anns) {
-                if (ann.action === 'not_attempted' || ann.isUnattempted) {
+                if (ann.action === 'not_attempted' || ann.isUnattempted || ann.action === 'circle') {
                     survivors.push(ann);
                     continue;
                 }
-                const val = sanitizeValue(ann.text || "0");
-                subInferredMax += countAttemptedWeight(ann.text || "0");
+                const val = sanitizeValue(ann.text || "0", ann.action);
+                subInferredMax += countAttemptedWeight(ann.text || "0", ann.action);
                 if (currentVal + val <= effectiveSubBudget) {
                     survivors.push(ann);
                     currentVal += val;
@@ -144,6 +192,15 @@ export class ScoreAuditor {
                 inferredTotalMarks += Math.max(currentVal, subInferredMax, 1);
             }
         });
+
+        // Include any subQuestionRubrics entry that had no annotations emitted on the page
+        for (const [, rubric] of rubricMap.entries()) {
+            const contentAwarded = Math.max(0, Number(rubric.awardedMarks || 0));
+            const spagAwarded = rubric.spag ? Math.max(0, Number(rubric.spag.awardedMarks || 0)) : 0;
+            const rubricMax = Math.max(0, Number(rubric.maxMarks || 0)) + (rubric.spag ? Math.max(0, Number(rubric.spag.maxMarks || 0)) : 0);
+            grandTotal += rubricMax > 0 ? Math.min(contentAwarded + spagAwarded, rubricMax) : (contentAwarded + spagAwarded);
+            if (rubricMax > 0) inferredTotalMarks += rubricMax;
+        }
 
         // If scheme had subQuestionMaxScores for unattempted sub-questions not in buckets, include them in inferredTotalMarks
         if (scheme?.subQuestionMaxScores && typeof scheme.subQuestionMaxScores === 'object') {
@@ -178,6 +235,7 @@ export class ScoreAuditor {
         scheme: any;
         studentScore: any;
         meta?: any;
+        subQuestionRubrics?: Record<string, any> | null;
     }): {
         annotations: any[];
         awardedMarks: number;
@@ -185,9 +243,9 @@ export class ScoreAuditor {
         scoreText: string;
         _authoritativeGenericScore?: boolean;
     } {
-        const { enrichedAnnotations, scheme, studentScore, meta } = params;
+        const { enrichedAnnotations, scheme, studentScore, meta, subQuestionRubrics } = params;
         const parsedScore = this.parseScore(studentScore);
-        const strictResult = this.enforceStrictBudget(enrichedAnnotations, scheme);
+        const strictResult = this.enforceStrictBudget(enrichedAnnotations, scheme, subQuestionRubrics);
 
         const isGeneric = Boolean(scheme?.isGeneric);
         const schemeTotal = Number(scheme?.totalMarks || 0);

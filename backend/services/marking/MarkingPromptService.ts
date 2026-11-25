@@ -1,5 +1,6 @@
 import { normalizeLatexDelimiters, normalizeSubQuestionPart } from '../../utils/TextNormalizationUtils.js';
 import type { NormalizedMarkingScheme } from '../../types/marking.js';
+import type { SubjectFamily } from '../../config/subjectProfiles.js';
 
 /**
  * Service dedicated to constructing prompts for the AI marking process.
@@ -116,7 +117,10 @@ export class MarkingPromptService {
      * Formats the marking scheme into a concise text-based format for the AI prompt.
      * Expects the scheme to be already normalized and expanded (e.g. by MarkingInstructionService).
      */
-    public static formatMarkingSchemeForPrompt(normalizedScheme: NormalizedMarkingScheme): string {
+    public static formatMarkingSchemeForPrompt(
+        normalizedScheme: NormalizedMarkingScheme,
+        options?: { subjectFamily?: SubjectFamily }
+    ): string {
         const hasGenericSignature = normalizedScheme.marks.some((m: any) =>
             String(m.answer).includes("undefined") || (m.mark && m.mark.startsWith('M') && !m.answer)
         );
@@ -252,12 +256,30 @@ ${subQBreakdown}`;
                     subMeta.guidance;
 
                 output += `[${displaySubQ}]`;
-                if (maxScore) output += ` [MAX SCORE: ${maxScore}]`;
+                const spagMax = Number(subMeta.spagMaxMarks || (!Array.isArray(rawSubEntry) ? rawSubEntry?.spagMaxMarks : 0) || 0);
+                const contentMax = Number(subMeta.contentMaxMarks || (!Array.isArray(rawSubEntry) ? rawSubEntry?.contentMaxMarks : 0) || 0);
+                if (maxScore && spagMax > 0 && contentMax > 0) {
+                    output += ` [MAX SCORE: ${maxScore} (Content: ${contentMax} + SPaG: ${spagMax})]`;
+                } else if (maxScore) {
+                    output += ` [MAX SCORE: ${maxScore}]`;
+                }
                 if (subMeta.paradigm) output += ` [PARADIGM: ${subMeta.paradigm}]`;
                 output += '\n';
 
                 if (subMeta.levels || subMeta.indicativeContent) {
                     output += formatLevelsAndIndicative(subMeta.levels, subMeta.indicativeContent);
+                }
+
+                if (spagMax > 0) {
+                    output += `  [SPaG RUBRIC (Separate ${spagMax} marks)]\n`;
+                    if (spagMax === 3) {
+                        output += `  * High performance (2-3 marks): Spell and punctuate with consistent accuracy; use rules of grammar with effective control of meaning; use a wide range of specialist terms as appropriate.\n`;
+                        output += `  * Intermediate performance (1-2 marks): Spell and punctuate with considerable accuracy; use rules of grammar with general control of meaning; use a good range of specialist terms.\n`;
+                        output += `  * Threshold performance (1 mark): Spell and punctuate with reasonable accuracy; use rules of grammar with some control of meaning; use a limited range of specialist terms.\n`;
+                        output += `  * 0 marks: Nothing worthy of credit or does not reach threshold standard.\n`;
+                    } else {
+                        output += `  * Award 0-${spagMax} marks separately for spelling, punctuation, grammar, and accurate use of specialist terminology.\n`;
+                    }
                 }
 
                 if (Array.isArray(marks)) {
@@ -313,6 +335,18 @@ ${subQBreakdown}`;
             : '';
 
         const tieBreakerRuleNum = hasProcessOrMethodMarks ? 5 : 3;
+        const subjectFamily = options?.subjectFamily;
+        const isHumanitiesOrEnglish = subjectFamily === 'HUMANITIES_ESSAY' || subjectFamily === 'ENGLISH_WRITING';
+
+        const tieBreakerRules = isHumanitiesOrEnglish
+            ? `> ${tieBreakerRuleNum}. **HUMANITIES & ESSAY EXAMINER TIE-BREAKER RULES**:
+>    - **PROMPT ALIGNMENT & CONTRADICTIONS**: Check whether the student's opening/thesis actually matches the question prompt (flag any self-contradiction such as saying "disagree" while arguing in favour).
+>    - **LEVEL-OF-RESPONSE ANTI-INFLATION**: Do NOT award Upper Top-Band marks (e.g. 11–12/12) merely because both sides, a quotation, and a conclusion are present. Top-band marks require sustained evaluation, accurate subject terminology, and a **comparative, justified judgement** (not a generic "all views are important" conclusion).
+>    - **SEPARATE SPaG / AUXILIARY MARKS**: When \`[SPaG RUBRIC]\` is present, assess spelling, punctuation, grammar, and specialist terminology strictly out of its separate mark budget and report it in \`subQuestionRubrics[subQ].spag\`.`
+            : `> ${tieBreakerRuleNum}. **DETERMINISTIC EXAMINER TIE-BREAKER RULES**:
+>    - **COMPARATIVE STATEMENTS VS. RAW DATA**: When a mark definition requires a comparison (e.g. "more X", "less Y", "higher/lower Z"), quoting bare values from a table/graph (e.g. "A = 12 and B = 10", or stating "the lowest is X") WITHOUT an explicit comparative direction between the two items ("A has more/higher X than B" or "B has less/lower X than A") earns \`B0\` unless \`[Examiner Notes]\` explicitly states "allow raw data".
+>    - **GRAPH PLOTTING & EXTRAPOLATION (\`[DRAWING]\`)**: Only award a graph plotting/extrapolation mark (e.g. "line extrapolated to X") if you can clearly see a student-drawn line/curve actually extending to the target value on the attached page image — do not infer extrapolation solely from a written number.
+>    - **PHONETIC SPELLING VS. CONFUSABLE TERMS**: Credit phonetic misspellings of scientific terms (e.g. "nucleas" -> nucleus, "defiency" -> deficiency, "hybreadoma" -> hybridoma) UNLESS the word is a confusable biological/chemical twin (e.g. chloroplast vs. chlorophyll, Mitosis vs. Meiosis, Glucagon vs. Glycogen, Alkane vs. Alkene) or \`[Examiner Notes]\` explicitly says "ignore / do not accept" that term.`;
 
         return `
 > [INSTRUCTION]: You are the CHIEF EXAMINER.
@@ -321,10 +355,7 @@ ${subQBreakdown}`;
 >    - You MUST respect the [MAX SCORE] for each sub-question.
 >    - **OVERFLOW CHECK:** If you find 4 valid marks, but [6a] only allows 2, you MUST check if the other 2 marks belong to [6b].
 >    - **DO NOT** lump all marks into the first bucket. Distribute them based on which sub-question they answer.${mathProcessRules}
-> ${tieBreakerRuleNum}. **DETERMINISTIC EXAMINER TIE-BREAKER RULES**:
->    - **COMPARATIVE STATEMENTS VS. RAW DATA**: When a mark definition requires a comparison (e.g. "more X", "less Y", "higher/lower Z"), quoting bare values from a table/graph (e.g. "A = 12 and B = 10", or stating "the lowest is X") WITHOUT an explicit comparative direction between the two items ("A has more/higher X than B" or "B has less/lower X than A") earns \`B0\` unless \`[Examiner Notes]\` explicitly states "allow raw data".
->    - **GRAPH PLOTTING & EXTRAPOLATION (\`[DRAWING]\`)**: Only award a graph plotting/extrapolation mark (e.g. "line extrapolated to X") if you can clearly see a student-drawn line/curve actually extending to the target value on the attached page image — do not infer extrapolation solely from a written number.
->    - **PHONETIC SPELLING VS. CONFUSABLE TERMS**: Credit phonetic misspellings of scientific terms (e.g. "nucleas" -> nucleus, "defiency" -> deficiency, "hybreadoma" -> hybridoma) UNLESS the word is a confusable biological/chemical twin (e.g. chloroplast vs. chlorophyll, Mitosis vs. Meiosis, Glucagon vs. Glycogen, Alkane vs. Alkene) or \`[Examiner Notes]\` explicitly says "ignore / do not accept" that term.
+${tieBreakerRules}
 
 [OFFICIAL SCHEME]
 ${output.trim()}

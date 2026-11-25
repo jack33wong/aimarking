@@ -9,6 +9,8 @@ export type SubjectKey = 'MATHS' | 'ENGLISH_LANGUAGE' | 'ENGLISH_LITERATURE' | '
 
 export type GradingParadigm = 'POINT_BASED' | 'LEVEL_OF_RESPONSE';
 
+export type SubjectFamily = 'QUANTITATIVE' | 'SCIENCE_DATA' | 'HUMANITIES_ESSAY' | 'ENGLISH_WRITING' | 'GENERAL';
+
 export type OcrStrategy = 'MATHPIX_LATEX' | 'VISION_VERBATIM';
 
 export type QuestionScoringType = 'POINT_BASED' | 'SINGLE_AO_LOR' | 'DUAL_AO_LOR';
@@ -455,6 +457,59 @@ export function isLevelOfResponseQuestion(
       return false;
     }
     return true;
+  }
+
+  return false;
+}
+
+/**
+ * Classifies any academic subject (across GCSE, IGCSE, A-Level, IAL, O Level, National 5, IB, AP)
+ * into a coarse marking family so UNIVERSAL_BYOMS only injects relevant domain tie-breaker rules
+ * and native mark-code conventions.
+ */
+export function resolveSubjectFamily(subjectName?: string, paperCode?: string): SubjectFamily {
+  const haystack = `${subjectName || ''} ${paperCode || ''}`.toLowerCase();
+
+  if (/\b(english\s*lang|english\s*lit|literature\s+in\s+english|8700|8702|1en0|1et0)\b/i.test(haystack)) {
+    return 'ENGLISH_WRITING';
+  }
+  if (/\b(math|maths|mathematics|further\s*maths|statistics|mechanics|calculus|precalculus|accounting|core\s*maths|1ma1|8300|9ma0|0580|0606|4ma1|wma)\b/i.test(haystack)) {
+    return 'QUANTITATIVE';
+  }
+  if (/\b(biology|chemistry|physics|combined\s*science|trilogy|synergy|science|computer\s*science|environmental|astronomy|geology|8461|8462|8463|8464|8465|0610|0620|0625)\b/i.test(haystack)) {
+    return 'SCIENCE_DATA';
+  }
+  if (/\b(religious|religion|theology|philosophy|ethics|history|geography|sociology|psychology|politics|government|economics|business|law|citizenship|classics|classical|global\s*perspectives|drama|media|film|art\s*history|8062|8063|8145|8035|8192|8182|8132|8136)\b/i.test(haystack)) {
+    return 'HUMANITIES_ESSAY';
+  }
+
+  return 'GENERAL';
+}
+
+/**
+ * Returns true if a normalized scheme (standalone or composite) contains at least one
+ * LEVEL_OF_RESPONSE sub-question (or standalone level descriptors) worth >= minMarks.
+ */
+export function hasLevelOfResponseSubQuestion(normalizedScheme: any, minMarks: number = 6): boolean {
+  if (!normalizedScheme || typeof normalizedScheme !== 'object') return false;
+
+  if (Array.isArray(normalizedScheme.levels) && normalizedScheme.levels.length > 0) {
+    const total = Number(normalizedScheme.totalMarks || normalizedScheme.parentQuestionMarks || 0);
+    if (total === 0 || total >= minMarks) return true;
+  }
+
+  const subMetaMap = normalizedScheme.subQuestionMetadata || {};
+  const subMaxScores = normalizedScheme.subQuestionMaxScores || {};
+  for (const [key, meta] of Object.entries(subMetaMap)) {
+    const m: any = meta;
+    if (!m || typeof m !== 'object') continue;
+    const isLoR =
+      String(m.paradigm || '').toUpperCase() === 'LEVEL_OF_RESPONSE' ||
+      (Array.isArray(m.levels) && m.levels.length > 0);
+    if (isLoR) {
+      const subMax = Number(subMaxScores[key] ?? m.maxScore ?? m.totalMarks ?? 0);
+      if (subMax === 0 || subMax >= minMarks) return true;
+    }
   }
 
   return false;

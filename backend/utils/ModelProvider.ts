@@ -180,12 +180,20 @@ export class ModelProvider {
     model: ModelType = 'auto',
     forceJsonResponse: boolean = true,
     tracker?: any,
-    phase: ModelPhase = 'other'
+    phase: ModelPhase = 'other',
+    thinkingLevelOverride?: 'LOW' | 'MEDIUM' | 'HIGH'
   ): Promise<{ content: string; usageTokens: number; inputTokens?: number; outputTokens?: number }> {
     return this.withRetry(async () => {
       const { resolveExecutionPlan } = await import('../config/aiModels.js');
       const plan = resolveExecutionPlan(model as string, phase);
       const modelName = plan.modelName;
+
+      // Never downgrade an already-higher thinking level (e.g. HIGH -> MEDIUM)
+      const rank: Record<string, number> = { NONE: 0, LOW: 1, MEDIUM: 2, HIGH: 3 };
+      const effectiveThinkingLevel =
+        thinkingLevelOverride && (rank[thinkingLevelOverride] ?? 0) > (rank[plan.thinkingLevel] ?? 0)
+          ? thinkingLevelOverride
+          : plan.thinkingLevel;
 
       const { GoogleGenAI, HarmCategory, HarmBlockThreshold, ThinkingLevel } = await import('@google/genai');
       const ai = new GoogleGenAI({});
@@ -207,11 +215,11 @@ export class ModelProvider {
       let thinkingConfig: any = undefined;
       const maxTokens = plan.maxOutputTokens;
       
-      if (plan.thinkingLevel === 'HIGH') {
+      if (effectiveThinkingLevel === 'HIGH') {
         thinkingConfig = { thinkingLevel: ThinkingLevel.HIGH };
-      } else if (plan.thinkingLevel === 'MEDIUM') {
+      } else if (effectiveThinkingLevel === 'MEDIUM') {
         thinkingConfig = { thinkingLevel: ThinkingLevel.MEDIUM };
-      } else if (plan.thinkingLevel === 'LOW') {
+      } else if (effectiveThinkingLevel === 'LOW') {
         thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
       }
 

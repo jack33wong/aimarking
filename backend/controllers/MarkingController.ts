@@ -193,12 +193,8 @@ export class MarkingController {
                 completedAt: Date.now()
             });
 
-            if (result && !completeEventSent) {
-                sendSseUpdate(res, { type: 'complete', result });
-                completeEventSent = true;
-            }
-
-            // 📧 Delayed completion email (~75s) if user does not view long re-mark job
+            // 📧 Schedule delayed completion email (~75s) BEFORE emitting SSE 'complete'
+            // so a fast client /viewed acknowledgement always finds and cancels the pending timer.
             CompletionNotificationService.scheduleCompletionEmail({
                 sessionId,
                 userEmail: (req as any).user?.email,
@@ -211,6 +207,11 @@ export class MarkingController {
                 grade: (result as any)?.grade || (result as any)?.aiMessage?.grade || null,
                 isRemark: true
             });
+
+            if (result && !completeEventSent) {
+                sendSseUpdate(res, { type: 'complete', result });
+                completeEventSent = true;
+            }
 
             if (capturedRemarkLogs) {
                 const rawRemarkAiContent =
@@ -718,13 +719,8 @@ export class MarkingController {
                 await queueJobUpsert(resolvedCompletedSessionId, completedJobPayload);
             }
 
-            // 6. Handle Completion (guarantee 'complete' event was sent AFTER credits are deducted)
-            if (!completeEventSent && (pendingCompleteEvent || result)) {
-                sendSseUpdate(res, pendingCompleteEvent || { type: 'complete', result });
-                completeEventSent = true;
-            }
-
-            // 📧 Delayed completion email (~75s) if user does not view long marking job
+            // 📧 Schedule delayed completion email (~75s) BEFORE emitting SSE 'complete'
+            // so a fast client /viewed acknowledgement always finds and cancels the pending timer.
             if (!isRejectedOrEmpty && resolvedCompletedSessionId) {
                 const assistantMsg = Array.isArray((result as any)?.unifiedSession?.messages)
                     ? [...(result as any).unifiedSession.messages].reverse().find((m: any) => m?.role === 'assistant')
@@ -741,6 +737,12 @@ export class MarkingController {
                     grade: assistantMsg?.grade || (result as any)?.grade || null,
                     isRemark: false
                 });
+            }
+
+            // 6. Handle Completion (guarantee 'complete' event was sent AFTER credits are deducted and timer is armed)
+            if (!completeEventSent && (pendingCompleteEvent || result)) {
+                sendSseUpdate(res, pendingCompleteEvent || { type: 'complete', result });
+                completeEventSent = true;
             }
 
             // --- NEW: Increment Guest Usage ---

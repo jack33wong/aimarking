@@ -1349,15 +1349,46 @@ export class SessionManagementService {
       const annotations = Array.isArray(qr.annotations) ? qr.annotations : [];
       const missedNote = annotations.find((a: any) =>
         a.reasoning && String(a.reasoning).trim() &&
-        (a.action === 'cross' || a.action === 'partial' || /^0\b|missing|incorrect|error/i.test(String(a.text || '')))
+        (a.action === 'cross' || a.action === 'circle' || a.action === 'partial' || /^0\b|missing|incorrect|error|flaw/i.test(String(a.text || '')))
       )?.reasoning;
       const anyNote = annotations.find((a: any) => a.reasoning && String(a.reasoning).trim())?.reasoning;
-      const rubricGap = (qr as any).rubricEvaluation?.coaching?.nextLevelGap || (qr as any).rubricEvaluation?.coaching?.rationale;
-      const rawNote = String((lost > 0 ? (rubricGap || missedNote || anyNote) : (anyNote || '')) || '')
+      const subRubricsObj = (qr as any).subQuestionRubrics && typeof (qr as any).subQuestionRubrics === 'object'
+        ? (qr as any).subQuestionRubrics
+        : null;
+      const subRubricEntries = subRubricsObj ? Object.entries(subRubricsObj) : [];
+      const subRubricGap = subRubricEntries
+        .map(([subK, sr]: [string, any]) => {
+          const gap = sr?.coaching?.nextLevelGap || sr?.audit?.flaws?.[0] || sr?.audit?.bandJustification || sr?.coaching?.rationale;
+          return gap ? `Q${subK}: ${gap}` : '';
+        })
+        .find(Boolean);
+      const rubricGap = (qr as any).rubricEvaluation?.coaching?.nextLevelGap
+        || (qr as any).rubricEvaluation?.coaching?.rationale
+        || subRubricGap;
+      const overallSummary = typeof (qr as any).overallPerformanceSummary === 'string'
+        ? (qr as any).overallPerformanceSummary.trim()
+        : '';
+      // Never fall back to a green-tick first annotation (e.g. "Correct answer D") when marks were lost!
+      // When a full LoR Coaching Card will be rendered below, prefer the concise overallSummary for the hero headline
+      // instead of repeating the pipe-delimited nextLevelGap verbatim.
+      const hasCoachingCard = Boolean((qr as any).rubricEvaluation?.coaching) || subRubricEntries.some(([, sr]: [string, any]) => Boolean(sr?.coaching));
+      const rawNote = String(
+        (lost > 0
+          ? (hasCoachingCard && overallSummary ? overallSummary : (rubricGap || missedNote || overallSummary))
+          : (overallSummary || anyNote || '')) || ''
+      )
         .replace(/\*\*/g, '')
+        .replace(/\s*\|\s*/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
-      const feedback = rawNote.length > 110 ? rawNote.slice(0, 107).trimEnd() + '…' : rawNote;
+      const maxFeedbackLen = allQuestionResults.length === 1 ? 260 : 110;
+      const truncateCleanly = (text: string, limit: number) => {
+        if (text.length <= limit) return text;
+        const slice = text.slice(0, limit - 1);
+        const lastSpace = slice.lastIndexOf(' ');
+        return (lastSpace > limit * 0.6 ? slice.slice(0, lastSpace) : slice).trimEnd() + '…';
+      };
+      const feedback = truncateCleanly(rawNote, maxFeedbackLen);
       return {
         q: qNum,
         awarded,
@@ -1367,26 +1398,78 @@ export class SessionManagementService {
       };
     });
 
-    // Build 3-part coaching block if any rubric questions exist
-    const buildQuestionCoaching = () => allQuestionResults
-      .filter((qr: any) => qr.rubricEvaluation && qr.rubricEvaluation.coaching)
-      .map((qr: any) => {
-        const r = qr.rubricEvaluation;
-        return {
-          q: String(qr.questionNumber || '').replace(/^Q/i, '').trim(),
-          rubricStamp: r.rubricStamp || `Level ${r.awardedLevel || 0} (${r.awardedMarks}/${r.maxMarks})`,
-          awardedLevel: r.awardedLevel || 0,
-          levelLabel: r.levelLabel || '',
-          awardedMarks: Number(qr.score?.awardedMarks ?? r.awardedMarks ?? 0),
-          maxMarks: Number(qr.score?.totalMarks ?? r.maxMarks ?? 0),
-          aoBreakdown: Array.isArray(r.aoBreakdown) ? r.aoBreakdown : [],
-          coaching: {
-            rationale: r.coaching?.rationale || '',
-            nextLevelGap: r.coaching?.nextLevelGap || '',
-            upgradeRewrite: r.coaching?.upgradeRewrite || null
+    // Build 3-part coaching block if any standalone OR composite (subQuestionRubrics) rubric questions exist
+    const buildQuestionCoaching = () => {
+      const items: any[] = [];
+      for (const qr of allQuestionResults as any[]) {
+        if (qr.rubricEvaluation && qr.rubricEvaluation.coaching) {
+          const r = qr.rubricEvaluation;
+          items.push({
+            q: String(qr.questionNumber || '').replace(/^Q/i, '').trim(),
+            rubricStamp: r.rubricStamp || `Level ${r.awardedLevel || 0} (${r.awardedMarks}/${r.maxMarks})`,
+            awardedLevel: r.awardedLevel || 0,
+            levelLabel: r.levelLabel || '',
+            awardedMarks: Number(qr.score?.awardedMarks ?? r.awardedMarks ?? 0),
+            maxMarks: Number(qr.score?.totalMarks ?? r.maxMarks ?? 0),
+            aoBreakdown: Array.isArray(r.aoBreakdown) ? r.aoBreakdown : [],
+            coaching: {
+              rationale: r.coaching?.rationale || '',
+              nextLevelGap: r.coaching?.nextLevelGap || '',
+              upgradeRewrite: r.coaching?.upgradeRewrite || null
+            }
+          });
+        }
+        if (qr.subQuestionRubrics && typeof qr.subQuestionRubrics === 'object') {
+          for (const [subKey, srRaw] of Object.entries(qr.subQuestionRubrics)) {
+            const sr: any = srRaw;
+            if (!sr || typeof sr !== 'object' || !sr.coaching) continue;
+            const contentAwarded = Number(sr.awardedMarks || 0);
+            const contentMax = Number(sr.maxMarks || 0);
+            const spagAwarded = sr.spag ? Number(sr.spag.awardedMarks || 0) : 0;
+            const spagMax = sr.spag ? Number(sr.spag.maxMarks || 0) : 0;
+            const combinedAwarded = contentAwarded + spagAwarded;
+            const combinedMax = contentMax + spagMax;
+            const aoBreakdown = Array.isArray(sr.aoBreakdown) && sr.aoBreakdown.length > 0
+              ? sr.aoBreakdown
+              : [
+                  {
+                    ao: 'Content',
+                    level: sr.awardedLevel || 0,
+                    levelLabel: sr.levelLabel || '',
+                    awardedMarks: contentAwarded,
+                    maxMarks: contentMax
+                  },
+                  ...(spagMax > 0
+                    ? [{
+                        ao: 'SPaG',
+                        level: spagAwarded,
+                        levelLabel: sr.spag?.feedback || 'SPaG',
+                        awardedMarks: spagAwarded,
+                        maxMarks: spagMax
+                      }]
+                    : [])
+                ];
+            items.push({
+              q: String(subKey).replace(/^Q/i, '').trim(),
+              rubricStamp: sr.rubricStamp || (spagMax > 0
+                ? `[${combinedAwarded}/${combinedMax} · L${sr.awardedLevel || 0} (${contentAwarded}/${contentMax}) + SPaG ${spagAwarded}/${spagMax}]`
+                : `[${contentAwarded}/${contentMax} · Level ${sr.awardedLevel || 0}]`),
+              awardedLevel: sr.awardedLevel || 0,
+              levelLabel: sr.levelLabel || '',
+              awardedMarks: combinedAwarded,
+              maxMarks: combinedMax,
+              aoBreakdown,
+              coaching: {
+                rationale: sr.coaching?.rationale || '',
+                nextLevelGap: sr.coaching?.nextLevelGap || '',
+                upgradeRewrite: sr.coaching?.upgradeRewrite || null
+              }
+            });
           }
-        };
-      });
+        }
+      }
+      return items;
+    };
 
     // ⚡ FAST DETERMINISTIC PATH FOR 1–2 QUESTIONS:
     // Skips the 3–5s LLM summary call completely for small uploads (unless it's a large-mark full paper missing DB boundaries).

@@ -535,7 +535,8 @@ export async function executeMarkingForQuestion(
         enrichedAnnotations,
         scheme: task.markingScheme,
         studentScore: markingResult.studentScore,
-        meta: (markingResult as any).meta
+        meta: (markingResult as any).meta,
+        subQuestionRubrics: (markingResult as any).subQuestionRubrics
       });
       parsedScore.awardedMarks = reconciled.awardedMarks;
       parsedScore.totalMarks = reconciled.totalMarks;
@@ -627,6 +628,7 @@ export async function executeMarkingForQuestion(
       rawAnnotations: rawAnnotationsFromAI,
       semanticZones: semanticZones,
       rubricEvaluation: reconciledRubricEval,
+      subQuestionRubrics: (markingResult as any).subQuestionRubrics || undefined,
       meta: (markingResult as any).meta,
       isError: (markingResult as any).isError,
       hasDensityError: (markingResult as any).hasDensityError,

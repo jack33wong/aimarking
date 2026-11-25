@@ -260,7 +260,10 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     clearAutoDismissTimerForSession(sessionId);
     delete pollAttemptsRef.current[sessionId];
     const trimmedTitle = typeof title === 'string' ? title.trim() : '';
-    const isViewing = isViewingSessionPath(window.location.pathname, sessionId);
+    const liveSession = simpleSessionService.getCurrentSession() as any;
+    const isViewing =
+      isViewingSessionPath(window.location.pathname, sessionId) ||
+      liveSession?.id === sessionId;
     const isTabHidden = document.hidden || document.visibilityState === 'hidden';
 
     if (isTabHidden) {
@@ -532,8 +535,9 @@ export const MarkingJobProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const routeSessionId = window.location.pathname.startsWith('/app/')
         ? window.location.pathname.slice('/app/'.length).split('/')[0]
         : null;
-      if (routeSessionId && pendingViewedAckRef.current.has(routeSessionId)) {
-        acknowledgeViewedIfVisible(routeSessionId);
+      const activeSessionId = routeSessionId || (simpleSessionService.getCurrentSession() as any)?.id || null;
+      if (activeSessionId && pendingViewedAckRef.current.has(activeSessionId)) {
+        acknowledgeViewedIfVisible(activeSessionId);
       }
       wakeUpActivePolls();
     };

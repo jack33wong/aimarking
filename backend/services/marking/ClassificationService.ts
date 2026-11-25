@@ -7,6 +7,7 @@ import { getModelConfig, validateModel } from '../../config/aiModels.js';
 import { ErrorHandler } from '../../utils/errorHandler.js';
 import { getBaseQuestionNumber, combineQuestionAndPart } from '../../utils/TextNormalizationUtils.js';
 import UsageTracker from '../../utils/UsageTracker.js';
+import { getFirestore } from '../../config/firebase.js';
 import { type MarkingScope, isPageInScope, isQuestionInScope } from './MarkingScopeUtils.js';
 
 export interface ClassificationResult {
@@ -46,6 +47,9 @@ export class ClassificationService {
   >();
   private static readonly MEMORY_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes (same-session retries only)
   private static readonly MEMORY_CACHE_MAX_ENTRIES = 15;
+  private static readonly FIRESTORE_CACHE_TTL_MS = 72 * 60 * 60 * 1000; // 72 hours (cross-instance retries & blank past papers)
+  private static readonly FIRESTORE_CACHE_COLLECTION = 'classificationCache';
+  private static readonly FIRESTORE_MAX_PAYLOAD_BYTES = 900_000; // Stay safely under Firestore's 1 MiB doc limit
 
   private static computeImagesCacheKey(
     images: Array<{ imageData: string; pageIndex?: number }>,
@@ -104,7 +108,7 @@ export class ClassificationService {
     const pageMaps = Array.isArray(pageMapsOrVerbatim) ? pageMapsOrVerbatim : undefined;
     const isVerbatimProse = typeof pageMapsOrVerbatim === 'boolean' ? pageMapsOrVerbatim : Boolean(isVerbatimProseArg);
 
-    // Short-lived in-memory retry cache (no Firestore persistence)
+    // 1. Check fast in-memory retry cache, then 2. Firestore persistent SHA-256 cache (72h TTL)
     const validatedModelForCache = validateModel(model);
     const cacheKey = this.computeImagesCacheKey(images, String(validatedModelForCache), isVerbatimProse, Boolean(pageMaps), markingScope?.label || '');
     const memEntry = this.classificationMemoryCache.get(cacheKey);
@@ -114,6 +118,35 @@ export class ClassificationService {
         return JSON.parse(JSON.stringify(memEntry.data));
       }
       this.classificationMemoryCache.delete(cacheKey);
+    }
+
+    try {
+      const db = getFirestore();
+      if (db) {
+        const docSnap = await db.collection(this.FIRESTORE_CACHE_COLLECTION).doc(cacheKey).get();
+        if (docSnap.exists) {
+          const cached = docSnap.data();
+          const expiresAtMs = cached?.expiresAtMs ? Number(cached.expiresAtMs) : 0;
+          const isFresh = expiresAtMs > Date.now();
+          if (isFresh && typeof cached?.resultsJson === 'string') {
+            const parsedResults = JSON.parse(cached.resultsJson);
+            if (Array.isArray(parsedResults) && parsedResults.length === images.length) {
+              console.log(`⚡ [CLASSIFICATION] Firestore SHA-256 cache HIT (${cacheKey.slice(0, 12)}) for ${images.length} page(s) — skipped LLM classification!`);
+              if (this.classificationMemoryCache.size >= this.MEMORY_CACHE_MAX_ENTRIES) {
+                const oldestKey = this.classificationMemoryCache.keys().next().value;
+                if (oldestKey) this.classificationMemoryCache.delete(oldestKey);
+              }
+              this.classificationMemoryCache.set(cacheKey, {
+                timestamp: Date.now(),
+                data: JSON.parse(JSON.stringify(parsedResults))
+              });
+              return parsedResults;
+            }
+          }
+        }
+      }
+    } catch {
+      // Non-fatal: fall through to live LLM classification
     }
 
     // Use heavy classification by default (positions required for marking)
@@ -928,14 +961,35 @@ ${pageHints}
       });
 
       if (results.length === images.length && !hasInvalidPlaceholder) {
+        const serializedResults = JSON.stringify(results);
         if (this.classificationMemoryCache.size >= this.MEMORY_CACHE_MAX_ENTRIES) {
           const oldestKey = this.classificationMemoryCache.keys().next().value;
           if (oldestKey) this.classificationMemoryCache.delete(oldestKey);
         }
         this.classificationMemoryCache.set(cacheKey, {
           timestamp: Date.now(),
-          data: JSON.parse(JSON.stringify(results))
+          data: JSON.parse(serializedResults)
         });
+
+        // Best-effort Firestore persistent SHA-256 cache (72h TTL, structured JSON only — no raw images)
+        if (Buffer.byteLength(serializedResults, 'utf8') <= this.FIRESTORE_MAX_PAYLOAD_BYTES) {
+          try {
+            const db = getFirestore();
+            if (db) {
+              const nowMs = Date.now();
+              const expiresAtMs = nowMs + this.FIRESTORE_CACHE_TTL_MS;
+              void db.collection(this.FIRESTORE_CACHE_COLLECTION).doc(cacheKey).set({
+                resultsJson: serializedResults,
+                pageCount: images.length,
+                model: String(validatedModelForCache),
+                cacheType: 'classification_images_sha256',
+                createdAt: new Date(nowMs).toISOString(),
+                expiresAtMs,
+                expiresAt: new Date(expiresAtMs)
+              }).catch(() => {});
+            }
+          } catch {}
+        }
       }
 
       return results;

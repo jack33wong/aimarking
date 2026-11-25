@@ -554,8 +554,14 @@ export class SVGOverlayService {
         actualHeight,
         occupiedRects
       );
-    } else if (action === 'tick' || action === 'cross' || action === 'write') {
-      let symbol = action === 'tick' ? '✓' : (action === 'cross' ? '✗' : (text && text.length < 5 ? text : '✎'));
+    } else if (action === 'tick' || action === 'cross' || action === 'write' || (action as string) === 'partial') {
+      let symbol = action === 'tick'
+        ? '✓'
+        : (action === 'cross'
+          ? '✗'
+          : ((action as string) === 'partial'
+            ? '↑'
+            : (text && text.length < 5 ? text : '✎')));
       if (action === 'tick' && text && /\bL[12]\b/i.test(text)) {
         symbol = '↑';
       }
@@ -868,7 +874,7 @@ export class SVGOverlayService {
     // Queue reasoning text for Pass 2 (Teacher-Style Empty-Space Placement)
     // Supports: ✗ (Math/English/BYOMS errors), ⭕ (English SPaG circles), and ✓ / ↑ with English AO/Level tags (e.g. [AO2 L4], [AO2 L2])
     const isEnglishPositiveAoComment = (symbol === '✓' || symbol === '↑') && isEnglishAoBadge;
-    if ((symbol === '✗' || symbol === '⭕' || isEnglishPositiveAoComment) && reasoning && reasoning.trim()) {
+    if ((symbol === '✗' || symbol === '⭕' || symbol === '↑' || isEnglishPositiveAoComment) && reasoning && reasoning.trim()) {
       let cleanReasoning = reasoning
         .replace(/^\s*(?:\[[^\]]+\]\s*)+:?\s*/i, '') // Strip leading [1c] / [2b] subQuestion tags on canvas
         .replace(/^(?:Incorrect\s+(?:explanation|method|final\s+answer|answer|working|step|value)|Explanation\s+mark\s+not\s+awarded|Mark\s+not\s+awarded|Incorrect|Error)\s*:\s*/i, '')

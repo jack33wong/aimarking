@@ -6161,11 +6161,16 @@ export class MarkingPipelineService {
                                             // [GUILLOTINE] Hard-Coded Post-Processing for Point-Based Questions
                                             // Ensure we strictly respect the budget, especially per sub-question.
                                             // Bypassed for Level-of-Response (LoR) questions where ScoreAuditor.reconcileLevelOfResponseScore is authoritative.
+                                            const hasCompositeSubRubrics = Boolean(
+                                                (result as any).subQuestionRubrics &&
+                                                typeof (result as any).subQuestionRubrics === 'object' &&
+                                                Object.keys((result as any).subQuestionRubrics).length > 0
+                                            );
                                             const isLoRResult = isLevelOfResponseQuestion(
                                                 task.markingScheme,
                                                 subjectProfile,
                                                 (result as any).rubricEvaluation
-                                            );
+                                            ) || hasCompositeSubRubrics;
                                             if (!isLoRResult && task.markingScheme && result.annotations && result.score) {
                                                 const isGenericScheme = Boolean(task.markingScheme?.isGeneric);
                                                 const hasIncompleteBudgets = Boolean(
@@ -7354,7 +7359,8 @@ export class MarkingPipelineService {
                 : qr.annotations,
             studentWork: qr.studentWork,
             pageIndex: qr.pageIndex,
-            overallPerformanceSummary: qr.overallPerformanceSummary || qr.feedback
+            overallPerformanceSummary: qr.overallPerformanceSummary || qr.feedback,
+            ...((qr as any).subQuestionRubrics ? { subQuestionRubrics: (qr as any).subQuestionRubrics } : {})
         })).sort((a, b) => getQuestionSortValue(a.questionNumber) - getQuestionSortValue(b.questionNumber));
 
         if (assistantIndex >= 0) {

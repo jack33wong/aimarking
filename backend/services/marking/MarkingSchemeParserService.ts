@@ -474,6 +474,8 @@ CRITICAL EXTRACTION RULES FOR 100% MARKING ACCURACY:
      * Populate "levels": array of { "level": 1, "markRange": "1-2", "descriptor": "Verbatim band descriptor including any level cap rules" }.
      * Populate "indicativeContent": array of verbatim valid content points listed in the scheme.
      * Also populate "marks" with one summary item per indicative content point (as "B1") or level descriptor so downstream consumers always have a non-empty "marks" array.
+   - AUXILIARY MARKS (SPaG / QWC / Communication):
+     * If a question states an additional separate mark allocation such as "[12 marks] [SPaG 3 marks]", "[+3 SPaG]", or "[SPaG 4 marks]", set "contentMaxMarks" to the content mark (e.g. 12), set "spagMaxMarks" to the SPaG mark (e.g. 3), AND set "subQuestionMaxScores[key]" to the COMBINED total (e.g. 15) so paper totals match the official exam!
 
 Output JSON Schema:
 {
@@ -617,7 +619,51 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
                 const ck = cleanKey(k);
                 if (!ck) continue;
                 if (v && typeof v === 'object') {
-                    normalizedQuestions[ck] = { ...(v as any), questionNumber: ck };
+                    const qObj: any = { ...(v as any), questionNumber: ck };
+
+                    // Deterministic SPaG promotion: if the question mentions "[SPaG N marks]" / "+N SPaG"
+                    // in its metadata/notes/answer but subQuestionMaxScores[ck] only recorded the content marks,
+                    // promote spagMaxMarks + contentMaxMarks and include SPaG in subQuestionMaxScores[ck].
+                    let spagMax = Number(qObj.spagMaxMarks || 0);
+                    if (!spagMax) {
+                        const probeText = [
+                            qObj.answer,
+                            qObj.comments,
+                            ...(Array.isArray(qObj.marks) ? qObj.marks.map((m: any) => `${m?.answer || ''} ${m?.comments || ''} ${m?.guidance || ''}`) : [])
+                        ].filter(Boolean).join(' ');
+                        const spagMatch = probeText.match(/\[?\s*(?:SPaG|\+\s*SPaG)\s*[:\-]?\s*(\d+)\s*(?:marks?|m)?\s*\]?|\[\s*\+\s*(\d+)\s*SPaG\s*\]/i);
+                        if (spagMatch) {
+                            const parsedSpag = parseInt(spagMatch[1] || spagMatch[2] || '0', 10);
+                            if (parsedSpag > 0 && parsedSpag <= 16) {
+                                spagMax = parsedSpag;
+                            }
+                        }
+                    }
+
+                    if (spagMax > 0) {
+                        qObj.spagMaxMarks = spagMax;
+                        const currentSubMax = Number(parsedObj.subQuestionMaxScores?.[ck] || 0);
+                        // Determine max content mark from levels if available (e.g. Level 4: "10-12" -> 12)
+                        let levelMax = 0;
+                        if (Array.isArray(qObj.levels)) {
+                            for (const lvl of qObj.levels) {
+                                const rangeStr = String(lvl?.markRange ?? lvl?.maxMarks ?? '');
+                                const nums = rangeStr.match(/\d+/g)?.map(Number) || [];
+                                if (nums.length > 0) {
+                                    levelMax = Math.max(levelMax, ...nums);
+                                }
+                            }
+                        }
+                        const contentMax = Number(qObj.contentMaxMarks || levelMax || currentSubMax || 0);
+                        if (contentMax > 0) {
+                            qObj.contentMaxMarks = contentMax;
+                            if (parsedObj.subQuestionMaxScores && currentSubMax === contentMax) {
+                                parsedObj.subQuestionMaxScores[ck] = contentMax + spagMax;
+                            }
+                        }
+                    }
+
+                    normalizedQuestions[ck] = qObj;
                 } else {
                     normalizedQuestions[ck] = v;
                 }

@@ -244,13 +244,34 @@ export class MarkingResultParser {
                 scoreText: `${rubricAwarded}/${authoritativeTotal}`
             };
         } else if (parsedResponse.studentScore) {
+            const normSubKey = (k: string) => String(k || '').trim().toLowerCase().replace(/^q/i, '').replace(/[()\s]/g, '').replace(/^0+(?=\d)/, '');
+            const subRubricMap = new Map<string, any>();
+            if (parsedResponse.subQuestionRubrics && typeof parsedResponse.subQuestionRubrics === 'object') {
+                for (const [rk, rv] of Object.entries(parsedResponse.subQuestionRubrics)) {
+                    if (rv && typeof rv === 'object') {
+                        subRubricMap.set(normSubKey(rk), rv);
+                    }
+                }
+            }
+
             let awarded = 0;
+            // Add authoritative scores from any composite LoR subQuestionRubrics first
+            for (const [, rubric] of subRubricMap.entries()) {
+                const contentAwarded = Math.max(0, Number(rubric.awardedMarks || 0));
+                const spagAwarded = rubric.spag ? Math.max(0, Number(rubric.spag.awardedMarks || 0)) : 0;
+                awarded += contentAwarded + spagAwarded;
+            }
+
             parsedResponse.annotations.forEach((anno: any) => {
+                // Skip annotations belonging to a sub-question scored via subQuestionRubrics
+                if (anno.subQuestion && subRubricMap.has(normSubKey(anno.subQuestion))) {
+                    return;
+                }
                 const text = (anno.text || '').trim();
                 const action = (anno.action || '').toLowerCase();
                 const isUnattempted = action === 'not_attempted' || anno.isUnattempted === true;
 
-                const isPositive = !isUnattempted && text && (action === 'tick' || action === 'mark' || !action.includes('cross'));
+                const isPositive = !isUnattempted && action !== 'circle' && text && (action === 'tick' || action === 'mark' || !action.includes('cross'));
 
                 if (isPositive) {
                     // CHECK 1: IS IT MATH/LATEX?
@@ -260,13 +281,19 @@ export class MarkingResultParser {
                         awarded += 1;
                     }
                     else {
-                        // CHECK 2: PARSE AS CODES
-                        // Only now do we split by spaces/punctuation
-                        const tokens = text.split(/[\s,|+]+/).filter((t: string) => t.length > 0);
+                        // CHECK 2: PARSE AS CODES (strip AO/L tags so AO2 is never read as 2 marks)
+                        const cleanedText = text.replace(/\b(?:AO|L)\d+\b/gi, ' ').trim();
+                        const tokens = cleanedText.split(/[\s,|]+/).filter((t: string) => t.length > 0);
                         let foundCode = false;
                         let lineScore = 0;
 
                         tokens.forEach((token: string) => {
+                            const plusMatch = token.match(/^\+(\d+)$/);
+                            if (plusMatch) {
+                                lineScore += parseInt(plusMatch[1], 10);
+                                foundCode = true;
+                                return;
+                            }
                             const clean = token.replace(/[^a-zA-Z0-9]/g, ''); // strip punctuation
 
                             // Regex for standard codes: M1, A2, B3, or integers like 1, 2
@@ -278,7 +305,6 @@ export class MarkingResultParser {
                             } else if (/^[1-9]\d*$/.test(clean)) {
                                 // CASE B: Raw Number (e.g. 27). 
                                 // To avoid "Total Trap", we treat raw isolation numbers as 1 mark (standard tick).
-                                // Only exception: if it's 1 or 2, maybe we allow it? Let's be safe and cap at 1.
                                 lineScore += 1;
                                 foundCode = true;
                             }
@@ -287,7 +313,7 @@ export class MarkingResultParser {
                         if (foundCode) {
                             awarded += lineScore;
                         } else {
-                            // If it's just text "Correct" or "Good", count as 1 mark
+                            // If it's just text "Correct", "AO1", or "Good", count as 1 mark
                             awarded += 1;
                         }
                     }

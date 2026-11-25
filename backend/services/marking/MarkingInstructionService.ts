@@ -9,8 +9,11 @@ import { MarkingZoneService } from './MarkingZoneService.js';
 import { MarkingPromptAdapter } from './core/MarkingPromptAdapter.js';
 import {
   resolveSubjectProfile,
+  resolveSubjectFamily,
+  hasLevelOfResponseSubQuestion,
   isLevelOfResponseQuestion,
   type SubjectProfile,
+  type SubjectFamily,
   type RubricEvaluation
 } from '../../config/subjectProfiles.js';
 
@@ -534,9 +537,12 @@ export class MarkingInstructionService {
   }
 
   // Local helper to format scheme using the original prompt service (with Level-of-Response rubric support)
-  private static formatMarkingSchemeForPrompt(scheme: NormalizedMarkingScheme): string {
+  private static formatMarkingSchemeForPrompt(
+    scheme: NormalizedMarkingScheme,
+    options?: { subjectFamily?: SubjectFamily }
+  ): string {
     const anyScheme = scheme as any;
-    let baseText = MarkingPromptService.formatMarkingSchemeForPrompt(scheme);
+    let baseText = MarkingPromptService.formatMarkingSchemeForPrompt(scheme, options);
 
     if (anyScheme?.levels || anyScheme?.indicativeStandard || anyScheme?.aoContentBullets || anyScheme?.dualAoBreakdown) {
       let lorSection = `\n### LEVEL-OF-RESPONSE RUBRIC (Total Marks: ${scheme.totalMarks || 0})\n`;
@@ -738,7 +744,8 @@ export class MarkingInstructionService {
           },
           cleanedOcrText: cleanedOcrText,
           studentScore: annotationData.studentScore || { totalMarks: 0, awardedMarks: 0, scoreText: '0/0' },
-          rubricEvaluation: (annotationData as any).rubricEvaluation
+          rubricEvaluation: (annotationData as any).rubricEvaluation,
+          subQuestionRubrics: (annotationData as any).subQuestionRubrics
         } as any;
       }
 
@@ -808,7 +815,8 @@ export class MarkingInstructionService {
         globalOffsetX: offsetX,
         globalOffsetY: offsetY,
         taggedOcrBlocks: annotationData.taggedOcrBlocks, // [FIX] Propagate tagged blocks to Executor
-        rubricEvaluation: (annotationData as any).rubricEvaluation
+        rubricEvaluation: (annotationData as any).rubricEvaluation,
+        subQuestionRubrics: (annotationData as any).subQuestionRubrics
       } as any;
     } catch (error) {
       console.error('❌ Marking flow failed:', error);
@@ -969,9 +977,18 @@ export class MarkingInstructionService {
         (rawSubject && !/universal subject/i.test(rawSubject))
           ? rawSubject
           : (resolvedProfile.displayName || 'General Subject');
-      systemPrompt = universalPrompt.system(effectiveSubjectName);
+      const effectiveBoard = examInfo?.examBoard || (normalizedScheme as any)?.examDetails?.board;
+      const effectiveQualification = examInfo?.qualification || (normalizedScheme as any)?.examDetails?.qualification;
+      const effectivePaperCode = examInfo?.paperCode || examInfo?.examCode || (normalizedScheme as any)?.examDetails?.paperCode;
+      const subjectFamily = resolveSubjectFamily(effectiveSubjectName, effectivePaperCode);
 
-      schemeText = this.formatMarkingSchemeForPrompt(normalizedScheme);
+      systemPrompt = universalPrompt.system(effectiveSubjectName, {
+        examBoard: effectiveBoard,
+        qualification: effectiveQualification,
+        subjectFamily
+      });
+
+      schemeText = this.formatMarkingSchemeForPrompt(normalizedScheme, { subjectFamily });
       liveQuestion = this.extractLiveQuestion(sanitizedBlocks, baseQNum);
 
       if (questionText) {
@@ -1067,7 +1084,17 @@ export class MarkingInstructionService {
           res = { content: visionResult.content, usageTokens: visionResult.usageTokens, inputTokens: visionResult.inputTokens, outputTokens: visionResult.outputTokens };
         } else {
           const imageInput = (images && images.length > 0) ? images : imageData;
-          const visionResult = await ModelProvider.callGeminiChat(systemPrompt, userPrompt, imageInput, model, true, tracker, 'marking');
+          const needsLoRThinking = isEnglishLoRMode || hasLevelOfResponseSubQuestion(normalizedScheme, 6);
+          const visionResult = await ModelProvider.callGeminiChat(
+            systemPrompt,
+            userPrompt,
+            imageInput,
+            model,
+            true,
+            tracker,
+            'marking',
+            needsLoRThinking ? 'MEDIUM' : undefined
+          );
           res = { content: visionResult.content, usageTokens: visionResult.usageTokens, inputTokens: visionResult.inputTokens, outputTokens: visionResult.outputTokens };
         }
       } catch (error: any) {
@@ -1185,7 +1212,9 @@ export class MarkingInstructionService {
       visualObservation: parsedResponse.visualObservation,
       promptQuestionText: finalPromptText,
       taggedOcrBlocks: sanitizedBlocks, // [FIX] Propagate tagged blocks upstream
-      rubricEvaluation: parsedResponse.rubricEvaluation
+      rubricEvaluation: parsedResponse.rubricEvaluation,
+      subQuestionRubrics: parsedResponse.subQuestionRubrics || undefined,
+      overallPerformanceSummary: parsedResponse.overallFeedback || parsedResponse.overallPerformanceSummary || undefined
     };
 
     if ((res as any).isTruncated) {
