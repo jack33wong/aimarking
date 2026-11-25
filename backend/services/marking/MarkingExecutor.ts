@@ -869,15 +869,25 @@ export function normalizeUnattemptedSubQuestionAnnotations(
       seenUnattemptedSubQs.add(dedupKey);
 
       const pIdx = anno.pageIndex ?? defaultPageIndex;
-      const dims = pageDimensions?.get(pIdx) || (pageDimensions ? Array.from(pageDimensions.values())[0] : undefined);
-      const zoneList = semanticZones?.[anno.subQuestion] || semanticZones?.[subSuffix] || [];
+      const zoneList = semanticZones?.[anno.subQuestion] || semanticZones?.[subSuffix] || semanticZones?.[subKey] || [];
       const zone = zoneList.find((z: any) => z.pageIndex === pIdx) || zoneList[0];
-      const hasValidBbox = Array.isArray(anno.bbox) && anno.bbox[2] > 5 && anno.bbox[3] > 5 && (anno.bbox[0] > 0 || anno.bbox[1] > 0);
+      const resolvedPageIdx = zone?.pageIndex !== undefined ? zone.pageIndex : pIdx;
+      const dims = pageDimensions?.get(resolvedPageIdx) || (pageDimensions ? Array.from(pageDimensions.values())[0] : undefined);
+
+      // Prefer the sub-question's own semantic zone answer area when available so an unattempted
+      // sub-question (e.g. 11c on Page 10) never lands on another sub-question's diagram (e.g. 11a on Page 9).
+      const hasValidBbox =
+        !zone &&
+        Array.isArray(anno.bbox) &&
+        anno.bbox[2] > 5 &&
+        anno.bbox[3] > 5 &&
+        (anno.bbox[0] > 0 || anno.bbox[1] > 0);
       const bbox = hasValidBbox ? anno.bbox : computeAnswerAreaBboxForZone(zone, dims);
       const subMax = resolveSubQuestionMaxMarks(anno.subQuestion, markingScheme);
 
       result.push({
         ...anno,
+        pageIndex: resolvedPageIdx,
         action: 'not_attempted',
         text: 'Not attempted',
         reasoning: 'Not attempted',

@@ -1291,11 +1291,29 @@ export function generateSessionTitleFromDetectionResults(detectionResults: any[]
     if (primary) return primary;
   }
 
-  // All papers are generic or unknown. Pick the first question/sub-question line with readable prose.
+  // All papers are generic or unknown.
   const detectedSubject = examPapers
     .map(p => getShortSubjectName(p.subject || ''))
     .find(isMeaningfulMeta);
 
+  // If this is a multi-question paper/worksheet (>= 3 distinct base questions), use a clean
+  // paper-level title (e.g. "Maths Paper · Q1–Q22") rather than truncating Q1a's question text.
+  const allBaseQNums = Array.from(new Set(
+    detectionResults
+      .map((dr: any) => {
+        const raw = String(dr?.question?.questionNumber || dr?.detectionResult?.match?.questionNumber || '').replace(/^p\d+[·.\-]\s*q?/i, '');
+        return parseInt(raw, 10);
+      })
+      .filter((n: number) => !isNaN(n) && n > 0)
+  )).sort((a, b) => a - b);
+
+  if (allBaseQNums.length >= 3) {
+    const qRange = `Q${allBaseQNums[0]}–Q${allBaseQNums[allBaseQNums.length - 1]}`;
+    const paperBase = detectedSubject ? `${detectedSubject} Paper` : 'Practice Paper';
+    return `${paperBase} · ${qRange}`;
+  }
+
+  // Single/pair question fallback: pick the first question/sub-question line with readable prose.
   const candidateTexts: string[] = [];
   for (const dr of detectionResults) {
     const q = dr?.question;

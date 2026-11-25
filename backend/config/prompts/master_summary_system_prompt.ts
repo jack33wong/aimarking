@@ -45,7 +45,7 @@ OUTPUT FORMAT (STRICT JSON ONLY — NO MARKDOWN FENCES, NO EXTRA TEXT):
 RULES:
 1. Every "axis" in "questionTopics" MUST exactly match one of the strings in "radarAxes".
 2. Keep "mastered" to max 3 items (only include questions where the student scored >= 70% of marks).
-3. Keep "focusNext" to max 3 items.
+3. Keep "focusNext" to max 3 items. ALWAYS prioritize [ATTEMPTED] questions where the student lost marks (mistakes or partial credit) ahead of [UNATTEMPTED] blank questions — only include [UNATTEMPTED] questions if fewer than 3 [ATTEMPTED] questions lost marks.
 4. Every string in "mastered" and "focusNext" MUST be ultra-concise (max 8 words).
 5. Use clear, student-friendly GCSE/A-Level classroom language (e.g. "Comparing both sources", "Ending with a strong call to action", "Analysing tone and contrast"). NEVER use obscure academic or rhetorical jargon like "peroration" or "bathos".
 6. Return ONLY valid JSON.`;

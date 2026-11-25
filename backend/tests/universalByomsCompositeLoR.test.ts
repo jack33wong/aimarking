@@ -5,6 +5,9 @@ import { MarkingPromptService } from '../services/marking/MarkingPromptService.j
 import { MarkingSchemeParserService } from '../services/marking/MarkingSchemeParserService.js';
 import { ScoreAuditor } from '../services/marking/core/ScoreAuditor.js';
 import { MarkingResultParser } from '../services/marking/MarkingResultParser.js';
+import { latexToPlainText } from '../utils/TextNormalizationUtils.js';
+import { generateSessionTitleFromDetectionResults } from '../services/marking/questionDetectionService.js';
+import { normalizeUnattemptedSubQuestionAnnotations } from '../services/marking/MarkingExecutor.js';
 
 describe('Universal BYOMS Composite LoR, SPaG, Subject Family & Summary Safeguards', () => {
   describe('resolveSubjectFamily & hasLevelOfResponseSubQuestion', () => {
@@ -206,6 +209,60 @@ describe('Universal BYOMS Composite LoR, SPaG, Subject Family & Summary Safeguar
 
       expect(parsed.studentScore.awardedMarks).toBe(22);
       expect(parsed.studentScore.totalMarks).toBe(27);
+    });
+  });
+
+  describe('Title Generation, Mixed Numbers & Cross-Page Not Attempted Placement', () => {
+    it('preserves space in mixed numbers instead of mashing 2\\frac{4}{5} into 24/5', () => {
+      expect(latexToPlainText('Work out $2\\frac{4}{5} + 1\\frac{3}{4}$')).toBe('Work out 2 4/5 + 1 3/4');
+    });
+
+    it('uses a clean paper-level title for unmatched multi-question papers instead of Q1 prose', () => {
+      const mockResults = [1, 2, 3, 4, 22].map(n => ({
+        question: { questionNumber: String(n), text: n === 1 ? 'Work out $2\\frac{4}{5} + 1\\frac{3}{4}$' : `Question ${n}` },
+        detectionResult: {
+          found: false,
+          match: {
+            board: 'Unknown',
+            paperCode: 'Generic Question',
+            subject: 'Mathematics',
+            questionNumber: String(n)
+          }
+        }
+      }));
+      const title = generateSessionTitleFromDetectionResults(mockResults, 'Marking');
+      expect(title).toBe('Maths Paper · Q1–Q22');
+      expect(title).not.toContain('24/5');
+    });
+
+    it('anchors unattempted Q11c pill to Q11c zone on page 10 instead of Q11a box plot on page 9', () => {
+      const normalized = normalizeUnattemptedSubQuestionAnnotations(
+        [
+          {
+            action: 'not_attempted',
+            text: 'Not attempted',
+            subQuestion: '11c',
+            pageIndex: 9,
+            bbox: [701, 1804, 150, 40] // erroneously landed on page 9
+          }
+        ],
+        [],
+        {
+          '11a': [{ pageIndex: 9, startY: 1400, endY: 2000, x: 200, width: 1200 }],
+          '11c': [{ pageIndex: 10, startY: 1600, endY: 2100, x: 200, width: 1200 }]
+        },
+        { subQuestionMaxScores: { '11a': 3, '11b': 2, '11c': 1 } },
+        new Map([
+          [9, { width: 1650, height: 2339 }],
+          [10, { width: 1650, height: 2339 }]
+        ]),
+        9
+      );
+
+      expect(normalized).toHaveLength(1);
+      expect(normalized[0].pageIndex).toBe(10);
+      expect(normalized[0].scoreBadgeText).toBe('0/1');
+      expect(normalized[0].bbox[1]).toBeGreaterThanOrEqual(1600);
     });
   });
 });

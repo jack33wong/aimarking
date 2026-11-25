@@ -626,8 +626,10 @@ export function latexToPlainText(text: string | null | undefined): string {
     .replace(/\^\{([^{}]*)\}/g, '^$1')
     .replace(/_\{([^{}]*)\}/g, '_$1');
 
-  // Iteratively resolve \frac{num}{den} from innermost to outermost
+  // Iteratively resolve \frac{num}{den} from innermost to outermost.
+  // Preserve a space after a whole-number prefix for mixed numbers (e.g. "2\frac{4}{5}" -> "2 4/5", NOT "24/5").
   for (let i = 0; i < 3; i++) {
+    plain = plain.replace(/(\d)\s*\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, '$1 $2/$3');
     plain = plain.replace(/\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, '$1/$2');
   }
 

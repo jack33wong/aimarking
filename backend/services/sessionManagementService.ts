@@ -1550,7 +1550,14 @@ export class SessionManagementService {
         .slice(0, 4)
         .join(', ') || 'No specific feedback';
 
-      return `Q${qNum} (${topic}): Score ${awarded}/${total}.${rubricInfo} Key Points: ${feedback}`;
+      const anns = Array.isArray(qr.annotations) ? qr.annotations : [];
+      const isUnattemptedQ =
+        awarded === 0 &&
+        (!qr.studentWork || String(qr.studentWork).trim() === '' || /^student'?s\s*work\s*:?\s*$/i.test(String(qr.studentWork).trim())) &&
+        (anns.length === 0 || anns.every((a: any) => a.action === 'not_attempted' || a.isUnattempted === true));
+      const attemptTag = isUnattemptedQ ? '[UNATTEMPTED]' : '[ATTEMPTED]';
+
+      return `Q${qNum} ${attemptTag} (${topic}): Score ${awarded}/${total}.${rubricInfo} Key Points: ${feedback}`;
     }).join('\n');
 
     let promptData = `DISTILLED QUESTION RESULTS:\n${distilledData}\n\n`;
@@ -1852,6 +1859,17 @@ export class SessionManagementService {
         ? 'Partial Paper'
         : (resolvedGrade && String(resolvedGrade).trim() !== '' ? String(resolvedGrade) : 'N/A');
 
+      const unattemptedQSet = new Set<string>();
+      for (const qr of allQuestionResults as any[]) {
+        const qk = String(qr.questionNumber || '').replace(/^Q/i, '').trim();
+        const aw = Number(qr.score?.awardedMarks ?? qr.marks ?? 0);
+        const anns = Array.isArray(qr.annotations) ? qr.annotations : [];
+        const blankWork = !qr.studentWork || String(qr.studentWork).trim() === '' || /^student'?s\s*work\s*:?\s*$/i.test(String(qr.studentWork).trim());
+        if (qk && aw === 0 && blankWork && (anns.length === 0 || anns.every((a: any) => a.action === 'not_attempted' || a.isUnattempted === true))) {
+          unattemptedQSet.add(qk);
+        }
+      }
+
       const isFullPaperScore = totalMarks > 0 && awardedMarks >= totalMarks;
       const enrichedFocusNext = isFullPaperScore
         ? []
@@ -1860,13 +1878,19 @@ export class SessionManagementService {
               const qKey = item?.q ? String(item.q).replace(/^Q/i, '').trim() : '';
               const qScore = qKey ? qScoreMap.get(qKey) : undefined;
               const marksLost = qScore ? Math.max(0, qScore.total - qScore.awarded) : undefined;
+              const isAttempted = qKey ? !unattemptedQSet.has(qKey) : true;
               return {
                 ...item,
-                ...(marksLost && marksLost > 0 ? { marksLost } : {})
+                ...(marksLost && marksLost > 0 ? { marksLost } : {}),
+                _isAttempted: isAttempted
               };
             })
             .filter((item: any) => item.marksLost === undefined || item.marksLost > 0)
-            .sort((a: any, b: any) => (b.marksLost || 0) - (a.marksLost || 0))
+            .sort((a: any, b: any) => {
+              if (a._isAttempted !== b._isAttempted) return a._isAttempted ? -1 : 1;
+              return (b.marksLost || 0) - (a.marksLost || 0);
+            })
+            .map(({ _isAttempted, ...rest }: any) => rest)
             .slice(0, 3);
 
       const summaryPayload = {

@@ -272,8 +272,19 @@ export const enrichAnnotationsWithPositions = (
             : [(anno.bbox as any)?.x || 0, (anno.bbox as any)?.y || 0, (anno.bbox as any)?.width || 0, (anno.bbox as any)?.height || 0];
 
         // 🛡️ STRENGTHEN EXTRACTION: Use multiple potential coordinate sources to avoid "0px Jump"
-        const rawX = (anno as any).visual_position?.x ?? (anno as any).aiPosition?.x ?? (anno as any).bbox?.x ?? (Array.isArray((anno as any).bbox) ? (anno as any).bbox[0] : rawAiBox[0]);
-        const rawY = (anno as any).visual_position?.y ?? (anno as any).aiPosition?.y ?? (anno as any).bbox?.y ?? (Array.isArray((anno as any).bbox) ? (anno as any).bbox[1] : rawAiBox[1]);
+        let rawX = (anno as any).visual_position?.x ?? (anno as any).aiPosition?.x ?? (anno as any).bbox?.x ?? (Array.isArray((anno as any).bbox) ? (anno as any).bbox[0] : rawAiBox[0]);
+        let rawY = (anno as any).visual_position?.y ?? (anno as any).aiPosition?.y ?? (anno as any).bbox?.y ?? (Array.isArray((anno as any).bbox) ? (anno as any).bbox[1] : rawAiBox[1]);
+
+        // Normalize 0-1000 Gemini coordinate space down to 0-100% if AI emitted coordinates > 100
+        if (rawX > 100 || rawY > 100) {
+            if (rawX <= 1000 && rawY <= 1000) {
+                rawX = rawX / 10;
+                rawY = rawY / 10;
+            } else {
+                rawX = (rawX / pageWidth) * 100;
+                rawY = (rawY / pageHeight) * 100;
+            }
+        }
 
         const intentX = (rawX / 100) * pageWidth;
         const intentY = (rawY / 100) * pageHeight;
