@@ -15,9 +15,13 @@ describe('Universal BYOMS Composite LoR, SPaG, Subject Family & Summary Safeguar
       expect(resolveSubjectFamily('Religious Studies A', '8062/13')).toBe('HUMANITIES_ESSAY');
       expect(resolveSubjectFamily('History', '8145')).toBe('HUMANITIES_ESSAY');
       expect(resolveSubjectFamily('Economics HL', 'IB')).toBe('HUMANITIES_ESSAY');
+      expect(resolveSubjectFamily('AP Macroeconomics', 'AP')).toBe('HUMANITIES_ESSAY');
+      expect(resolveSubjectFamily('AP Microeconomics', 'AP')).toBe('HUMANITIES_ESSAY');
       expect(resolveSubjectFamily('Biology', '8461')).toBe('SCIENCE_DATA');
       expect(resolveSubjectFamily('Combined Science: Trilogy', '8464')).toBe('SCIENCE_DATA');
+      expect(resolveSubjectFamily('Design and Technology', '8552')).toBe('SCIENCE_DATA');
       expect(resolveSubjectFamily('Calculus AB', 'AP')).toBe('QUANTITATIVE');
+      expect(resolveSubjectFamily('IB Math AA HL', 'IB')).toBe('QUANTITATIVE');
       expect(resolveSubjectFamily('Mathematics', '1MA1')).toBe('QUANTITATIVE');
       expect(resolveSubjectFamily('English Literature', '8702')).toBe('ENGLISH_WRITING');
       expect(resolveSubjectFamily('Music Technology', 'CUSTOM')).toBe('GENERAL');
@@ -102,6 +106,26 @@ describe('Universal BYOMS Composite LoR, SPaG, Subject Family & Summary Safeguar
 
       expect(formatted).toContain('Mitosis vs. Meiosis');
       expect(formatted).not.toContain('HUMANITIES & ESSAY EXAMINER TIE-BREAKER RULES');
+    });
+
+    it('injects 4-mark SPaG rubric for standalone essays (e.g. History 16+4 or Literature 30+4)', () => {
+      const formatted = MarkingPromptService.formatMarkingSchemeForPrompt(
+        {
+          questionNumber: '4',
+          totalMarks: 20,
+          contentMaxMarks: 16,
+          spagMaxMarks: 4,
+          paradigm: 'LEVEL_OF_RESPONSE',
+          levels: [{ level: 4, markRange: '13-16', descriptor: 'Complex explanation of factors.' }],
+          marks: []
+        } as any,
+        { subjectFamily: 'HUMANITIES_ESSAY' }
+      );
+
+      expect(formatted).toContain('[MAX SCORE: 20 (Content: 16 + SPaG: 4)]');
+      expect(formatted).toContain('[SPaG RUBRIC (Separate 4 marks)]');
+      expect(formatted).toContain('High performance (4 marks)');
+      expect(formatted).toContain('Intermediate performance (2-3 marks)');
     });
   });
 

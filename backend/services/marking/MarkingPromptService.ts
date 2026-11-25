@@ -226,6 +226,24 @@ ${subQBreakdown}`;
             return block;
         };
 
+        const formatSpagRubric = (spagMax: number): string => {
+            let block = `  [SPaG RUBRIC (Separate ${spagMax} marks)]\n`;
+            if (spagMax === 3) {
+                block += `  * High performance (2-3 marks): Spell and punctuate with consistent accuracy; use rules of grammar with effective control of meaning; use a wide range of specialist terms as appropriate.\n`;
+                block += `  * Intermediate performance (1-2 marks): Spell and punctuate with considerable accuracy; use rules of grammar with general control of meaning; use a good range of specialist terms.\n`;
+                block += `  * Threshold performance (1 mark): Spell and punctuate with reasonable accuracy; use rules of grammar with some control of meaning; use a limited range of specialist terms.\n`;
+                block += `  * 0 marks: Nothing worthy of credit or does not reach threshold standard.\n`;
+            } else if (spagMax === 4) {
+                block += `  * High performance (4 marks): Spell and punctuate with consistent accuracy; use rules of grammar with effective control of meaning; use a wide range of specialist terms as appropriate.\n`;
+                block += `  * Intermediate performance (2-3 marks): Spell and punctuate with considerable accuracy; use rules of grammar with general control of meaning; use a good range of specialist terms.\n`;
+                block += `  * Threshold performance (1 mark): Spell and punctuate with reasonable accuracy; use rules of grammar with some control of meaning; use a limited range of specialist terms.\n`;
+                block += `  * 0 marks: Nothing worthy of credit or does not reach threshold standard.\n`;
+            } else {
+                block += `  * Award 0-${spagMax} marks separately for spelling, punctuation, grammar, and accurate use of specialist terminology.\n`;
+            }
+            return block;
+        };
+
         if (hasSubQuestions) {
             const cleanSubKey = (k: string) => String(k || '').trim().replace(/^0+(?=\d)/, '');
             const subQuestions = Object.keys(normalizedScheme.subQuestionMarks!).sort((a, b) =>
@@ -271,15 +289,7 @@ ${subQBreakdown}`;
                 }
 
                 if (spagMax > 0) {
-                    output += `  [SPaG RUBRIC (Separate ${spagMax} marks)]\n`;
-                    if (spagMax === 3) {
-                        output += `  * High performance (2-3 marks): Spell and punctuate with consistent accuracy; use rules of grammar with effective control of meaning; use a wide range of specialist terms as appropriate.\n`;
-                        output += `  * Intermediate performance (1-2 marks): Spell and punctuate with considerable accuracy; use rules of grammar with general control of meaning; use a good range of specialist terms.\n`;
-                        output += `  * Threshold performance (1 mark): Spell and punctuate with reasonable accuracy; use rules of grammar with some control of meaning; use a limited range of specialist terms.\n`;
-                        output += `  * 0 marks: Nothing worthy of credit or does not reach threshold standard.\n`;
-                    } else {
-                        output += `  * Award 0-${spagMax} marks separately for spelling, punctuation, grammar, and accurate use of specialist terminology.\n`;
-                    }
+                    output += formatSpagRubric(spagMax);
                 }
 
                 if (Array.isArray(marks)) {
@@ -295,12 +305,23 @@ ${subQBreakdown}`;
                 output += '\n';
             }
         } else {
+            const standaloneSpagMax = Number(anyScheme.spagMaxMarks || 0);
+            const standaloneContentMax = Number(anyScheme.contentMaxMarks || 0);
             output += `[${normalizedScheme.questionNumber}]`;
-            if (normalizedScheme.totalMarks) output += ` [MAX SCORE: ${normalizedScheme.totalMarks}]`;
+            if (normalizedScheme.totalMarks && standaloneSpagMax > 0 && standaloneContentMax > 0) {
+                output += ` [MAX SCORE: ${normalizedScheme.totalMarks} (Content: ${standaloneContentMax} + SPaG: ${standaloneSpagMax})]`;
+            } else if (normalizedScheme.totalMarks) {
+                output += ` [MAX SCORE: ${normalizedScheme.totalMarks}]`;
+            }
+            if (anyScheme.paradigm) output += ` [PARADIGM: ${anyScheme.paradigm}]`;
             output += '\n';
 
             if (anyScheme.levels || anyScheme.indicativeContent) {
                 output += formatLevelsAndIndicative(anyScheme.levels, anyScheme.indicativeContent);
+            }
+
+            if (standaloneSpagMax > 0) {
+                output += formatSpagRubric(standaloneSpagMax);
             }
 
             normalizedScheme.marks.forEach((m: any) => {

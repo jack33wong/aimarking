@@ -58,12 +58,12 @@ Evaluate EACH sub-question in \`[OFFICIAL SCHEME]\` using its matching paradigm:
 1. **Mandatory Underlined / Bold Terminology**:
    - Words marked in bold (\`**term**\`) or noted as mandatory in \`[Examiner Notes]\` MUST be present (or an explicit \`Accept\` synonym) to award the mark.
 2. **Strict \`Accept\` / \`Reject\` / \`Ignore\` Enforcement**:
-   - **\`Accept\` / \`Allow\`**: Award \`B1\` (\`action: "tick"\`) if the student's phrasing matches the mark point or any listed \`Accept\` / \`Allow\` equivalent.
-   - **\`Reject\` / \`Do NOT Accept\` / Scientific Contradiction**: If the student uses a rejected term (e.g., *"enzyme dies"* instead of *"denatures"*, *"atoms expand"*, *"heat rises"*) or contradicts their own correct point on the same line, award \`B0\` (\`action: "cross"\`) and quote the \`Reject\` rule in \`reasoning\`.
+   - **\`Accept\` / \`Allow\`**: Award the mark (\`action: "tick"\`, using the subject's native notation from Gate 5) if the student's phrasing matches the mark point or any listed \`Accept\` / \`Allow\` equivalent.
+   - **\`Reject\` / \`Do NOT Accept\` / Scientific Contradiction**: If the student uses a rejected term (e.g., *"enzyme dies"* instead of *"denatures"*, *"atoms expand"*, *"heat rises"*) or contradicts their own correct point on the same line, award 0 marks (\`action: "cross"\`) and quote the \`Reject\` rule in \`reasoning\`.
    - **\`Ignore\`**: Do not award and do not penalize statements covered by \`Ignore\`.
 3. **"Any K from N" Pool Rule (CRITICAL — NO GHOST CROSSES)**:
-   - When \`[OFFICIAL SCHEME]\` lists multiple alternative/pool bullet points (e.g. 5 possible points for a \`[MAX SCORE: 2]\` sub-question), award \`B1\` for each distinct valid point the student makes **up to \`[MAX SCORE: K]\`**.
-   - Once the student has achieved full marks (\`K/K\`) or finished their answer, **DO NOT output \`B0\` crosses for the other unmentioned optional points in the pool!** Only emit a \`B0\` (\`action: "cross"\`) when the student actually wrote an incorrect, rejected, or insufficient statement. If a multi-line incorrect/insufficient \`KEYWORD_POINT\` response earns \`B0\`, anchor the \`B0\` cross on the **final line** of that sub-question's response.
+   - When \`[OFFICIAL SCHEME]\` lists multiple alternative/pool bullet points (e.g. 5 possible points for a \`[MAX SCORE: 2]\` sub-question), award 1 mark (\`action: "tick"\`) for each distinct valid point the student makes **up to \`[MAX SCORE: K]\`**.
+   - Once the student has achieved full marks (\`K/K\`) or finished their answer, **DO NOT output crosses for the other unmentioned optional points in the pool!** Only emit a \`cross\` when the student actually wrote an incorrect, rejected, or insufficient statement. If a multi-line incorrect/insufficient \`KEYWORD_POINT\` response earns 0 marks, anchor the \`cross\` on the **final line** of that sub-question's response.
 4. **The List Rule & Tick-Box / MCQ Visual Override Rule (CRITICAL)**:
    - **Over-Selection / List Rule ($N + E$)**: If a question asks for a specific number of responses or boxes $N$ (e.g., *"Give ONE advantage"*, *"Tick ONE box"*, *"Tick TWO boxes"*) and the student leaves $N + E$ **active (uncrossed)** responses/ticks, each extra incorrect response $E$ cancels out 1 correct mark (minimum score 0 for that sub-question; e.g., 2 active ticks on a *"Tick one box"* question scores \`0\`).
    - **Crossed-Out / Scribbled-Over Boxes**: If a student ticks or shades a box and then crosses it out, scribbles over it, or circles another box to reinstate it, **completely ignore the crossed-out box**—do NOT count it as an extra response $E$.
@@ -97,8 +97,8 @@ When a question or sub-question has \`[LEVEL DESCRIPTORS]\` or \`[PARADIGM: LEVE
    - When \`[SPaG RUBRIC]\` is present (e.g., \`Content: 12 + SPaG: 3 = 15\`), grade SPaG strictly and separately out of its budget (checking spelling, capitalisation of proper nouns, apostrophes, punctuation, and specialist terminology) and report it in \`spag\`.
 3. **How to Output Level-of-Response Scores (CRITICAL DISTINCTION)**:
    - **CASE A — Standalone Level-of-Response Question** (the ENTIRE task is a single Level-of-Response essay with no separate point-based sub-questions):
-     * Populate the top-level \`rubricEvaluation\` object with \`scoringType: "SINGLE_AO_LOR"\` (or \`"DUAL_AO_LOR"\` if SPaG/AO4 has a separate mark allocation), \`audit\` (\`strengths\`, \`flaws\`, \`conclusionQuality\`, \`bandJustification\`), \`awardedLevel\`, \`levelLabel\`, \`awardedMarks\`, \`maxMarks\`, \`rubricStamp\`, \`aoBreakdown\`, and \`coaching\` (\`rationale\`, \`nextLevelGap\`, \`upgradeRewrite\`).
-     * Place 1 margin annotation per developed paragraph (\`action: "tick"\`, \`text: "[L3]"\` or \`"[AO2 L3]"\`) plus optional \`action: "circle"\` for major flaws/SPaG errors, and set \`studentScore.awardedMarks = rubricEvaluation.awardedMarks\`.
+     * Populate the top-level \`rubricEvaluation\` object with \`scoringType: "SINGLE_AO_LOR"\` (or \`"DUAL_AO_LOR"\` if SPaG/AO4 has a separate mark allocation), \`audit\` (\`strengths\`, \`flaws\`, \`conclusionQuality\`, \`bandJustification\`), \`awardedLevel\`, \`levelLabel\`, \`awardedMarks\`, \`maxMarks\`, \`rubricStamp\`, \`aoBreakdown\`, and \`coaching\` (\`rationale\`, \`nextLevelGap\`, \`upgradeRewrite\`), and set \`studentScore.awardedMarks = rubricEvaluation.awardedMarks\`.
+     * Follow the exact same **Paragraph-Anchored Annotations & MANDATORY Lost-Mark Visibility** rules as Case B below: plain-English green band tags per strong paragraph (\`"L3 Argument"\`, \`"L3 Counter-argument"\`, \`"L3 Evidence"\`), mandatory amber \`circle\` (\`"[Flaw]"\` / \`"[SPaG]"\`) and \`partial\` (\`"L2 Conclusion"\` / \`"Gap"\`) markers whenever \`awardedMarks < maxMarks\`, 1 final holistic score stamp on the concluding line (\`action: "partial"\` if below top band, \`"tick"\` if top band), and 1 \`step_by_step_evaluation\` entry per paragraph.
    - **CASE B — Multi-Part Composite Question** (e.g. \`Q1\` has point-based \`1.1\`–\`1.4\` AND an extended Level-of-Response sub-question \`1.5\`):
      * Keep top-level \`"rubricEvaluation": null\` so the pipeline preserves \`1.1\`–\`1.4\` additively.
      * Populate **\`"subQuestionRubrics"\`** keyed by the LoR sub-question (e.g. \`"1.5"\`) with **\`audit\` FIRST, BEFORE \`awardedMarks\`**:
@@ -166,7 +166,7 @@ Return ONLY a valid JSON object matching this exact schema (no markdown code fen
       "pageIndex": 0,
       "subQuestion": "1a",
       "student_text": "Verbatim text on that line",
-      "action": "tick | cross",
+      "action": "tick | cross | partial | circle | not_attempted",
       "text": "B1",
       "reasoning": "[1a] Correct point matching scheme (Accept note applied).",
       "linked_ocr_id": "p0_ocr_3",

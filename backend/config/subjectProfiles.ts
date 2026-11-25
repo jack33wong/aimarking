@@ -470,16 +470,16 @@ export function isLevelOfResponseQuestion(
 export function resolveSubjectFamily(subjectName?: string, paperCode?: string): SubjectFamily {
   const haystack = `${subjectName || ''} ${paperCode || ''}`.toLowerCase();
 
-  if (/\b(english\s*lang|english\s*lit|literature\s+in\s+english|8700|8702|1en0|1et0)\b/i.test(haystack)) {
+  if (/\b(english\s*lang|english\s*lit|literature\s+in\s+english|english\s+language|english\s+literature|ap\s+english|8700|8702|1en0|1et0)\b/i.test(haystack)) {
     return 'ENGLISH_WRITING';
   }
-  if (/\b(math|maths|mathematics|further\s*maths|statistics|mechanics|calculus|precalculus|accounting|core\s*maths|1ma1|8300|9ma0|0580|0606|4ma1|wma)\b/i.test(haystack)) {
+  if (/\b(math|maths|mathematics|math\s*aa|math\s*ai|further\s*maths|additional\s*math\w*|applied\s*math\w*|numeracy|statistics|mechanics|calculus|precalculus|accounting|core\s*maths|econometrics|1ma1|8300|9ma0|0580|0606|4ma1|wma)\b/i.test(haystack)) {
     return 'QUANTITATIVE';
   }
-  if (/\b(biology|chemistry|physics|combined\s*science|trilogy|synergy|science|computer\s*science|environmental|astronomy|geology|8461|8462|8463|8464|8465|0610|0620|0625)\b/i.test(haystack)) {
+  if (/\b(biology|biochemistry|chemistry|physics|astrophysics|combined\s*science|trilogy|synergy|science|computer\s*science|environmental|astronomy|geology|engineering|design\s*(?:and|&)\s*technology|food\s*prep\w*|physical\s*education|sports?\s*science|8461|8462|8463|8464|8465|0610|0620|0625)\b/i.test(haystack)) {
     return 'SCIENCE_DATA';
   }
-  if (/\b(religious|religion|theology|philosophy|ethics|history|geography|sociology|psychology|politics|government|economics|business|law|citizenship|classics|classical|global\s*perspectives|drama|media|film|art\s*history|8062|8063|8145|8035|8192|8182|8132|8136)\b/i.test(haystack)) {
+  if (/\b(religious|religion|theology|philosophy|ethics|history|geography|sociology|psychology|politics|government|civics|economics|macroeconomics|microeconomics|business|law|citizenship|classics|classical|anthropology|archaeology|global\s*perspectives|drama|media|film|art\s*history|8062|8063|8145|8035|8192|8182|8132|8136)\b/i.test(haystack)) {
     return 'HUMANITIES_ESSAY';
   }
 
