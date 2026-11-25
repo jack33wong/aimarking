@@ -9,7 +9,7 @@ export const LandingFooter: React.FC = () => {
             <div className="footer-container horizontal">
                 <div className="footer-brand-side">
                     <span className="footer-logo">AI Marking</span>
-                    <span className="footer-copyright">© 2026 AI Marking • Trusted by 15,000+ UK students.</span>
+                    <span className="footer-copyright">© 2026 AI Marking • Trusted by 15,000+ UK &amp; International students.</span>
                 </div>
 
                 <div className="footer-nav-columns">

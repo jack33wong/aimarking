@@ -128,7 +128,7 @@ export const LandingPage: React.FC = () => {
 
     // Controls the staggered entrance of subtitle/CTA
     const [startAnimations, setStartAnimations] = useState(false);
-    const [showcaseSubject, setShowcaseSubject] = useState<'maths' | 'english'>('maths');
+    const [showcaseSubject, setShowcaseSubject] = useState<'maths' | 'english' | 'science'>('maths');
 
     const handleCtaClick = () => {
         navigate('/app');
@@ -245,19 +245,34 @@ export const LandingPage: React.FC = () => {
                                 >
                                     ✍️ English Essay LoR Marking
                                 </button>
+                                <button
+                                    type="button"
+                                    className={`spatial-toggle-pill ${showcaseSubject === 'science' ? 'active' : ''}`}
+                                    onClick={() => setShowcaseSubject('science')}
+                                >
+                                    🧬 IGCSE Science Diagrams
+                                </button>
                             </div>
                         </div>
                         <div className="mapping-demo-container">
                             <div className="mapping-demo-zoom-wrapper">
                                 <ImageMagnifier
-                                    src={showcaseSubject === 'english' ? '/images/english_spatial_marking_q2.jpg' : '/images/spatial_mapping_v3.png'}
+                                    src={
+                                        showcaseSubject === 'english'
+                                            ? '/images/english_spatial_marking_q2.jpg'
+                                            : showcaseSubject === 'science'
+                                                ? '/images/igcse_biology_marking.jpg'
+                                                : '/images/spatial_mapping_v3.png'
+                                    }
                                     width="100%"
                                 />
                             </div>
                             <p className="mapping-caption">
                                 {showcaseSubject === 'english'
                                     ? "Actual AI English marking: Accurate Levels-of-Response (LoR) grading with margin badges and teacher commentary."
-                                    : "Actual AI marking sample: Identifying Method Marks (M1) and specific prime factorisation errors."}
+                                    : showcaseSubject === 'science'
+                                        ? "Actual Cambridge IGCSE Biology (0610/41) marking: Diagram label recognition with instant B0/B1 examiner annotations."
+                                        : "Actual AI marking sample: Identifying Method Marks (M1) and specific prime factorisation errors."}
                             </p>
                         </div>
                     </div>
@@ -309,6 +324,9 @@ export const LandingPage: React.FC = () => {
                                 <span className="board-tag">EDEXCEL</span>
                                 <span className="board-tag">OCR</span>
                                 <span className="board-tag">CIE</span>
+                                <span className="board-tag">SQA</span>
+                                <span className="board-tag">IB</span>
+                                <span className="board-tag">AP®</span>
                             </div>
                         </div>
 
@@ -351,7 +369,7 @@ export const LandingPage: React.FC = () => {
                             <h3>24/7 Follow-up Support</h3>
                             <p className="section-body">
                                 Don’t just see the mark—understand it. Get instant, board-specific
-                                explanations for <strong>AQA, Edexcel, and OCR</strong>. Ask why you
+                                explanations for <strong>AQA, Edexcel, OCR, Cambridge (CIE), SQA, IB, and AP®</strong>. Ask why you
                                 missed a mark or get a personalized walkthrough of any model answer.
                             </p>
                             <button className="secondary-cta" onClick={() => navigate('/app')}>Explore All Features →</button>

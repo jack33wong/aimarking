@@ -30,17 +30,17 @@ export const SeoHeader: React.FC<SeoHeaderProps> = ({
 
     // Generate optimized title
     const finalTitle = title || (examBoard
-        ? `AI ${examBoard} Maths Marking | Instant GCSE ${year || ''} Feedback`
+        ? `AI ${examBoard} Marking | Instant Past Paper Feedback`
         : isHome
-            ? "AI Exam Paper Marking & Feedback | GCSE & A-Level Maths, English & Any Subject"
+            ? "AI Exam Paper Marking & Feedback | GCSE, IGCSE, A-Level, IAL, IB & AP®"
             : "AI Exam Marking | Instant Past Paper Feedback & Grading");
 
     // Generate optimized description
     const finalDescription = description || (examBoard
-        ? `Upload your ${examBoard} ${year || ''} Maths past papers and get instant, AI-powered marking with step-by-step feedback.`
-        : "Mark GCSE & A-Level Maths and GCSE English Language past papers instantly with built-in AQA, Edexcel & OCR schemes—or upload any subject with its mark scheme.");
+        ? `Upload your ${examBoard} ${year || ''} handwritten past papers and get instant, AI-powered marking with step-by-step examiner feedback.`
+        : "Mark handwritten GCSE, IGCSE, A-Level, IAL, O Level, National 5, IB Diploma & AP® STEM FRQ past papers instantly with built-in schemes—or upload any official mark scheme.");
 
-    const keywords = "AI exam marking, GCSE maths marking, GCSE English Language marking, mark my paper, Edexcel marking, AQA feedback, OCR marking, upload mark scheme, AI tutor";
+    const keywords = "AI exam marking, GCSE maths marking, IGCSE marking, Cambridge CIE marking, A-Level maths marking, IAL marking, O Level marking, SQA National 5 marking, IB Diploma marking, AP FRQ marking, GCSE English Language marking, mark my paper, Edexcel marking, AQA feedback, OCR marking, upload mark scheme, AI tutor";
 
     // SoftwareApplication Schema
     const schema = {
@@ -54,7 +54,7 @@ export const SeoHeader: React.FC<SeoHeaderProps> = ({
             "price": "0",
             "priceCurrency": "GBP"
         },
-        "description": "AI tool for marking GCSE & A-Level Maths, GCSE English Language, and any subject past papers with an uploaded mark scheme."
+        "description": "AI platform for marking handwritten GCSE, IGCSE, A-Level, IAL, O Level, National 5, IB Diploma, and AP® STEM FRQ past papers with official mark schemes."
     };
 
     return (
