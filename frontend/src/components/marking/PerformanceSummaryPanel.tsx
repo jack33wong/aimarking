@@ -54,6 +54,8 @@ interface QuestionCoachingItem {
 
 interface HandwritingIssue {
   q: string;
+  subQ?: string;
+  pageIndex?: number;
   ocrText: string;
   intendedText?: string;
   note: string;
@@ -127,7 +129,7 @@ interface PerformanceSummaryPanelProps {
   MarkdownMathRenderer: React.ElementType;
   detectedQuestion?: any;
   markingContext?: any;
-  onQuestionClick?: (qNum: string) => void;
+  onQuestionClick?: (qNum: string, pageIndex?: number) => void;
   activeQuestionId?: string | null;
 }
 
@@ -1338,7 +1340,8 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
               {handwritingIssues.length > 0 && (
                 <div className="tmua-hw-issue-list">
                   {handwritingIssues.map((issue, idx) => {
-                    const cleanQ = String(issue.q).replace(/^Q/i, '').trim();
+                    const cleanMainQ = String(issue.q).replace(/^Q/i, '').trim();
+                    const displayQ = String(issue.subQ || issue.q).replace(/^Q/i, '').trim();
                     const hasMismatch = Boolean(
                       issue.intendedText &&
                       issue.ocrText &&
@@ -1347,15 +1350,15 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
                     return (
                       <div key={idx} className="tmua-hw-issue-item">
                         <div className="tmua-hw-issue-top">
-                          <span className="tmua-hw-issue-q">{formatSummaryQuestionChip(cleanQ)}</span>
+                          <span className="tmua-hw-issue-q">{formatSummaryQuestionChip(displayQ)}</span>
                           <button
                             type="button"
                             className="tmua-hw-jump-btn"
                             onClick={() => {
                               engagementTracker.recordHandwritingQuestionJump();
-                              setExpandedQuestionKey(cleanQ);
-                              onQuestionClick?.(cleanQ);
-                              scrollToCoachingCard(cleanQ);
+                              setExpandedQuestionKey(cleanMainQ);
+                              onQuestionClick?.(cleanMainQ, issue.pageIndex);
+                              scrollToCoachingCard(cleanMainQ);
                             }}
                           >
                             <span>View on paper</span>

@@ -1915,12 +1915,24 @@ export class SessionManagementService {
           ? aiIssuesRaw
               .filter((it: any) => it && it.q && (it.ocrText || it.note))
               .slice(0, 3)
-              .map((it: any) => ({
-                q: String(it.q).replace(/^Q/i, '').trim(),
-                ocrText: String(it.ocrText || '').trim(),
-                ...(it.intendedText ? { intendedText: String(it.intendedText).trim() } : {}),
-                note: String(it.note || 'Write symbols and key terms clearly here.').trim()
-              }))
+              .map((it: any) => {
+                const rawQ = String(it.q).replace(/^Q/i, '').trim();
+                const mainMatch = rawQ.match(/^(\d+)/);
+                const mainQ = mainMatch ? mainMatch[1] : rawQ;
+                const matchedBase =
+                  base.issues.find(b => b.subQ && b.subQ.toLowerCase() === rawQ.toLowerCase()) ||
+                  base.issues.find(b => b.q === mainQ || b.q === rawQ);
+                const subQ = matchedBase?.subQ || (rawQ !== mainQ ? rawQ : undefined);
+                const pageIndex = typeof matchedBase?.pageIndex === 'number' ? matchedBase.pageIndex : undefined;
+                return {
+                  q: matchedBase?.q || mainQ,
+                  ...(subQ ? { subQ } : {}),
+                  ...(typeof pageIndex === 'number' ? { pageIndex } : {}),
+                  ocrText: String(it.ocrText || '').trim(),
+                  ...(it.intendedText ? { intendedText: String(it.intendedText).trim() } : {}),
+                  note: String(it.note || 'Write symbols and key terms clearly here.').trim()
+                };
+              })
           : null;
 
         return {

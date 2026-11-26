@@ -284,6 +284,8 @@ describe('PerformanceSummaryPanel 3-tier layout & provenance', () => {
         issues: [
           {
             q: '6',
+            subQ: '6c',
+            pageIndex: 5,
             ocrText: 'alkane',
             intendedText: 'alkene',
             note: 'Write key term letters distinctly so examiners do not misread them.'
@@ -321,10 +323,11 @@ describe('PerformanceSummaryPanel 3-tier layout & provenance', () => {
     expect(screen.getByText('alkane')).toBeInTheDocument();
     expect(screen.getByText('alkene')).toBeInTheDocument();
 
-    // Clicking View on paper jumps to Q6 & records jump telemetry
+    // Clicking View on paper jumps to Q6c's exact page (5) & records jump telemetry
+    expect(screen.getByText('Q6c')).toBeInTheDocument();
     fireEvent.click(screen.getByText('View on paper'));
     expect(hwJumpSpy).toHaveBeenCalledTimes(1);
-    expect(onQuestionClick).toHaveBeenCalledWith('6');
+    expect(onQuestionClick).toHaveBeenCalledWith('6', 5);
 
     // Clicking Mark Scheme chip records mark scheme telemetry
     fireEvent.click(screen.getByText('scheme.pdf'));

@@ -926,10 +926,12 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
                     MarkdownMathRenderer={MarkdownMathRenderer}
                     detectedQuestion={message.detectedQuestion}
                     markingContext={(message as any).markingContext}
-                    onQuestionClick={(qNum) => {
+                    onQuestionClick={(qNum, pageIndex) => {
                       engagementTracker.recordSummaryChipClick();
-                      engagementTracker.recordQuestionNavigation();
-                      onNavigate?.(qNum, -1, 'ribbon');
+                      engagementTracker.recordQuestionNavigation(
+                        typeof pageIndex === 'number' && pageIndex >= 0 ? pageIndex : undefined
+                      );
+                      onNavigate?.(qNum, typeof pageIndex === 'number' && pageIndex >= 0 ? pageIndex : -1, 'ribbon');
                     }}
                   />
                 )}

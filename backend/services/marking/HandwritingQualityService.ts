@@ -16,10 +16,13 @@ export interface HandwritingOcrLink {
   isPrinted?: boolean;
   isWrongStep?: boolean;
   subQuestion?: string;
+  pageIndex?: number;
 }
 
 export interface HandwritingIssue {
   q: string;
+  subQ?: string;
+  pageIndex?: number;
   ocrText: string;
   intendedText?: string;
   note: string;
@@ -47,13 +50,19 @@ export interface PerQuestionHandwritingStats {
     intendedText: string;
     confidenceRate: number;
     isWrongStep: boolean;
+    subQ?: string;
+    pageIndex?: number;
   }>;
   lowestLine?: {
     ocrText: string;
     intendedText?: string;
     confidenceRate: number;
+    subQ?: string;
+    pageIndex?: number;
   };
   unmatchedSample?: string;
+  unmatchedSubQ?: string;
+  unmatchedPageIndex?: number;
 }
 
 export interface HandwritingAnalysisResult {
@@ -121,6 +130,49 @@ function isSkippableWorkText(text: string): boolean {
   const t = String(text || '').trim();
   if (!t || t.length < 2) return true;
   if (/^\[(DRAWING|shaded\b|BLANK|DIAGRAM|crossed\s*out)/i.test(t)) return true;
+  return false;
+}
+
+/**
+ * Checks if `shorter` is an ordered subsequence of `longer` (i.e. only pure insertions/deletions).
+ */
+function isOrderedSubsequence(shorter: string, longer: string): boolean {
+  let i = 0;
+  for (let j = 0; j < longer.length && i < shorter.length; j++) {
+    if (shorter[i] === longer[j]) i++;
+  }
+  return i === shorter.length;
+}
+
+/**
+ * Filters out tiny 1-2 char Mathpix OCR artifacts (such as a stray `^2` picked up from a nearby
+ * crossed-out squiggle on `= \frac{0.28}{1-0.54}` -> `=\frac{0.28^{2}}{1-0.54}`) when confidence
+ * is otherwise high and the step wasn't marked wrong.
+ */
+function isMinorOcrArtifact(ocrRaw: string, clsRaw: string, confRate: number, isWrongStep: boolean): boolean {
+  if (isWrongStep || confRate < HANDWRITING_THRESHOLDS.LOW_LINE_CONF) return false;
+
+  const compactOcr = normalizeText(ocrRaw).replace(/\s+/g, '');
+  const compactCls = normalizeText(clsRaw).replace(/\s+/g, '');
+  if (compactOcr === compactCls) return true;
+
+  // Strip stray single superscripts (^2, ^1, ^') and compare
+  const stripStraySup = (s: string) => s.replace(/\^[0-9a-z']/g, '');
+  if (stripStraySup(compactOcr) === stripStraySup(compactCls)) {
+    return true;
+  }
+
+  // Pure 1-2 char insertion/deletion on a high-confidence line (e.g. stray punctuation or digit)
+  const lenDiff = Math.abs(compactOcr.length - compactCls.length);
+  if (lenDiff > 0 && lenDiff <= 2) {
+    const [shorter, longer] = compactOcr.length < compactCls.length
+      ? [compactOcr, compactCls]
+      : [compactCls, compactOcr];
+    if (shorter.length >= 6 && isOrderedSubsequence(shorter, longer)) {
+      return true;
+    }
+  }
+
   return false;
 }
 
@@ -203,6 +255,11 @@ export function buildHandwritingOcrLinks(
     const ocrMatchStatus: 'MATCHED' | 'UNMATCHED' | 'VISUAL' =
       linkedOcrId && ocrBlock ? 'MATCHED' : 'UNMATCHED';
 
+    const resolvedPageIndex =
+      typeof anno.pageIndex === 'number' && anno.pageIndex >= 0
+        ? anno.pageIndex
+        : (typeof ocrBlock?.pageIndex === 'number' && ocrBlock.pageIndex >= 0 ? ocrBlock.pageIndex : undefined);
+
     links.push({
       lineId,
       classificationText,
@@ -212,7 +269,8 @@ export function buildHandwritingOcrLinks(
       ...(typeof confRate === 'number' ? { confidenceRate: confRate } : {}),
       ...(typeof ocrBlock?.isPrinted === 'boolean' ? { isPrinted: ocrBlock.isPrinted } : {}),
       isWrongStep: anno.action === 'cross',
-      ...(anno.subQuestion ? { subQuestion: String(anno.subQuestion) } : {})
+      ...(anno.subQuestion ? { subQuestion: String(anno.subQuestion).replace(/^Q/i, '').trim() } : {}),
+      ...(typeof resolvedPageIndex === 'number' ? { pageIndex: resolvedPageIndex } : {})
     });
   }
 
@@ -255,11 +313,15 @@ export class HandwritingQualityService {
         intendedText: string;
         confidenceRate: number;
         isWrongStep: boolean;
+        subQ?: string;
+        pageIndex?: number;
       }> = [];
       let qMatched = 0;
       let qUnmatched = 0;
-      let lowestLine: { ocrText: string; intendedText?: string; confidenceRate: number } | undefined;
+      let lowestLine: { ocrText: string; intendedText?: string; confidenceRate: number; subQ?: string; pageIndex?: number } | undefined;
       let unmatchedSample: string | undefined;
+      let unmatchedSubQ: string | undefined;
+      let unmatchedPageIndex: number | undefined;
 
       for (const link of links) {
         if (link.ocrMatchStatus === 'MATCHED' && link.ocrText) {
@@ -275,7 +337,9 @@ export class HandwritingQualityService {
             lowestLine = {
               ocrText: truncateSnippet(link.ocrText),
               intendedText: truncateSnippet(link.classificationText),
-              confidenceRate: Number(conf.toFixed(3))
+              confidenceRate: Number(conf.toFixed(3)),
+              ...(link.subQuestion ? { subQ: link.subQuestion } : {}),
+              ...(typeof link.pageIndex === 'number' ? { pageIndex: link.pageIndex } : {})
             };
           }
 
@@ -283,13 +347,22 @@ export class HandwritingQualityService {
           const normOcr = normalizeText(link.ocrText);
           const normCls = normalizeText(link.classificationText);
           const sim = textSimilarity(link.ocrText, link.classificationText);
+          const simThreshold = link.isWrongStep || conf < HANDWRITING_THRESHOLDS.LOW_LINE_CONF ? 0.78 : 0.68;
 
-          if (normOcr.length >= 3 && normCls.length >= 3 && normOcr !== normCls && sim <= 0.78) {
+          if (
+            normOcr.length >= 3 &&
+            normCls.length >= 3 &&
+            normOcr !== normCls &&
+            sim <= simThreshold &&
+            !isMinorOcrArtifact(link.ocrText, link.classificationText, conf, Boolean(link.isWrongStep))
+          ) {
             qMismatches.push({
               ocrText: truncateSnippet(link.ocrText),
               intendedText: truncateSnippet(link.classificationText),
               confidenceRate: Number(conf.toFixed(3)),
-              isWrongStep: Boolean(link.isWrongStep)
+              isWrongStep: Boolean(link.isWrongStep),
+              ...(link.subQuestion ? { subQ: link.subQuestion } : {}),
+              ...(typeof link.pageIndex === 'number' ? { pageIndex: link.pageIndex } : {})
             });
             if (link.isWrongStep || isWrongAnswer) {
               totalWrongStepMismatches++;
@@ -300,6 +373,8 @@ export class HandwritingQualityService {
           totalUnmatched++;
           if (!unmatchedSample && link.classificationText) {
             unmatchedSample = truncateSnippet(link.classificationText);
+            unmatchedSubQ = link.subQuestion;
+            unmatchedPageIndex = link.pageIndex;
           }
         }
       }
@@ -326,7 +401,9 @@ export class HandwritingQualityService {
         isWrongAnswer,
         mismatches: qMismatches.slice(0, 2),
         lowestLine,
-        unmatchedSample
+        unmatchedSample,
+        ...(unmatchedSubQ ? { unmatchedSubQ } : {}),
+        ...(typeof unmatchedPageIndex === 'number' ? { unmatchedPageIndex } : {})
       });
     }
 
@@ -380,6 +457,8 @@ export class HandwritingQualityService {
         const top = pq.mismatches[0];
         candidateIssues.push({
           q: pq.q,
+          ...(top.subQ ? { subQ: top.subQ } : {}),
+          ...(typeof top.pageIndex === 'number' ? { pageIndex: top.pageIndex } : {}),
           ocrText: top.ocrText,
           intendedText: top.intendedText,
           confidenceRate: top.confidenceRate,
@@ -394,6 +473,8 @@ export class HandwritingQualityService {
       ) {
         candidateIssues.push({
           q: pq.q,
+          ...(pq.unmatchedSubQ ? { subQ: pq.unmatchedSubQ } : {}),
+          ...(typeof pq.unmatchedPageIndex === 'number' ? { pageIndex: pq.unmatchedPageIndex } : {}),
           ocrText: pq.unmatchedSample || 'Hard-to-read handwritten working',
           note: 'Several steps were hard for OCR to pick up — write darker and leave clearer spacing between lines.',
           _priority: (pq.isWrongAnswer ? 65 : 40) + pq.unmatchedCount * 5
@@ -404,6 +485,8 @@ export class HandwritingQualityService {
       ) {
         candidateIssues.push({
           q: pq.q,
+          ...(pq.lowestLine?.subQ ? { subQ: pq.lowestLine.subQ } : {}),
+          ...(typeof pq.lowestLine?.pageIndex === 'number' ? { pageIndex: pq.lowestLine.pageIndex } : {}),
           ocrText: pq.lowestLine?.ocrText || 'Low-clarity handwritten working',
           ...(pq.lowestLine?.intendedText && pq.lowestLine.intendedText !== pq.lowestLine.ocrText
             ? { intendedText: pq.lowestLine.intendedText }
@@ -420,7 +503,7 @@ export class HandwritingQualityService {
       ? []
       : candidateIssues.slice(0, 3).map(({ _priority, ...rest }) => rest);
 
-    const flaggedQLabels = issues.map(i => `Q${i.q}`);
+    const flaggedQLabels = issues.map(i => `Q${i.subQ || i.q}`);
     const tip =
       rating === 'clear'
         ? 'Clean, legible working that is easy for examiners to follow.'
@@ -470,16 +553,19 @@ export class HandwritingQualityService {
         const status = pq.isWrongAnswer ? 'lost marks' : 'full marks';
         if (pq.mismatches.length > 0) {
           const m = pq.mismatches[0];
+          const label = m.subQ ? `Q${m.subQ}` : `Q${pq.q}`;
           lines.push(
-            `- Q${pq.q} (${status}, conf ${pq.avgConfidenceRate}): Mathpix literally read "${m.ocrText}" vs student line "${m.intendedText}"`
+            `- ${label} (${status}, conf ${pq.avgConfidenceRate}): Mathpix literally read "${m.ocrText}" vs student line "${m.intendedText}"`
           );
         } else if (pq.unmatchedCount >= 2) {
+          const label = pq.unmatchedSubQ ? `Q${pq.unmatchedSubQ}` : `Q${pq.q}`;
           lines.push(
-            `- Q${pq.q} (${status}): ${pq.unmatchedCount}/${pq.matchedCount + pq.unmatchedCount} handwritten steps could not be read cleanly by OCR (e.g. "${pq.unmatchedSample || ''}")`
+            `- ${label} (${status}): ${pq.unmatchedCount}/${pq.matchedCount + pq.unmatchedCount} handwritten steps could not be read cleanly by OCR (e.g. "${pq.unmatchedSample || ''}")`
           );
         } else {
+          const label = pq.lowestLine?.subQ ? `Q${pq.lowestLine.subQ}` : `Q${pq.q}`;
           lines.push(
-            `- Q${pq.q} (${status}, avg conf ${pq.avgConfidenceRate}, min ${pq.minConfidenceRate}): low-clarity line "${pq.lowestLine?.ocrText || ''}"`
+            `- ${label} (${status}, avg conf ${pq.avgConfidenceRate}, min ${pq.minConfidenceRate}): low-clarity line "${pq.lowestLine?.ocrText || ''}"`
           );
         }
       }

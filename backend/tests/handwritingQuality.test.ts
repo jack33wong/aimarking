@@ -19,9 +19,9 @@ describe('HandwritingQualityService (LLM ID-linked, zero spatial matching)', () 
     ];
 
     const rawAnnotations = [
-      { action: 'tick', line_id: 'p0_q1_line_2', linked_ocr_id: 'p0_ocr_27', ocr_match_status: 'MATCHED', subQuestion: '1b' },
-      { action: 'tick', line_id: 'p0_q1_line_3', linked_ocr_id: 'p0_ocr_29', ocr_match_status: 'MATCHED', subQuestion: '1b' },
-      { action: 'tick', line_id: 'p0_q1_line_4', linked_ocr_id: null, ocr_match_status: 'UNMATCHED', subQuestion: '1ci' }
+      { action: 'tick', line_id: 'p0_q1_line_2', linked_ocr_id: 'p0_ocr_27', ocr_match_status: 'MATCHED', subQuestion: '1b', pageIndex: 2 },
+      { action: 'tick', line_id: 'p0_q1_line_3', linked_ocr_id: 'p0_ocr_29', ocr_match_status: 'MATCHED', subQuestion: '1b', pageIndex: 2 },
+      { action: 'tick', line_id: 'p0_q1_line_4', linked_ocr_id: null, ocr_match_status: 'UNMATCHED', subQuestion: '1ci', pageIndex: 3 }
     ];
 
     const links = buildHandwritingOcrLinks(rawAnnotations, ocrTextForPrompt, rawOcrBlocks);
@@ -31,7 +31,9 @@ describe('HandwritingQualityService (LLM ID-linked, zero spatial matching)', () 
       linkedOcrId: 'p0_ocr_27',
       ocrText: 'b) - each custs are independent',
       ocrMatchStatus: 'MATCHED',
-      confidenceRate: 0.89
+      confidenceRate: 0.89,
+      subQuestion: '1b',
+      pageIndex: 2
     });
     expect(links[1]).toMatchObject({
       lineId: 'p0_q1_line_3',
@@ -78,7 +80,7 @@ describe('HandwritingQualityService (LLM ID-linked, zero spatial matching)', () 
         questionNumber: '6',
         score: { awardedMarks: 2, totalMarks: 8 },
         handwritingOcrLinks: [
-          { lineId: 'p0_q6_line_1', classificationText: 'alkene', linkedOcrId: 'p0_ocr_7', ocrText: 'alkane', ocrMatchStatus: 'MATCHED', confidenceRate: 0.74, isPrinted: false, isWrongStep: true }
+          { lineId: 'p0_q6_line_1', classificationText: 'alkene', linkedOcrId: 'p0_ocr_7', ocrText: 'alkane', ocrMatchStatus: 'MATCHED', confidenceRate: 0.74, isPrinted: false, isWrongStep: true, subQuestion: '6c', pageIndex: 6 }
         ]
       }
     ]);
@@ -89,13 +91,15 @@ describe('HandwritingQualityService (LLM ID-linked, zero spatial matching)', () 
     expect(analysis!.summary.issues).toHaveLength(1);
     expect(analysis!.summary.issues[0]).toMatchObject({
       q: '6',
+      subQ: '6c',
+      pageIndex: 6,
       ocrText: 'alkane',
       intendedText: 'alkene'
     });
 
     const promptBlock = HandwritingQualityService.formatForSummaryPrompt(analysis);
     expect(promptBlock).toContain('HANDWRITING OCR SIGNALS');
-    expect(promptBlock).toContain('Q6');
+    expect(promptBlock).toContain('Q6c');
     expect(promptBlock).toContain('alkane');
     expect(promptBlock).toContain('alkene');
   });
@@ -144,5 +148,32 @@ describe('HandwritingQualityService (LLM ID-linked, zero spatial matching)', () 
     expect(parsed.handwriting).toBeDefined();
     expect(parsed.handwriting.rating).toBe('needs_care');
     expect(parsed.handwriting.issues[0]).toMatchObject({ q: '1', ocrText: 'Sx + z', intendedText: '5x + 2' });
+  });
+
+  it('ignores stray single-superscript OCR artifacts like 0.28^2 vs 0.28 on high-confidence correct steps', () => {
+    const analysis = HandwritingQualityService.analyze([
+      {
+        questionNumber: '3',
+        score: { awardedMarks: 15, totalMarks: 15 },
+        handwritingOcrLinks: [
+          {
+            lineId: 'p3_q3_line_31',
+            classificationText: '= \\frac{0.28}{1 - 0.54}',
+            linkedOcrId: 'p3_ocr_8',
+            ocrText: '=\\frac{0.28^{2}}{1-0.54}',
+            ocrMatchStatus: 'MATCHED',
+            confidenceRate: 0.94,
+            isPrinted: false,
+            isWrongStep: false,
+            subQuestion: '3iva',
+            pageIndex: 8
+          }
+        ]
+      }
+    ]);
+
+    expect(analysis).not.toBeNull();
+    expect(analysis!.summary.rating).toBe('clear');
+    expect(analysis!.summary.issues).toEqual([]);
   });
 });
