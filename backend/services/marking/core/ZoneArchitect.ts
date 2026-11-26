@@ -87,7 +87,7 @@ export class ZoneArchitect {
                 const current = pageList[i];
                 const next = pageList[i + 1];
 
-                if (next.startY < current.endY) {
+                if (next.startY < current.endY && next.startY > current.startY) {
                     console.log(` ⚖️ [ZONE-TIGHTEN] Pulling Q${current.label} endY from ${current.endY} up to Q${next.label} startY (${next.startY})`);
                     current.endY = next.startY;
                 }

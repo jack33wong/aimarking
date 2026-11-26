@@ -168,8 +168,9 @@ export const useQuestionGrouping = (
     const getGroupColor = (q: GroupedQuestion) => {
         if (!q.hasResults || q.awardedMarks === null) return 'neutral';
         if (q.totalMarks > 0) {
+            const ratio = q.awardedMarks / q.totalMarks;
             if (q.awardedMarks === q.totalMarks) return 'green';
-            if (q.awardedMarks === 0) return 'red';
+            if (ratio < 0.4) return 'red';
             return 'yellow';
         }
         return 'neutral';

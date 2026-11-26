@@ -319,9 +319,23 @@ export class SVGOverlayService {
       const allSymbolRects: Rect2D[] = [];
       const lineIdLastRightX = new Map<string, number>();
 
+      // PASS 0 (Space-Gated): Consolidate multi-criteria visual/graph sub-questions (>=2 VISUAL marks)
+      // into a compact teacher-style checklist stamp when clean whitespace is available.
+      // Automatically falls back to normal inline symbols on crowded pages.
+      const { stampSvg: visualChecklistSvg, consumedAnnotations } = this.createVisualChecklistStampsSVG(
+        sortedAnnotations,
+        actualWidth,
+        actualHeight,
+        occupiedRects,
+        studentWorkRects,
+        inkMap
+      );
+      svg += visualChecklistSvg;
+
       // PASS 1: Render all symbols (✓ P1, ✗ M0, ✗ A0, circles, underlines, Not attempted pills) and lock their positions
       // (Collision avoidance in createSymbolAnnotation handles exact-bbox & shared line_id horizontal stacking cleanly)
       sortedAnnotations.forEach((annotation, index) => {
+        if (consumedAnnotations.has(annotation)) return;
         try {
           svg += this.createAnnotationSVG(
             annotation,
@@ -614,6 +628,7 @@ export class SVGOverlayService {
     return svg;
   }
 
+
   private static createNotAttemptedPill(
     annotation: Annotation,
     x: number,
@@ -773,18 +788,30 @@ export class SVGOverlayService {
     let rightEdgeOfStudentWork = x + width;
 
     // 📐 [ROW-END ANCHORING]: When a matched OCR block shares a horizontal y-band with other
-    // student work blocks on the same line, anchor the tick/cross to the rightmost block on that y-band.
+    // student work blocks on the same line, anchor the tick/cross to the rightmost contiguous block
+    // on that y-band — stopping at multi-column gaps (> 8% of page width) so left-column marks
+    // never jump across a column divider onto right-column working.
     if (!isDrawingBox && !isEnglishAoBadge && Array.isArray(studentWorkRects) && studentWorkRects.length > 0 && height > 2) {
       const centerY = y + height / 2;
-      for (const sw of studentWorkRects) {
-        if (sw.w <= 2 || sw.h <= 2) continue;
-        const vOverlap = Math.min(y + height, sw.y + sw.h) - Math.max(y, sw.y);
-        const minH = Math.max(1, Math.min(height, sw.h));
-        const swCenterY = sw.y + sw.h / 2;
-        const sameYBand =
-          vOverlap >= minH * 0.4 ||
-          Math.abs(centerY - swCenterY) <= Math.max(height, sw.h) * 0.55;
-        if (sameYBand && sw.x >= x - 10 && sw.x + sw.w > rightEdgeOfStudentWork) {
+      const maxContiguousGap = Math.max(40, Math.round(actualWidth * 0.08));
+      const sameBandRects = studentWorkRects
+        .filter(sw => {
+          if (sw.w <= 2 || sw.h <= 2) return false;
+          const vOverlap = Math.min(y + height, sw.y + sw.h) - Math.max(y, sw.y);
+          const minH = Math.max(1, Math.min(height, sw.h));
+          const swCenterY = sw.y + sw.h / 2;
+          const sameYBand =
+            vOverlap >= minH * 0.4 ||
+            Math.abs(centerY - swCenterY) <= Math.max(height, sw.h) * 0.55;
+          return sameYBand && sw.x >= x - 10;
+        })
+        .sort((a, b) => a.x - b.x);
+
+      for (const sw of sameBandRects) {
+        if (sw.x > rightEdgeOfStudentWork + maxContiguousGap) {
+          break;
+        }
+        if (sw.x + sw.w > rightEdgeOfStudentWork) {
           rightEdgeOfStudentWork = sw.x + sw.w;
         }
       }
@@ -1579,6 +1606,7 @@ export class SVGOverlayService {
     return svg;
   }
 
+
   private static createTotalScoreWithDoubleUnderline(
     totalScoreText: string,
     imageWidth: number,
@@ -1902,6 +1930,287 @@ export class SVGOverlayService {
     });
 
     return svg;
+  }
+
+  /**
+   * Space-gated teacher-style checklist stamp for multi-criteria visual/graph sub-questions
+   * (e.g. graph sketches, scatter plots, diagrams with >= 2 VISUAL marks).
+   * Only activates when a genuinely clear, low-ink region is available around/inside the diagram;
+   * otherwise returns empty for that sub-question so existing inline annotations render untouched.
+   */
+  private static createVisualChecklistStampsSVG(
+    annotations: Annotation[],
+    imageWidth: number,
+    imageHeight: number,
+    occupiedRects: Rect2D[],
+    studentWorkRects: Rect2D[],
+    inkMap?: InkDensityMap
+  ): { stampSvg: string; consumedAnnotations: Set<Annotation> } {
+    const consumedAnnotations = new Set<Annotation>();
+    if (!annotations || annotations.length < 2) {
+      return { stampSvg: '', consumedAnnotations };
+    }
+
+    const isVisualAnno = (a: Annotation): boolean => Boolean(
+      (a as any).ocr_match_status === 'VISUAL' ||
+      (a as any).isDrawing ||
+      ((a as any).line_id && String((a as any).line_id).includes('visual_drawing')) ||
+      ((a as any).linked_ocr_id && String((a as any).linked_ocr_id).includes('visual_drawing'))
+    );
+
+    const groupsBySubQ = new Map<string, Annotation[]>();
+    for (const a of annotations) {
+      const subQ = String((a as any).subQuestion || '').trim();
+      if (!subQ) continue;
+      if (!groupsBySubQ.has(subQ)) groupsBySubQ.set(subQ, []);
+      groupsBySubQ.get(subQ)!.push(a);
+    }
+
+    const scaleFactor = imageHeight / this.CONFIG.baseReferenceHeight;
+    const headerFontSize = Math.max(15, Math.round(23 * scaleFactor));
+    const rowFontSize = Math.max(14, Math.round(20 * scaleFactor));
+    const padX = Math.max(10, Math.round(16 * scaleFactor));
+    const padY = Math.max(8, Math.round(13 * scaleFactor));
+    const headerLineH = Math.round(headerFontSize * 1.35);
+    const rowLineH = Math.round(rowFontSize * 1.32);
+    const rowGap = Math.max(4, Math.round(7 * scaleFactor));
+    const checkBoxSize = Math.max(12, Math.round(17 * scaleFactor));
+    const margin = Math.max(20, Math.round(32 * scaleFactor));
+    const collisionPad = Math.max(6, Math.round(8 * scaleFactor));
+    const maxBoxW = Math.min(Math.round(imageWidth * 0.30), Math.round(620 * scaleFactor));
+    const minBoxW = Math.min(maxBoxW, Math.max(180, Math.round(280 * scaleFactor)));
+
+    let stampSvg = '';
+
+    for (const [subQ, group] of groupsBySubQ.entries()) {
+      if (group.length < 2 || group.length > 5) continue;
+      if (!group.every(a => a.action === 'tick' || a.action === 'cross')) continue;
+
+      const visualMembers = group.filter(isVisualAnno);
+      if (visualMembers.length < 2) continue;
+
+      // Compute diagram bounding box from visual/drawing annotations in this sub-question
+      let diagMinX = Infinity;
+      let diagMinY = Infinity;
+      let diagMaxX = -Infinity;
+      let diagMaxY = -Infinity;
+      for (const vm of visualMembers) {
+        if (!vm.bbox || vm.bbox.length < 4) continue;
+        const [bx, by, bw, bh] = vm.bbox;
+        diagMinX = Math.min(diagMinX, bx);
+        diagMinY = Math.min(diagMinY, by);
+        diagMaxX = Math.max(diagMaxX, bx + Math.max(bw, 40));
+        diagMaxY = Math.max(diagMaxY, by + Math.max(bh, 40));
+      }
+      if (!Number.isFinite(diagMinX) || !Number.isFinite(diagMinY)) continue;
+
+      // Also expand diagram box if studentWorkRects overlap it (gives true visual footprint of the graph)
+      const diagBox: Rect2D = {
+        x: diagMinX,
+        y: diagMinY,
+        w: Math.max(80, diagMaxX - diagMinX),
+        h: Math.max(80, diagMaxY - diagMinY)
+      };
+
+      // Build compact checklist rows
+      const earnedCount = group.filter(a => a.action === 'tick').length;
+      const totalCount = group.length;
+      const cleanSubLabel = subQ.replace(/^Q/i, '');
+      const headerText = `Q${cleanSubLabel} Check (${earnedCount}/${totalCount})`;
+
+      const textColIndent = checkBoxSize + Math.max(8, Math.round(10 * scaleFactor));
+      const availableTextW = Math.max(120, maxBoxW - padX * 2 - textColIndent);
+      const maxCharsPerLine = Math.max(18, Math.floor(availableTextW / (rowFontSize * 0.56)));
+
+      type PreparedRow = {
+        isTick: boolean;
+        code: string;
+        lines: string[];
+      };
+
+      const rows: PreparedRow[] = group.map(a => {
+        const isTick = a.action === 'tick';
+        const code = String(a.text || (isTick ? 'B1' : 'B0')).trim();
+        const rawReason = String((a as any).reasoning || (a as any).content_desc || (isTick ? 'Correct' : 'Incorrect')).trim();
+        const fullRowText = `${code} ${rawReason}`.trim();
+        const wrapped = this.breakTextIntoMultiLines(fullRowText, maxCharsPerLine);
+        const clampedLines = wrapped.slice(0, 2);
+        if (wrapped.length > 2 && clampedLines[1]) {
+          clampedLines[1] = clampedLines[1].replace(/\s+\S*$/, '').slice(0, Math.max(10, maxCharsPerLine - 1)) + '…';
+        }
+        return { isTick, code, lines: clampedLines };
+      });
+
+      const headerWidth = this.estimateTextWidth(headerText, headerFontSize);
+      const maxRowTextW = Math.max(
+        ...rows.flatMap(r => r.lines.map(l => this.estimateTextWidth(l, rowFontSize))),
+        0
+      );
+      const boxW = Math.min(
+        maxBoxW,
+        Math.max(minBoxW, Math.ceil(Math.max(headerWidth, maxRowTextW + textColIndent) + padX * 2))
+      );
+
+      const headerSectionH = headerLineH + Math.max(6, Math.round(8 * scaleFactor));
+      const rowsTotalH = rows.reduce((acc, r, idx) => {
+        return acc + r.lines.length * rowLineH + (idx < rows.length - 1 ? rowGap : 0);
+      }, 0);
+      const boxH = padY * 2 + headerSectionH + rowsTotalH;
+
+      // Space guard: never try to stamp if box doesn't even fit inside page margins
+      if (boxW > imageWidth - margin * 2 || boxH > imageHeight - margin * 2) continue;
+
+      // Build candidate positions: right gutter -> left gutter -> below diagram -> empty inner quadrant
+      const gap = Math.max(14, Math.round(22 * scaleFactor));
+      const minX = margin;
+      const maxX = Math.max(minX, imageWidth - margin - boxW);
+      const minY = margin;
+      const maxY = Math.max(minY, imageHeight - margin - boxH);
+
+      interface StampCandidate {
+        x: number;
+        y: number;
+        isInnerQuadrant: boolean;
+        priorityPenalty: number;
+      }
+
+      const candidates: StampCandidate[] = [];
+      const addCand = (x: number, y: number, isInnerQuadrant: boolean, priorityPenalty: number) => {
+        const cx = Math.round(Math.max(minX, Math.min(x, maxX)));
+        const cy = Math.round(Math.max(minY, Math.min(y, maxY)));
+        if (!candidates.some(c => Math.abs(c.x - cx) < 12 && Math.abs(c.y - cy) < 12)) {
+          candidates.push({ x: cx, y: cy, isInnerQuadrant, priorityPenalty });
+        }
+      };
+
+      const ySteps = [
+        diagBox.y,
+        diagBox.y + Math.round((diagBox.h - boxH) / 2),
+        diagBox.y + diagBox.h - boxH,
+        diagBox.y - Math.round(boxH * 0.4)
+      ];
+
+      // 1. Right gutter of diagram (and page right margin)
+      const rightX = diagBox.x + diagBox.w + gap;
+      for (const yPos of ySteps) {
+        if (rightX <= maxX) addCand(rightX, yPos, false, 0);
+        addCand(maxX, yPos, false, 20);
+      }
+
+      // 2. Left gutter of diagram
+      const leftX = diagBox.x - gap - boxW;
+      if (leftX >= minX) {
+        for (const yPos of ySteps) {
+          addCand(leftX, yPos, false, 35);
+        }
+      }
+
+      // 3. Directly below diagram
+      const belowY = diagBox.y + diagBox.h + gap;
+      if (belowY <= maxY) {
+        addCand(diagBox.x + diagBox.w - boxW, belowY, false, 45);
+        addCand(diagBox.x, belowY, false, 50);
+        addCand(maxX, belowY, false, 55);
+      }
+
+      // 4. Empty inner quadrants of diagram (only if diagram is large enough to hold stamp cleanly)
+      if (diagBox.w >= boxW * 1.35 && diagBox.h >= boxH * 1.35) {
+        const inset = Math.max(10, Math.round(14 * scaleFactor));
+        addCand(diagBox.x + diagBox.w - boxW - inset, diagBox.y + inset, true, 65);
+        addCand(diagBox.x + diagBox.w - boxW - inset, diagBox.y + diagBox.h - boxH - inset, true, 70);
+        addCand(diagBox.x + inset, diagBox.y + inset, true, 75);
+        addCand(diagBox.x + inset, diagBox.y + diagBox.h - boxH - inset, true, 80);
+      }
+
+      // Filter non-diagram student work rects so outer candidates don't cover algebra/tables
+      const nonDiagWorkRects = studentWorkRects.filter(sw => !this.rectsOverlap(sw, diagBox, 10));
+
+      let bestCand: { x: number; y: number; cost: number } | null = null;
+      for (const cand of candidates) {
+        const rect: Rect2D = { x: cand.x, y: cand.y, w: boxW, h: boxH };
+        if (occupiedRects.some(r => this.rectsOverlap(rect, r, collisionPad))) continue;
+
+        let nonDiagOverlapArea = 0;
+        for (const sw of nonDiagWorkRects) {
+          nonDiagOverlapArea += this.rectIntersectionArea(rect, sw);
+        }
+        const nonDiagOverlapRatio = nonDiagOverlapArea / Math.max(1, boxW * boxH);
+        if (nonDiagOverlapRatio > 0.08) continue;
+
+        const ink = inkMap ? inkMap.getInkDensity(cand.x, cand.y, boxW, boxH) : 0;
+        const maxAllowedInk = cand.isInnerQuadrant ? 0.06 : 0.12;
+        if (ink > maxAllowedInk) continue;
+
+        const cost = ink * 1500 + nonDiagOverlapRatio * 1000 + cand.priorityPenalty;
+        if (!bestCand || cost < bestCand.cost) {
+          bestCand = { x: cand.x, y: cand.y, cost };
+        }
+      }
+
+      // Automatic safe fallback: if page is too crowded, skip stamp and let inline marks render
+      if (!bestCand) continue;
+
+      const finalRect: Rect2D = { x: bestCand.x, y: bestCand.y, w: boxW, h: boxH };
+      occupiedRects.push(finalRect);
+      group.forEach(a => consumedAnnotations.add(a));
+
+      const rx = Math.max(6, Math.round(10 * scaleFactor));
+      const borderW = Math.max(1.5, Math.round(2.5 * scaleFactor * 10) / 10);
+      const ratio = totalCount > 0 ? earnedCount / totalCount : 0;
+      const headerColor = earnedCount === totalCount ? '#15803d' : (ratio < 0.4 ? '#b91c1c' : '#b45309');
+
+      stampSvg += `<g class="visual-checklist-stamp">`;
+      stampSvg += `<rect x="${finalRect.x}" y="${finalRect.y}" width="${boxW}" height="${boxH}" rx="${rx}" fill="rgba(255, 255, 255, 0.94)" stroke="#334155" stroke-width="${borderW}" />`;
+
+      // Header + subtle divider
+      const headerTextY = Math.round(finalRect.y + padY + headerFontSize * 0.85);
+      stampSvg += `<text x="${finalRect.x + padX}" y="${headerTextY}" font-family="${this.CONFIG.fontFamily}" font-size="${headerFontSize}" font-weight="bold" fill="${headerColor}">${this.escapeXml(headerText)}</text>`;
+      const dividerY = Math.round(finalRect.y + padY + headerLineH + Math.max(2, Math.round(3 * scaleFactor)));
+      stampSvg += `<line x1="${finalRect.x + padX}" y1="${dividerY}" x2="${finalRect.x + boxW - padX}" y2="${dividerY}" stroke="#cbd5e1" stroke-width="${Math.max(1, Math.round(1.5 * scaleFactor))}" />`;
+
+      // Checklist rows
+      let cursorY = finalRect.y + padY + headerSectionH;
+      const cbStroke = Math.max(1.2, Math.round(1.8 * scaleFactor * 10) / 10);
+      const markStroke = Math.max(2, Math.round(2.6 * scaleFactor * 10) / 10);
+
+      for (const row of rows) {
+        const cbX = finalRect.x + padX;
+        const cbY = Math.round(cursorY + (rowLineH - checkBoxSize) * 0.45);
+        const cbRx = Math.max(2, Math.round(3 * scaleFactor));
+
+        // Checkbox square
+        stampSvg += `<rect x="${cbX}" y="${cbY}" width="${checkBoxSize}" height="${checkBoxSize}" rx="${cbRx}" fill="#ffffff" stroke="${row.isTick ? '#16a34a' : '#dc2626'}" stroke-width="${cbStroke}" />`;
+
+        if (row.isTick) {
+          const p1x = cbX + checkBoxSize * 0.22;
+          const p1y = cbY + checkBoxSize * 0.54;
+          const p2x = cbX + checkBoxSize * 0.44;
+          const p2y = cbY + checkBoxSize * 0.76;
+          const p3x = cbX + checkBoxSize * 0.82;
+          const p3y = cbY + checkBoxSize * 0.26;
+          stampSvg += `<polyline points="${p1x.toFixed(1)},${p1y.toFixed(1)} ${p2x.toFixed(1)},${p2y.toFixed(1)} ${p3x.toFixed(1)},${p3y.toFixed(1)}" fill="none" stroke="#16a34a" stroke-width="${markStroke}" stroke-linecap="round" stroke-linejoin="round" />`;
+        } else {
+          const x1 = cbX + checkBoxSize * 0.24;
+          const y1 = cbY + checkBoxSize * 0.24;
+          const x2 = cbX + checkBoxSize * 0.76;
+          const y2 = cbY + checkBoxSize * 0.76;
+          stampSvg += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#dc2626" stroke-width="${markStroke}" stroke-linecap="round" />`;
+          stampSvg += `<line x1="${x2.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x1.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#dc2626" stroke-width="${markStroke}" stroke-linecap="round" />`;
+        }
+
+        const textColor = row.isTick ? '#15803d' : '#b91c1c';
+        row.lines.forEach((line, lIdx) => {
+          const ty = Math.round(cursorY + rowFontSize * 0.85 + lIdx * rowLineH);
+          stampSvg += `<text x="${finalRect.x + padX + textColIndent}" y="${ty}" font-family="${this.CONFIG.fontFamily}" font-size="${rowFontSize}" font-weight="${lIdx === 0 ? 'bold' : 'normal'}" fill="${textColor}">${this.escapeXml(line)}</text>`;
+        });
+
+        cursorY += row.lines.length * rowLineH + rowGap;
+      }
+
+      stampSvg += `</g>`;
+    }
+
+    return { stampSvg, consumedAnnotations };
   }
 
   private static getMarkTokenRank(token: string): number {

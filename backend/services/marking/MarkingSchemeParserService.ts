@@ -268,6 +268,10 @@ export function mergeParsedSchemeChunks(chunkObjects: any[]): any {
         }
     }
 
+    // Prune redundant bare parent keys (e.g. "6") when child sub-questions (e.g. "6a", "6b", "6c")
+    // already exist from another batch/overlap, preventing parent+child double-counting.
+    pruneRedundantParentQuestionKeys(mergedQuestions, mergedSubQuestionMaxScores);
+
     let generalMarkingGuidance = '';
     for (const chunk of validChunks) {
         const guidance = typeof chunk?.generalMarkingGuidance === 'string' ? chunk.generalMarkingGuidance.trim() : '';
@@ -320,6 +324,57 @@ export function mergeParsedSchemeChunks(chunkObjects: any[]): any {
         generalMarkingGuidance,
         ...(duplicateQuestionNumbers.length > 0 ? { duplicateQuestionNumbers } : {})
     };
+}
+
+/**
+ * Removes bare numeric parent keys (e.g. "6") from `questions` and `subQuestionMaxScores`
+ * whenever child sub-question keys for that same base number (e.g. "6a", "6b", "6c" or "6.1", "6.2")
+ * already exist. This prevents chunk-overlap rollups from double-counting a question's marks.
+ */
+export function pruneRedundantParentQuestionKeys(
+    questions?: Record<string, any>,
+    subQuestionMaxScores?: Record<string, number>
+): string[] {
+    const allKeys = new Set<string>([
+        ...Object.keys(questions || {}),
+        ...Object.keys(subQuestionMaxScores || {})
+    ]);
+    if (allKeys.size === 0) return [];
+
+    const childrenByBase = new Map<string, string[]>();
+    for (const key of allKeys) {
+        const clean = String(key || '').trim().replace(/^0+(?=\d)/, '');
+        if (!clean || /^\d+$/.test(clean)) continue;
+        const base = getBaseQuestionNumber(clean);
+        if (!base || base === clean) continue;
+        if (!childrenByBase.has(base)) childrenByBase.set(base, []);
+        childrenByBase.get(base)!.push(key);
+    }
+
+    const pruned: string[] = [];
+    for (const [base, childKeys] of childrenByBase.entries()) {
+        if (childKeys.length === 0) continue;
+        const hasParentQuestion = Boolean(questions && Object.prototype.hasOwnProperty.call(questions, base));
+        const hasParentScore = Boolean(subQuestionMaxScores && Object.prototype.hasOwnProperty.call(subQuestionMaxScores, base));
+        if (!hasParentQuestion && !hasParentScore) continue;
+
+        const childScoreSum = childKeys.reduce((sum, ck) => {
+            const fromScores = Number(subQuestionMaxScores?.[ck] || 0);
+            if (fromScores > 0) return sum + fromScores;
+            return sum + sumMarkCodeWeights(questions?.[ck]?.marks);
+        }, 0);
+        if (childScoreSum <= 0) continue;
+
+        const parentScore = Number(subQuestionMaxScores?.[base] || 0) || sumMarkCodeWeights(questions?.[base]?.marks);
+        if (hasParentQuestion && questions) delete questions[base];
+        if (hasParentScore && subQuestionMaxScores) delete subQuestionMaxScores[base];
+        pruned.push(base);
+        console.log(
+            `🧹 [SCHEME-PRUNE] Dropped redundant parent key "${base}" (${parentScore}m) because child sub-questions [${childKeys.join(', ')}] (${childScoreSum}m) already exist.`
+        );
+    }
+
+    return pruned;
 }
 
 function extractSchemeEntrySignature(entry: any): { norm: string; tokens: Set<string> } {
@@ -721,6 +776,8 @@ Do not include markdown blocks, just the raw JSON object. Ensure all max scores 
             }
             parsedObj.questions = normalizedQuestions;
         }
+
+        pruneRedundantParentQuestionKeys(parsedObj.questions, parsedObj.subQuestionMaxScores);
 
         return parsedObj;
     }

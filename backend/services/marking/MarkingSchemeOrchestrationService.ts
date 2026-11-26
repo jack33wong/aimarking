@@ -361,14 +361,19 @@ export class MarkingSchemeOrchestrationService {
           }
         });
         // Dynamically reconcile the parent question total mark pool 
-        // by summing up the parts that belong to the current baseNum group (e.g. 1a + 1b)
+        // by summing up the parts that belong to the current baseNum group (e.g. 1a + 1b).
+        // Ignore a bare parent key (e.g. "6") when child sub-question keys ("6a", "6b", "6c") exist.
         let parentTotalMarks = 0;
         const subScores = inputMarkingScheme.subQuestionMaxScores || {};
-        for (const [key, val] of Object.entries(subScores)) {
+        const matchingScoreEntries = Object.entries(subScores).filter(([key]) => {
           const keyBase = getBaseQuestionNumber(key) || key.match(/^0*(\d+)/)?.[1] || key.replace(/\D/g, '');
-          if (keyBase === baseNum) {
-            parentTotalMarks += Number(val);
-          }
+          return keyBase === baseNum;
+        });
+        const hasChildScoreKeys = matchingScoreEntries.some(([key]) => key.trim().replace(/^0+(?=\d)/, '') !== baseNum);
+        for (const [key, val] of matchingScoreEntries) {
+          const cleanKey = key.trim().replace(/^0+(?=\d)/, '');
+          if (hasChildScoreKeys && cleanKey === baseNum) continue;
+          parentTotalMarks += Number(val);
         }
 
         const { subject: cleanSubj, qualification: cleanQual } = cleanSubjectAndQualification(
@@ -1010,9 +1015,15 @@ export class MarkingSchemeOrchestrationService {
       // Prepare Final Max Scores Map (Start with existing or empty)
       const finalSubQuestionMaxScores = masterMatch.subQuestionMaxScores ? { ...masterMatch.subQuestionMaxScores } : {};
 
-      Object.keys(allPaperQuestions).forEach(rawKey => {
-        if (baseNumRegex.test(rawKey)) {
-          const key = rawKey.trim().replace(/^0+(?=\d)/, '');
+      const matchingPaperKeys = Object.keys(allPaperQuestions).filter(rawKey => baseNumRegex.test(rawKey));
+      const hasChildPaperKeys = matchingPaperKeys.some(rawKey => rawKey.trim().replace(/^0+(?=\d)/, '') !== baseQuestionNumber);
+
+      matchingPaperKeys.forEach(rawKey => {
+        const key = rawKey.trim().replace(/^0+(?=\d)/, '');
+        if (hasChildPaperKeys && key === baseQuestionNumber) {
+          return;
+        }
+        {
           const qObj = allPaperQuestions[rawKey];
           const partMarks = qObj?.marks || qObj;
           subQuestionMarksMap[key] = partMarks;

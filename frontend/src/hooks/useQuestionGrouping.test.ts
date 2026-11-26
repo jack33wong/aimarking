@@ -82,4 +82,25 @@ describe('useQuestionGrouping', () => {
     expect(result.current.groupedQuestions[1].totalMarks).toBe(4);
     expect(result.current.groupedQuestions[1].sourceImageIndex).toBe(1);
   });
+
+  it('assigns green for full marks, yellow for 40%–99%, and red for <40% (including 0)', () => {
+    const { result } = renderHook(() => useQuestionGrouping(null));
+    const { getGroupColor } = result.current;
+
+    const base = {
+      questionNumber: '1',
+      subQuestions: ['1'],
+      sourceImageIndex: 0,
+      allImageIndices: [0],
+      hasResults: true
+    };
+
+    expect(getGroupColor({ ...base, awardedMarks: 8, totalMarks: 8 })).toBe('green');
+    expect(getGroupColor({ ...base, awardedMarks: 7, totalMarks: 8 })).toBe('yellow');
+    expect(getGroupColor({ ...base, awardedMarks: 4, totalMarks: 10 })).toBe('yellow');
+    expect(getGroupColor({ ...base, awardedMarks: 3, totalMarks: 9 })).toBe('red');
+    expect(getGroupColor({ ...base, awardedMarks: 3, totalMarks: 18 })).toBe('red');
+    expect(getGroupColor({ ...base, awardedMarks: 0, totalMarks: 8 })).toBe('red');
+    expect(getGroupColor({ ...base, hasResults: false, awardedMarks: null, totalMarks: 8 })).toBe('neutral');
+  });
 });

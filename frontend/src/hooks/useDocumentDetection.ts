@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { ensureOpenCvLoaded } from '../utils/opencvLoader';
 
 export interface NormalizedPoint { x: number; y: number; }
 
@@ -201,12 +202,15 @@ export const useDocumentDetection = (videoRef: React.RefObject<HTMLVideoElement>
                 loopRef.current = requestAnimationFrame(processFrame);
             };
 
-            const checkCv = setInterval(() => {
-                if (window.cv && window.cv.Mat) { clearInterval(checkCv); startLoop(); }
-            }, 100);
-
-            // Store interval so we can clear it if isActive changes quickly
-            return () => clearInterval(checkCv);
+            ensureOpenCvLoaded()
+                .then(() => {
+                    if (!stoppedRef.current) {
+                        startLoop();
+                    }
+                })
+                .catch((err) => {
+                    console.warn('[Detection] OpenCV failed to load:', err);
+                });
         }, 50); // 50ms grace period to ensure old frame completes
 
         return () => {

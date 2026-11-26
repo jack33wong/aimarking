@@ -1,4 +1,5 @@
 import { NormalizedPoint } from '../hooks/useDocumentDetection';
+import { ensureOpenCvLoaded } from './opencvLoader';
 
 // V61: ADAPTIVE SHADOW REMOVAL (Shadow-Bane Engine)
 
@@ -6,6 +7,7 @@ export const performInstantCrop = async (
     imageBlob: Blob,
     normalizedCorners: NormalizedPoint[]
 ): Promise<Blob> => {
+    await ensureOpenCvLoaded();
     return new Promise((resolve, reject) => {
         if (!window.cv || !window.cv.Mat) { reject("OpenCV missing"); return; }
         const cv = window.cv;
@@ -147,6 +149,7 @@ export const processScannerImage = async (
     imageBlob: Blob,
     options: { quality?: number } = {}
 ): Promise<Blob> => {
+    await ensureOpenCvLoaded();
     return new Promise((resolve, reject) => {
         if (!window.cv || !window.cv.Mat) { reject("OpenCV missing"); return; }
         const cv = window.cv;

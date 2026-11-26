@@ -192,6 +192,42 @@ describe('mergeParsedSchemeChunks', () => {
         expect(merged.documentCompleteness.firstQuestion).toBe('1');
         expect(merged.documentCompleteness.lastQuestion).toBe('3');
     });
+
+    it('prunes redundant bare parent key (e.g. "6") when child sub-questions ("6a", "6b", "6c") exist across batches', () => {
+        const merged = mergeParsedSchemeChunks([
+            {
+                examDetails: { board: 'Edexcel', paperTotalMarks: 50 },
+                subQuestionMaxScores: { '1a': 6, '1b': 2, '6a': 4, '6b': 3, '6c': 2 },
+                questions: {
+                    '1a': { marks: [{ mark: 'M1' }, { mark: 'A1' }, { mark: 'M1' }, { mark: 'M1' }, { mark: 'A1' }, { mark: 'A1' }] },
+                    '1b': { marks: [{ mark: 'B1' }, { mark: 'B1' }] },
+                    '6a': { marks: [{ mark: 'M1' }, { mark: 'A1' }, { mark: 'M1' }, { mark: 'A1' }] },
+                    '6b': { marks: [{ mark: 'B1' }, { mark: 'B1' }, { mark: 'B1' }] },
+                    '6c': { marks: [{ mark: 'M1' }, { mark: 'A1' }] }
+                }
+            },
+            {
+                examDetails: { board: 'Edexcel', paperTotalMarks: 50 },
+                subQuestionMaxScores: { '6': 9 },
+                questions: {
+                    '6': {
+                        marks: [
+                            { mark: 'M1' }, { mark: 'A1' }, { mark: 'M1' }, { mark: 'A1' },
+                            { mark: 'B1' }, { mark: 'B1' }, { mark: 'B1' }, { mark: 'M1' }, { mark: 'A1' }
+                        ]
+                    }
+                }
+            }
+        ]);
+
+        expect(merged.questions['6']).toBeUndefined();
+        expect(merged.subQuestionMaxScores['6']).toBeUndefined();
+        expect(merged.subQuestionMaxScores['6a']).toBe(4);
+        expect(merged.subQuestionMaxScores['6b']).toBe(3);
+        expect(merged.subQuestionMaxScores['6c']).toBe(2);
+        const total = Object.values(merged.subQuestionMaxScores).reduce((s: number, v: any) => s + Number(v), 0);
+        expect(total).toBe(17);
+    });
 });
 
 describe('MarkingSchemeParserService.parseImagesToObject chunking', () => {

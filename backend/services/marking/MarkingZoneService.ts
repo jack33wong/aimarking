@@ -266,7 +266,7 @@ export class MarkingZoneService {
                 const current = pageList[i];
                 const next = pageList[i + 1];
 
-                if (next.startY < current.endY) {
+                if (next.startY < current.endY && next.startY > current.startY) {
                     console.log(` ⚖️ [ZONE-TIGHTEN] Pulling Q${current.label} endY from ${current.endY} up to Q${next.label} startY (${next.startY})`);
                     current.endY = next.startY;
                 }
@@ -865,6 +865,35 @@ export class MarkingZoneService {
                 break;
             }
 
+            // 🛡️ [TABLE-CELL / BARE-DIGIT GUARD]:
+            // A bare integer block (e.g. "5" with no delimiter like ")", ".", ":", "Q") inside a LaTeX table
+            // or outside the left margin (x > 22% of page width) is a table/equation value, NOT a question header.
+            if (/^\d+$/.test(label)) {
+                const firstBlockText = (firstBlock.text || '').trim();
+                if (/^\d+$/.test(firstBlockText)) {
+                    const pDimsCheck = pageDimensionsMap.get(blockPage) || { width: 2480, height: 3508 };
+                    const pWCheck = pDimsCheck.width || 2480;
+                    const blockX = MarkingZoneService.getX(firstBlock);
+                    const isOutsideLeftMargin = blockX > (pWCheck * 0.22);
+
+                    let isInsideTabular = false;
+                    for (let k = i - 1; k >= Math.max(0, i - 25); k--) {
+                        const prev = sortedBlocks[k];
+                        if ((prev.pageIndex || 0) !== blockPage) break;
+                        const prevTxt = prev.text || '';
+                        if (/\\end\{tabular\}/i.test(prevTxt)) break;
+                        if (/\\begin\{tabular\}/i.test(prevTxt)) {
+                            isInsideTabular = true;
+                            break;
+                        }
+                    }
+
+                    if (isInsideTabular || isOutsideLeftMargin) {
+                        continue;
+                    }
+                }
+            }
+
             let accumulatedText = "";
 
             // 🛡️ [ACCUMULATIVE-WINDOW]: Look ahead up to 5 blocks to handle fragmentation
@@ -943,6 +972,9 @@ export class MarkingZoneService {
         if (Array.isArray(block.coordinates)) return block.coordinates[0];
         if (block.coordinates?.x != null) return block.coordinates.x;
         if (Array.isArray(block.bbox)) return block.bbox[0];
+        if (block.bbox?.x != null) return block.bbox.x;
+        if (Array.isArray(block.box)) return block.box[0];
+        if (block.box?.x != null) return block.box.x;
         return 0;
     }
 
