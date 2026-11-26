@@ -1353,7 +1353,7 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
                           <span className="tmua-hw-issue-q">{formatSummaryQuestionChip(displayQ)}</span>
                           <button
                             type="button"
-                            className="tmua-hw-jump-btn"
+                            className="tmua-insight-chip mastered tmua-hw-jump-btn"
                             onClick={() => {
                               engagementTracker.recordHandwritingQuestionJump();
                               setExpandedQuestionKey(cleanMainQ);

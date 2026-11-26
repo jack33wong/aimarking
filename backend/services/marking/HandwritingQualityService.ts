@@ -92,7 +92,7 @@ const normalizeText = (s: string): string =>
     .replace(/\s+/g, ' ')
     .trim();
 
-const truncateSnippet = (s: string, maxLen = 64): string => {
+const truncateSnippet = (s: string, maxLen = 90): string => {
   const cleaned = String(s || '').replace(/\s+/g, ' ').trim();
   if (cleaned.length <= maxLen) return cleaned;
   return cleaned.slice(0, maxLen - 1).trimEnd() + '…';

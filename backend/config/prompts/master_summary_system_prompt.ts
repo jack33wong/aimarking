@@ -56,4 +56,5 @@ RULES:
    - Ignore mismatches caused by crossed-out working or minor LaTeX formatting differences.
    - If the deterministic rating is "Clear", keep "handwritingIssues" as [] and give a brief positive tip.
    - If "Fair" or "Needs Care", return max 3 genuine "handwritingIssues" and 1 constructive "handwritingTip". Frame ambiguous keywords as letter-clarity reminders (e.g. "Form letters clearly in key terms so examiners don't misread them"), not harsh spelling accusations.
+   - In "ocrText" and "intendedText", include surrounding context before and after the unclear part (plain readable math/text, ~25-60 chars, e.g. "1/2(4+5)(82(3)-10) = 49x" vs "1/2(4+5)(2.53)^2 - 10x = 4gx") instead of an isolated 1-word fragment so the student can immediately locate the exact line on their paper.
 7. Return ONLY valid JSON.`;
