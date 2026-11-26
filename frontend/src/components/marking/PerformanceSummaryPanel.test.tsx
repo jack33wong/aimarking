@@ -2,6 +2,7 @@ import React from 'react';
 import '@testing-library/jest-dom';
 import { render, screen, fireEvent } from '@testing-library/react';
 import PerformanceSummaryPanel from './PerformanceSummaryPanel';
+import { engagementTracker } from '../../utils/engagementTracker';
 
 jest.mock('../../contexts/MarkingPageContext', () => ({
   useMarkingPage: () => ({ activeQuestionId: null }),
@@ -245,5 +246,92 @@ describe('PerformanceSummaryPanel 3-tier layout & provenance', () => {
     expect(screen.getAllByText('112').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText(/no official or custom mark scheme was attached/i)).toBeInTheDocument();
     expect(screen.queryByText(/GENERIC_GCSE_LOGIC|CHIEF EXAMINER|RAW OCR BLOCKS/i)).not.toBeInTheDocument();
+  });
+
+  it('renders expandable Handwriting clarity card on Full tier, reveals OCR vs intended details, and fires telemetry', () => {
+    const hwOpenSpy = jest.spyOn(engagementTracker, 'recordHandwritingPanelOpen');
+    const hwJumpSpy = jest.spyOn(engagementTracker, 'recordHandwritingQuestionJump');
+    const schemeSpy = jest.spyOn(engagementTracker, 'recordMarkSchemeModalOpen');
+    const onQuestionClick = jest.fn();
+
+    const payload = {
+      _type: 'AI_SUMMARY_V2',
+      level: 'ALEVEL',
+      headline: 'Strong algebraic foundation.',
+      markingSource: { type: 'user_uploaded', label: 'scheme.pdf', fileName: 'scheme.pdf' },
+      score: {
+        awardedMarks: 40,
+        totalMarks: 50,
+        percentage: 80,
+        questionsTotal: 6,
+        questionsFullMarks: 2,
+        questionsAttempted: 6,
+      },
+      grading: {
+        grade: 'A',
+        predictedGrade: 'A',
+        boundaries: { 'A*': 41, A: 34, B: 28 },
+        boundariesSource: 'estimated',
+      },
+      radar: [],
+      mastered: [{ q: 'Q4', text: 'Vector magnitude' }],
+      focusNext: [{ q: 'Q6', marksLost: 6, text: 'Modulus equations' }],
+      handwriting: {
+        rating: 'fair',
+        label: 'Fair',
+        confidenceRate: 0.84,
+        tip: 'Form letters clearly in key terms (Q6).',
+        issues: [
+          {
+            q: '6',
+            ocrText: 'alkane',
+            intendedText: 'alkene',
+            note: 'Write key term letters distinctly so examiners do not misread them.'
+          }
+        ]
+      }
+    };
+
+    const markingContext = {
+      questionResults: [
+        { number: '1', earnedMarks: 8, totalMarks: 8, hasScheme: true, scheme: '- B1: Correct' },
+        { number: '6', earnedMarks: 2, totalMarks: 8, hasScheme: true, scheme: '- M1: Modulus split' },
+      ],
+    };
+
+    render(
+      <PerformanceSummaryPanel
+        rawSummary={JSON.stringify(payload)}
+        MarkdownMathRenderer={MockMarkdown}
+        markingContext={markingContext}
+        onQuestionClick={onQuestionClick}
+      />
+    );
+
+    // 3rd stat card shows Handwriting clarity instead of duplicate Overall accuracy
+    expect(screen.getByText('Fair')).toBeInTheDocument();
+    expect(screen.getByText('Handwriting clarity')).toBeInTheDocument();
+    expect(screen.queryByText('Overall accuracy')).not.toBeInTheDocument();
+    expect(screen.queryByText('Handwriting Review')).not.toBeInTheDocument();
+
+    // Clicking the card expands the inline drawer & records telemetry
+    fireEvent.click(screen.getByText('Handwriting clarity').closest('button')!);
+    expect(hwOpenSpy).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Handwriting Review')).toBeInTheDocument();
+    expect(screen.getByText('alkane')).toBeInTheDocument();
+    expect(screen.getByText('alkene')).toBeInTheDocument();
+
+    // Clicking View on paper jumps to Q6 & records jump telemetry
+    fireEvent.click(screen.getByText('View on paper'));
+    expect(hwJumpSpy).toHaveBeenCalledTimes(1);
+    expect(onQuestionClick).toHaveBeenCalledWith('6');
+
+    // Clicking Mark Scheme chip records mark scheme telemetry
+    fireEvent.click(screen.getByText('scheme.pdf'));
+    expect(schemeSpy).toHaveBeenCalledTimes(1);
+
+    hwOpenSpy.mockRestore();
+    hwJumpSpy.mockRestore();
+    schemeSpy.mockRestore();
   });
 });

@@ -11,9 +11,11 @@ import {
   ArrowRight,
   ChevronRight,
   BookOpen,
+  Pencil,
   X
 } from 'lucide-react';
 import { useMarkingPage } from '../../contexts/MarkingPageContext';
+import { engagementTracker } from '../../utils/engagementTracker';
 import './css/PerformanceSummaryPanel.css';
 
 interface RadarPoint {
@@ -48,6 +50,23 @@ interface QuestionCoachingItem {
       explanation?: string;
     } | null;
   };
+}
+
+interface HandwritingIssue {
+  q: string;
+  ocrText: string;
+  intendedText?: string;
+  note: string;
+  confidenceRate?: number;
+}
+
+interface HandwritingSummary {
+  rating: 'clear' | 'fair' | 'needs_care';
+  label: 'Clear' | 'Fair' | 'Needs Care';
+  confidenceRate?: number;
+  tip: string;
+  issues: HandwritingIssue[];
+  isTyped?: boolean;
 }
 
 interface SummaryV2Payload {
@@ -95,6 +114,7 @@ interface SummaryV2Payload {
   mastered: Array<{ q?: string; text: string }>;
   focusNext: Array<{ q?: string; text: string; marksLost?: number }>;
   questionCoaching?: QuestionCoachingItem[];
+  handwriting?: HandwritingSummary | null;
   hasCombinedOverview?: boolean;
   paperSummaries?: Array<{
     label: string;
@@ -564,6 +584,7 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
   activeQuestionId: propActiveQuestionId
 }) => {
   const [showSchemeModal, setShowSchemeModal] = useState(false);
+  const [isHandwritingExpanded, setIsHandwritingExpanded] = useState(false);
   let contextActiveQuestionId: string | null = null;
   try {
     const markingPage = useMarkingPage();
@@ -764,8 +785,29 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
     focusNext,
     headline,
     tooDenseWarning,
-    questionCoaching
+    questionCoaching,
+    handwriting
   } = activeV2;
+
+  const showHandwritingCard = Boolean(handwriting && !handwriting.isTyped);
+  const handwritingIssues = Array.isArray(handwriting?.issues) ? handwriting!.issues : [];
+  const hasHandwritingDetails = Boolean(
+    showHandwritingCard &&
+    handwriting &&
+    handwriting.rating !== 'clear' &&
+    (handwritingIssues.length > 0 || handwriting.tip)
+  );
+
+  const toggleHandwritingPanel = () => {
+    if (!hasHandwritingDetails) return;
+    setIsHandwritingExpanded(prev => {
+      const next = !prev;
+      if (next) {
+        engagementTracker.recordHandwritingPanelOpen();
+      }
+      return next;
+    });
+  };
 
   const isPastPaperWithBoundaries = sortedBoundariesDesc.length > 0;
   const maxBoundaryMark = sortedBoundariesDesc[0]?.mark || 0;
@@ -969,7 +1011,10 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
               <button
                 type="button"
                 className="tmua-scheme-chip clickable"
-                onClick={() => setShowSchemeModal(true)}
+                onClick={() => {
+                  engagementTracker.recordMarkSchemeModalOpen();
+                  setShowSchemeModal(true);
+                }}
                 title={headerBadgeTooltip}
                 aria-label={`View mark scheme${schemeChipCode ? ` for ${schemeChipCode}` : ''}`}
               >
@@ -1207,16 +1252,140 @@ export const PerformanceSummaryPanel: React.FC<PerformanceSummaryPanelProps> = (
                 </div>
               )}
 
-              <div className="tmua-stat-card">
-                <div className="tmua-stat-value">
-                  {score.questionsAttempted < score.questionsTotal
-                    ? `${score.questionsTotal - score.questionsAttempted}`
-                    : `${score.percentage}%`}
+              {showHandwritingCard && handwriting ? (
+                hasHandwritingDetails ? (
+                  <button
+                    type="button"
+                    className={`tmua-stat-card tmua-stat-card-clickable rating-${handwriting.rating} ${isHandwritingExpanded ? 'expanded' : ''}`}
+                    onClick={toggleHandwritingPanel}
+                    aria-expanded={isHandwritingExpanded}
+                    title={handwriting.tip || 'Click to view handwriting clarity details'}
+                  >
+                    <div className={`tmua-stat-value rating-${handwriting.rating}`}>
+                      {handwriting.label}
+                    </div>
+                    <div className="tmua-stat-label">Handwriting clarity</div>
+                    <div className="tmua-stat-action-cue">
+                      <span>
+                        {handwritingIssues.length > 0
+                          ? `${handwritingIssues.length} ${handwritingIssues.length === 1 ? 'note' : 'notes'}`
+                          : 'View tip'}
+                      </span>
+                      {isHandwritingExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                    </div>
+                  </button>
+                ) : (
+                  <div
+                    className={`tmua-stat-card rating-${handwriting.rating}`}
+                    title={handwriting.tip || 'Clean, legible handwriting'}
+                  >
+                    <div className={`tmua-stat-value rating-${handwriting.rating}`}>
+                      {handwriting.label}
+                    </div>
+                    <div className="tmua-stat-label">Handwriting clarity</div>
+                  </div>
+                )
+              ) : (
+                <div className="tmua-stat-card">
+                  <div className="tmua-stat-value">
+                    {score.questionsAttempted < score.questionsTotal
+                      ? `${score.questionsTotal - score.questionsAttempted}`
+                      : `${score.percentage}%`}
+                  </div>
+                  <div className="tmua-stat-label">
+                    {score.questionsAttempted < score.questionsTotal ? 'Unattempted' : 'Overall accuracy'}
+                  </div>
                 </div>
-                <div className="tmua-stat-label">
-                  {score.questionsAttempted < score.questionsTotal ? 'Unattempted' : 'Overall accuracy'}
+              )}
+            </div>
+          )}
+
+          {/* Compact / Standard Tier Handwriting Strip (shown only when rating is not Clear) */}
+          {summaryTier !== 'full' && hasHandwritingDetails && handwriting && (
+            <button
+              type="button"
+              className={`tmua-handwriting-strip rating-${handwriting.rating} ${isHandwritingExpanded ? 'expanded' : ''}`}
+              onClick={toggleHandwritingPanel}
+              aria-expanded={isHandwritingExpanded}
+            >
+              <span className="tmua-hw-strip-left">
+                <Pencil size={13} />
+                <span className="tmua-hw-strip-title">Handwriting: {handwriting.label}</span>
+                {handwriting.tip && <span className="tmua-hw-strip-tip">— {handwriting.tip}</span>}
+              </span>
+              <span className="tmua-hw-strip-toggle">
+                {isHandwritingExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              </span>
+            </button>
+          )}
+
+          {/* Expandable Handwriting Details Drawer (Option A) */}
+          {isHandwritingExpanded && hasHandwritingDetails && handwriting && (
+            <div className={`tmua-handwriting-drawer rating-${handwriting.rating}`}>
+              <div className="tmua-hw-drawer-header">
+                <div className="tmua-hw-drawer-title">
+                  <Pencil size={13} />
+                  <span>Handwriting Review</span>
+                  <span className={`tmua-hw-rating-pill rating-${handwriting.rating}`}>
+                    {handwriting.label}
+                  </span>
                 </div>
+                {handwriting.tip && (
+                  <p className="tmua-hw-drawer-tip">{handwriting.tip}</p>
+                )}
               </div>
+
+              {handwritingIssues.length > 0 && (
+                <div className="tmua-hw-issue-list">
+                  {handwritingIssues.map((issue, idx) => {
+                    const cleanQ = String(issue.q).replace(/^Q/i, '').trim();
+                    const hasMismatch = Boolean(
+                      issue.intendedText &&
+                      issue.ocrText &&
+                      issue.intendedText.trim().toLowerCase() !== issue.ocrText.trim().toLowerCase()
+                    );
+                    return (
+                      <div key={idx} className="tmua-hw-issue-item">
+                        <div className="tmua-hw-issue-top">
+                          <span className="tmua-hw-issue-q">{formatSummaryQuestionChip(cleanQ)}</span>
+                          <button
+                            type="button"
+                            className="tmua-hw-jump-btn"
+                            onClick={() => {
+                              engagementTracker.recordHandwritingQuestionJump();
+                              setExpandedQuestionKey(cleanQ);
+                              onQuestionClick?.(cleanQ);
+                              scrollToCoachingCard(cleanQ);
+                            }}
+                          >
+                            <span>View on paper</span>
+                            <ArrowRight size={11} />
+                          </button>
+                        </div>
+
+                        {hasMismatch ? (
+                          <div className="tmua-hw-mismatch-row">
+                            <span className="tmua-hw-ocr-label">Looked like</span>
+                            <code className="tmua-hw-code ocr">{issue.ocrText}</code>
+                            <span className="tmua-hw-arrow">→</span>
+                            <span className="tmua-hw-ocr-label">Intended</span>
+                            <code className="tmua-hw-code intended">{issue.intendedText}</code>
+                          </div>
+                        ) : issue.ocrText ? (
+                          <div className="tmua-hw-mismatch-row">
+                            <span className="tmua-hw-ocr-label">Hard to read</span>
+                            <code className="tmua-hw-code ocr">{issue.ocrText}</code>
+                          </div>
+                        ) : null}
+
+                        {issue.note && (
+                          <div className="tmua-hw-issue-note">{issue.note}</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 

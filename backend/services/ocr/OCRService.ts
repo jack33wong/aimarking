@@ -25,6 +25,7 @@ export interface OCRResult {
   text: string;
   boundingBoxes: any[];
   confidence: number;
+  mathpixConfidenceRate?: number;
   dimensions: { width: number; height: number };
   symbols: Array<{
     text: string;
@@ -485,6 +486,7 @@ export class OCRService {
     let mathpixCalls = 0;
     let usedFallback = false;
     let rawLineData: Array<any> | null = null;
+    let mathpixPageConfidenceRate: number | undefined = undefined;
 
     if (opts.ocrStrategy === 'VISION_VERBATIM') {
       // --- ENGLISH / VERBATIM STRATEGY: Google Cloud Vision Direct (Mathpix Bypassed) ---
@@ -504,6 +506,12 @@ export class OCRService {
           // Pass tracker to MathpixService.processImage
           const mathpixResult = await MathpixService.processImage(imageBuffer, mathpixOptions, tracker);
           mathpixCalls += 1;
+
+          if (typeof mathpixResult?.confidence_rate === 'number') {
+            mathpixPageConfidenceRate = mathpixResult.confidence_rate;
+          } else if (typeof mathpixResult?.confidence === 'number') {
+            mathpixPageConfidenceRate = mathpixResult.confidence;
+          }
 
           if (mathpixResult.line_data && mathpixResult.line_data.length > 0) {
             rawLineData = mathpixResult.line_data;
@@ -773,11 +781,15 @@ export class OCRService {
 
         // Use cleaned text (without LaTeX delimiters) AND sanitize artifacts for the final block
         const sanitizedText = sanitizeOcrArtifacts(cleanedText || text);
+        const lineConfidence = typeof line.confidence === 'number' ? line.confidence : undefined;
+        const lineConfidenceRate = typeof line.confidence_rate === 'number' ? line.confidence_rate : lineConfidence;
         processedLines.push({
           text: sanitizedText,
           coords,
           hasOriginalCoords,
           isSplitBlock,
+          confidence: lineConfidence,
+          confidenceRate: lineConfidenceRate,
           // NOTE: Mathpix/OCR 'is_printed' indicator is highly UNRELIABLE. 
           // Numbers and math symbols are often misclassified as printed even when handwritten.
           // We use an inclusive check here and let the AI determine context later.
@@ -795,12 +807,19 @@ export class OCRService {
         // If not available, a placeholder like `0` or `1` might be used, or it needs to be added to the function signature.
         // For this change, we'll assume `pageIndex` is available, or default to 0 if not.
         const pageIndex = opts.pageIndex ?? 0;
+        const resolvedConfidence = typeof line.confidence === 'number'
+          ? line.confidence
+          : (typeof line.confidenceRate === 'number' ? line.confidenceRate : (mathpixPageConfidenceRate ?? 1.0));
+        const resolvedConfidenceRate = typeof line.confidenceRate === 'number'
+          ? line.confidenceRate
+          : (typeof line.confidence === 'number' ? line.confidence : mathpixPageConfidenceRate);
 
         return {
           googleVisionText: line.text,
           mathpixLatex: line.text,
-          confidence: line.confidence || 1.0,
-          mathpixConfidence: line.confidence || 1.0,
+          confidence: resolvedConfidence,
+          mathpixConfidence: resolvedConfidence,
+          ...(typeof resolvedConfidenceRate === 'number' ? { mathpixConfidenceRate: resolvedConfidenceRate } : {}),
           mathLikenessScore: 1.0,
           coordinates: coords,
           bbox: coords, // Alias for coordinates
@@ -902,7 +921,9 @@ export class OCRService {
     }));
 
     return {
-      text: finalText, boundingBoxes: finalBoundingBoxes, confidence: finalConfidence, dimensions,
+      text: finalText, boundingBoxes: finalBoundingBoxes, confidence: finalConfidence,
+      ...(typeof mathpixPageConfidenceRate === 'number' ? { mathpixConfidenceRate: mathpixPageConfidenceRate } : {}),
+      dimensions,
       symbols: finalSymbols, mathBlocks: sortedMathBlocks, processingTime,
       rawResponse: { detectedBlocks, preClusterBlocks, usedFallback, rawLineData },
       usage: { mathpixCalls }, cleanedOcrText, cleanDataForMarking, unifiedLookupTable

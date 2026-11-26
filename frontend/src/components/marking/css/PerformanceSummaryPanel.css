@@ -477,6 +477,263 @@
   margin-top: 2px;
 }
 
+/* Handwriting Clarity Stat Card & Expandable Drawer (Option A) */
+.tmua-stat-card-clickable {
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+  font-family: inherit;
+  outline: none;
+}
+
+.tmua-stat-card-clickable:focus-visible {
+  outline: 2px solid var(--text-brand);
+  outline-offset: 2px;
+}
+
+.tmua-stat-card-clickable:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-surface-3);
+  transform: translateY(-1px);
+}
+
+.tmua-stat-card-clickable.expanded {
+  border-color: var(--function-warning);
+}
+
+.tmua-stat-card-clickable.rating-needs_care.expanded {
+  border-color: var(--function-error);
+}
+
+.tmua-stat-value.rating-clear {
+  color: var(--function-success);
+}
+
+.tmua-stat-value.rating-fair {
+  color: var(--function-warning);
+}
+
+.tmua-stat-value.rating-needs_care {
+  color: var(--function-error);
+}
+
+.tmua-stat-action-cue {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
+
+.tmua-stat-card-clickable:hover .tmua-stat-action-cue,
+.tmua-stat-card-clickable.expanded .tmua-stat-action-cue {
+  color: var(--text-primary);
+}
+
+.tmua-handwriting-strip {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  outline: none;
+}
+
+.tmua-handwriting-strip:focus-visible {
+  outline: 2px solid var(--text-brand);
+  outline-offset: 2px;
+}
+
+.tmua-handwriting-strip:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-surface-3);
+}
+
+.tmua-hw-strip-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.tmua-handwriting-strip.rating-fair .tmua-hw-strip-title {
+  color: var(--function-warning);
+  font-weight: 600;
+}
+
+.tmua-handwriting-strip.rating-needs_care .tmua-hw-strip-title {
+  color: var(--function-error);
+  font-weight: 600;
+}
+
+.tmua-hw-strip-tip {
+  color: var(--text-secondary);
+}
+
+.tmua-hw-strip-toggle {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.tmua-handwriting-drawer {
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-main);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tmua-handwriting-drawer.rating-fair {
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.tmua-handwriting-drawer.rating-needs_care {
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.tmua-hw-drawer-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tmua-hw-drawer-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.tmua-hw-rating-pill {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-surface-3);
+}
+
+.tmua-hw-rating-pill.rating-fair {
+  color: var(--function-warning);
+}
+
+.tmua-hw-rating-pill.rating-needs_care {
+  color: var(--function-error);
+}
+
+.tmua-hw-drawer-tip {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.tmua-hw-issue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tmua-hw-issue-item {
+  background: var(--bg-surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.tmua-hw-issue-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tmua-hw-issue-q {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.tmua-hw-jump-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-brand);
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tmua-hw-jump-btn:hover {
+  background: var(--bg-surface-3);
+  text-decoration: underline;
+}
+
+.tmua-hw-mismatch-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11.5px;
+}
+
+.tmua-hw-ocr-label {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.tmua-hw-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.tmua-hw-code.ocr {
+  color: var(--function-warning);
+}
+
+.tmua-hw-code.intended {
+  color: var(--function-success);
+}
+
+.tmua-hw-arrow {
+  color: var(--text-tertiary);
+}
+
+.tmua-hw-issue-note {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
 /* Insights (Strengths & Focus Next) */
 .tmua-insights-box {
   background: var(--bg-surface-2);

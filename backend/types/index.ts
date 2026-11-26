@@ -702,6 +702,7 @@ export interface MathBlock {
   mathpixLatex?: string;
   confidence: number;              // Google Vision confidence (NEVER modified)
   mathpixConfidence?: number;      // NEW: Mathpix confidence (only set after Mathpix)
+  mathpixConfidenceRate?: number;  // Mathpix per-line confidence_rate (0-1)
   mathLikenessScore: number;
   coordinates: { x: number; y: number; width: number; height: number };
   suspicious?: boolean;

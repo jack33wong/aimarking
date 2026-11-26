@@ -1292,7 +1292,8 @@ export class SessionManagementService {
       type: 'official' | 'user_uploaded' | 'modified' | 'general';
       label?: string;
       fileName?: string;
-    }
+    },
+    handwritingAnalysis?: import('./marking/HandwritingQualityService.js').HandwritingAnalysisResult | null
   ): Promise<string | undefined> {
     if (!allQuestionResults || allQuestionResults.length === 0) return undefined;
 
@@ -1526,7 +1527,8 @@ export class SessionManagementService {
         radar: [],
         mastered: [],
         focusNext: deterministicFocusNext,
-        questionCoaching: coaching.length > 0 ? coaching : undefined
+        questionCoaching: coaching.length > 0 ? coaching : undefined,
+        ...(handwritingAnalysis?.summary ? { handwriting: handwritingAnalysis.summary } : {})
       };
 
       return JSON.stringify(summaryPayload);
@@ -1568,7 +1570,12 @@ export class SessionManagementService {
     if (!hasDbBoundaries && preTotalMarks > 0) {
       promptData += `DB_GRADE_BOUNDARIES: MISSING (Estimate realistic official raw-mark grade boundaries out of ${preTotalMarks} marks for this paper and populate "estimatedGrading.boundaries")\n`;
     }
-    promptData += '\n';
+    if (handwritingAnalysis && !handwritingAnalysis.summary.isTyped) {
+      const { HandwritingQualityService } = await import('./marking/HandwritingQualityService.js');
+      promptData += '\n' + HandwritingQualityService.formatForSummaryPrompt(handwritingAnalysis);
+    } else {
+      promptData += '\n';
+    }
 
     try {
       const { ModelProvider } = await import('../utils/ModelProvider.js');
@@ -1893,6 +1900,38 @@ export class SessionManagementService {
             .map(({ _isAttempted, ...rest }: any) => rest)
             .slice(0, 3);
 
+      // Merge deterministic Option-2 handwriting rating with LLM-refined tip & confirmed issues
+      const resolvedHandwriting = (() => {
+        if (!handwritingAnalysis?.summary) return undefined;
+        const base = handwritingAnalysis.summary;
+        if (base.isTyped) return base;
+
+        const aiTip = typeof aiParsed.handwritingTip === 'string' && aiParsed.handwritingTip.trim()
+          ? aiParsed.handwritingTip.trim()
+          : base.tip;
+
+        const aiIssuesRaw = Array.isArray(aiParsed.handwritingIssues) ? aiParsed.handwritingIssues : null;
+        const cleanedAiIssues = aiIssuesRaw
+          ? aiIssuesRaw
+              .filter((it: any) => it && it.q && (it.ocrText || it.note))
+              .slice(0, 3)
+              .map((it: any) => ({
+                q: String(it.q).replace(/^Q/i, '').trim(),
+                ocrText: String(it.ocrText || '').trim(),
+                ...(it.intendedText ? { intendedText: String(it.intendedText).trim() } : {}),
+                note: String(it.note || 'Write symbols and key terms clearly here.').trim()
+              }))
+          : null;
+
+        return {
+          ...base,
+          tip: aiTip,
+          issues: base.rating === 'clear'
+            ? []
+            : (cleanedAiIssues && cleanedAiIssues.length > 0 ? cleanedAiIssues : base.issues)
+        };
+      })();
+
       const summaryPayload = {
         _type: 'AI_SUMMARY_V2',
         level: isALevel ? 'ALEVEL' : 'GCSE',
@@ -1919,7 +1958,8 @@ export class SessionManagementService {
         radar: radarData,
         mastered: Array.isArray(aiParsed.mastered) ? aiParsed.mastered.slice(0, 3) : [],
         focusNext: enrichedFocusNext,
-        questionCoaching: questionCoaching.length > 0 ? questionCoaching : undefined
+        questionCoaching: questionCoaching.length > 0 ? questionCoaching : undefined,
+        ...(resolvedHandwriting ? { handwriting: resolvedHandwriting } : {})
       };
 
       return JSON.stringify(summaryPayload);

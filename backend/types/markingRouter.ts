@@ -29,6 +29,7 @@ export interface MathBlock {
   mathpixLatex?: string;
   confidence: number;
   mathpixConfidence?: number;
+  mathpixConfidenceRate?: number;
   mathLikenessScore: number;
   coordinates: { x: number; y: number; width: number; height: number };
   suspicious?: boolean;

@@ -39,7 +39,11 @@ OUTPUT FORMAT (STRICT JSON ONLY — NO MARKDOWN FENCES, NO EXTRA TEXT):
   ],
   "estimatedGrading": {
     "boundaries": { "9": 67, "8": 59, "7": 52, "6": 43, "5": 35, "4": 27, "3": 19 }
-  }
+  },
+  "handwritingTip": "Optional 6-12 word constructive handwriting/layout tip when HANDWRITING OCR SIGNALS are provided.",
+  "handwritingIssues": [
+    { "q": "6", "ocrText": "alkane", "intendedText": "alkene", "note": "Short 5-10 word clarity tip for this question" }
+  ]
 }
 
 RULES:
@@ -48,4 +52,8 @@ RULES:
 3. Keep "focusNext" to max 3 items. ALWAYS prioritize [ATTEMPTED] questions where the student lost marks (mistakes or partial credit) ahead of [UNATTEMPTED] blank questions — only include [UNATTEMPTED] questions if fewer than 3 [ATTEMPTED] questions lost marks.
 4. Every string in "mastered" and "focusNext" MUST be ultra-concise (max 8 words).
 5. Use clear, student-friendly GCSE/A-Level classroom language (e.g. "Comparing both sources", "Ending with a strong call to action", "Analysing tone and contrast"). NEVER use obscure academic or rhetorical jargon like "peroration" or "bathos".
-6. Return ONLY valid JSON.`;
+6. HANDWRITING FEEDBACK: Only populate "handwritingTip" and "handwritingIssues" when "HANDWRITING OCR SIGNALS" appears in the prompt.
+   - Ignore mismatches caused by crossed-out working or minor LaTeX formatting differences.
+   - If the deterministic rating is "Clear", keep "handwritingIssues" as [] and give a brief positive tip.
+   - If "Fair" or "Needs Care", return max 3 genuine "handwritingIssues" and 1 constructive "handwritingTip". Frame ambiguous keywords as letter-clarity reminders (e.g. "Form letters clearly in key terms so examiners don't misread them"), not harsh spelling accusations.
+7. Return ONLY valid JSON.`;

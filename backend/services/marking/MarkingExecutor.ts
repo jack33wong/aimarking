@@ -8,6 +8,7 @@ import UsageTracker from '../../utils/UsageTracker.js';
 import { MarkingTaskFactory } from './core/MarkingTaskFactory.js';
 import { ZoneArchitect } from './core/ZoneArchitect.js';
 import { MarkingZoneService } from './MarkingZoneService.js';
+import { buildHandwritingOcrLinks } from './HandwritingQualityService.js';
 import { CoordinateAuditLogger } from '../../utils/LoggerUtils.js';
 import { AnnotationLinker } from './core/AnnotationLinker.js';
 import { ScoreAuditor } from './core/ScoreAuditor.js';
@@ -626,6 +627,7 @@ export async function executeMarkingForQuestion(
       promptMarkingScheme: markingResult.schemeTextForPrompt,
       overallPerformanceSummary: (markingResult as any).overallPerformanceSummary,
       rawAnnotations: rawAnnotationsFromAI,
+      handwritingOcrLinks: buildHandwritingOcrLinks(rawAnnotationsFromAI, ocrTextForPrompt, rawOcrBlocks),
       semanticZones: semanticZones,
       rubricEvaluation: reconciledRubricEval,
       subQuestionRubrics: (markingResult as any).subQuestionRubrics || undefined,

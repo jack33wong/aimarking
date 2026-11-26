@@ -12,6 +12,11 @@ interface SessionEngagementState {
   openedSplitMode: boolean;
   questionNavClicks: number;
   summaryChipClicks: number;
+  openedHandwritingPanel: boolean;
+  handwritingPanelClicks: number;
+  handwritingQuestionJumpClicks: number;
+  openedMarkSchemeModal: boolean;
+  markSchemeModalClicks: number;
   lastFlushedActiveMs: number;
   lastFlushedPagesCount: number;
   lastInteractionAt: number;
@@ -208,6 +213,11 @@ class EngagementTracker {
       openedSplitMode: false,
       questionNavClicks: 0,
       summaryChipClicks: 0,
+      openedHandwritingPanel: false,
+      handwritingPanelClicks: 0,
+      handwritingQuestionJumpClicks: 0,
+      openedMarkSchemeModal: false,
+      markSchemeModalClicks: 0,
       lastFlushedActiveMs: 0,
       lastFlushedPagesCount: 0,
       lastInteractionAt: now
@@ -265,6 +275,23 @@ class EngagementTracker {
   public recordSummaryChipClick() {
     if (!this.state) return;
     this.state.summaryChipClicks += 1;
+  }
+
+  public recordHandwritingPanelOpen() {
+    if (!this.state) return;
+    this.state.openedHandwritingPanel = true;
+    this.state.handwritingPanelClicks += 1;
+  }
+
+  public recordHandwritingQuestionJump() {
+    if (!this.state) return;
+    this.state.handwritingQuestionJumpClicks += 1;
+  }
+
+  public recordMarkSchemeModalOpen() {
+    if (!this.state) return;
+    this.state.openedMarkSchemeModal = true;
+    this.state.markSchemeModalClicks += 1;
   }
 
   private pauseTimers() {
@@ -368,6 +395,11 @@ class EngagementTracker {
       openedSplitMode: this.state.openedSplitMode,
       questionNavClicks: this.state.questionNavClicks,
       summaryChipClicks: this.state.summaryChipClicks,
+      openedHandwritingPanel: this.state.openedHandwritingPanel,
+      handwritingPanelClicks: this.state.handwritingPanelClicks,
+      handwritingQuestionJumpClicks: this.state.handwritingQuestionJumpClicks,
+      openedMarkSchemeModal: this.state.openedMarkSchemeModal,
+      markSchemeModalClicks: this.state.markSchemeModalClicks,
       pageDwellSec
     };
 

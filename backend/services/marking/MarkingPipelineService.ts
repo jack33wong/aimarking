@@ -6496,6 +6496,17 @@ export class MarkingPipelineService {
                         }
                         : undefined;
 
+                    const { HandwritingQualityService } = await import('./HandwritingQualityService.js');
+                    const handwritingAnalysis = HandwritingQualityService.analyze(allQuestionResults);
+                    if (handwritingAnalysis) {
+                        const hw = handwritingAnalysis.summary;
+                        console.log(
+                            `✏️ [HANDWRITING] rating=${hw.rating} | avgConf=${hw.confidenceRate} | isTyped=${Boolean(hw.isTyped)} | issues=${hw.issues.map(i => `Q${i.q}("${i.ocrText}"->"${i.intendedText || ''}")`).join(', ') || 'none'}`
+                        );
+                    } else {
+                        console.log('✏️ [HANDWRITING] skipped (no LLM-linked OCR pairs)');
+                    }
+
                     const summary = await SessionManagementService.generateMasterPerformanceSummary(
                         allQuestionResults,
                         actualModel,
@@ -6505,7 +6516,8 @@ export class MarkingPipelineService {
                         isRealPastPaperForOutput && !isModifiedPaperForOutput ? preGradeResult.boundaries : undefined,
                         { totalMarks: preTotal, awardedMarks: preOverall, scoreText: preScoreText },
                         examInfo,
-                        markingSource
+                        markingSource,
+                        handwritingAnalysis
                     );
                     return { summary, durationMs: Date.now() - summaryStart, startTime: summaryStart };
                 } catch (err) {
