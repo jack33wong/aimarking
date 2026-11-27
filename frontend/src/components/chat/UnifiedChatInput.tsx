@@ -22,7 +22,7 @@ import { FileHandoff } from './FileHandoff';
 import { useTelemetry } from '../../hooks/useTelemetry';
 import { trackFunnelEvent, getLatestPreInspectSessionId, setLatestPreInspectSessionId } from '../../utils/funnelTracker';
 import { getLandingExamContext, clearLandingExamContext } from '../../utils/landingContext';
-import { validateSupportedUploadFiles } from '../../utils/fileUtils';
+import { FILE_CONSTRAINTS, validateSupportedUploadFiles } from '../../utils/fileUtils';
 import {
   preInspectUploadedFiles,
   recomputePreInspectFromSummaries,
@@ -867,11 +867,16 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       mime === 'image/jpg' ||
       mime === 'image/png' ||
       mime === 'image/webp' ||
+      mime === 'image/heic' ||
+      mime === 'image/heif' ||
+      mime === 'image/gif' ||
+      mime === 'image/bmp' ||
+      mime === 'image/tiff' ||
       mime === 'application/pdf'
     ) {
       return true;
     }
-    return /\.(?:jpe?g|png|webp|pdf)$/i.test(file.name || '');
+    return /\.(?:jpe?g|png|webp|heic|heif|gif|bmp|tiff?|pdf)$/i.test(file.name || '');
   };
 
   const LOCAL_FILE_PATH_REGEX =
@@ -910,7 +915,22 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     if (isProcessing) return;
 
     // 0. Strict client-side format & magic-byte validation (blocks HEIC/BMP/SVG/DOCX/corrupt files before upload)
-    const { validFiles: validatedFiles, errorMessage: formatWarningMsg } = await validateSupportedUploadFiles(newFiles);
+    const {
+      validFiles: validatedFiles,
+      rejectedFiles,
+      errorMessage: formatWarningMsg,
+    } = await validateSupportedUploadFiles(newFiles);
+
+    for (const rejected of rejectedFiles) {
+      trackFunnelEvent('client_file_rejected', {
+        source: 'unified_chat_input',
+        mode,
+        reason: rejected.reason,
+        fileName: rejected.file?.name || 'unknown',
+        fileType: rejected.file?.type || 'unknown',
+        fileSize: rejected.file?.size || 0,
+      }, user?.uid || null);
+    }
 
     // 1. Pre-deduplicate against existing files AND within the newly selected batch using original file name + original size
     const existingFiles: File[] = [...imageFiles, ...(imageFile ? [imageFile] : [])];
@@ -932,11 +952,27 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       if (file.size > MAX_SINGLE_FILE_BYTES) {
         const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
         sizeWarningMsg = `"${file.name}" (${sizeMB} MB) exceeds the 50 MB per-file limit and was skipped.`;
+        trackFunnelEvent('client_file_rejected', {
+          source: 'unified_chat_input',
+          mode,
+          reason: 'file_too_large',
+          fileName: file.name || 'unknown',
+          fileType: file.type || 'unknown',
+          fileSize: file.size || 0,
+        }, user?.uid || null);
         continue;
       }
 
       if (runningBatchBytes + file.size > MAX_TOTAL_BATCH_BYTES) {
         sizeWarningMsg = `Total upload size cannot exceed 100 MB per batch. "${file.name}" was skipped.`;
+        trackFunnelEvent('client_file_rejected', {
+          source: 'unified_chat_input',
+          mode,
+          reason: 'batch_too_large',
+          fileName: file.name || 'unknown',
+          fileType: file.type || 'unknown',
+          fileSize: file.size || 0,
+        }, user?.uid || null);
         continue;
       }
 
@@ -1120,9 +1156,17 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
       }
     }
 
+    trackFunnelEvent('file_attached', {
+      source: 'unified_chat_input',
+      mode,
+      fileCount: processedNewFiles.length,
+      totalFileCount: existingFiles.length + processedNewFiles.length,
+      fileTypes: Array.from(new Set(processedNewFiles.map((f) => f.type || 'unknown'))).slice(0, 5),
+    }, user?.uid || null);
+
     setIsExpanded(true);
     setShowAutocomplete(false);
-  }, [imageFiles, imageFile, isMultiImage, isProcessing]);
+  }, [imageFiles, imageFile, isMultiImage, isProcessing, mode, user?.uid]);
 
   // Restore stashed files when a guest cancels /login and returns to /app
   useEffect(() => {
@@ -1246,9 +1290,19 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
     if (supportedFiles.length > 0) {
       processFiles(supportedFiles);
     } else {
+      for (const file of allDroppedFiles.slice(0, 5)) {
+        trackFunnelEvent('client_file_rejected', {
+          source: 'unified_chat_input',
+          mode,
+          reason: 'unsupported_drop_format',
+          fileName: file.name || 'unknown',
+          fileType: file.type || 'unknown',
+          fileSize: file.size || 0,
+        }, user?.uid || null);
+      }
       setFileSizeWarning('Only image files (JPG, PNG, WEBP, HEIC, etc.) and PDFs are supported.');
     }
-  }, [isDragDropDisabled, processFiles]);
+  }, [isDragDropDisabled, processFiles, mode, user?.uid]);
 
   const handleUploadClick = useCallback(() => {
     if (isNegative) {
@@ -2664,7 +2718,7 @@ const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
         </div>
       </div>
 
-      <input ref={fileInputRef} id="unified-file-input" type="file" accept=".pdf,application/pdf,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple onChange={handleFileChange} style={{ display: 'none' }} disabled={isProcessing || isNegative} />
+      <input ref={fileInputRef} id="unified-file-input" type="file" accept={FILE_CONSTRAINTS.ACCEPT_ATTR} multiple onChange={handleFileChange} style={{ display: 'none' }} disabled={isProcessing || isNegative} />
 
       <MobileUploadModal
         isOpen={isMobileUploadOpen}

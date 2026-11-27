@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { Upload, FileText, ChevronRight, Loader2 } from 'lucide-react';
+import { FILE_CONSTRAINTS } from '../../utils/fileUtils';
 import './LandingPageUploadWidget.css';
 
 interface LandingPageUploadWidgetProps {
@@ -27,7 +28,7 @@ const LandingPageUploadWidget: React.FC<LandingPageUploadWidgetProps> = ({ onUpl
                     onChange={handleFileChange}
                     style={{ display: 'none' }}
                     multiple
-                    accept="image/*,application/pdf"
+                    accept={FILE_CONSTRAINTS.ACCEPT_ATTR}
                 />
                 <button
                     className="cta-button-secondary"
@@ -50,7 +51,7 @@ const LandingPageUploadWidget: React.FC<LandingPageUploadWidgetProps> = ({ onUpl
                 onChange={handleFileChange}
                 style={{ display: 'none' }}
                 multiple
-                accept="image/*,application/pdf"
+                accept={FILE_CONSTRAINTS.ACCEPT_ATTR}
             />
 
             <div className="widget-content">

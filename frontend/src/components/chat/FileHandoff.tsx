@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { FileText, Camera, X } from 'lucide-react';
+import { FILE_CONSTRAINTS } from '../../utils/fileUtils';
 import './FileHandoff.css';
 
 interface FileHandoffProps {
@@ -72,7 +73,7 @@ export const FileHandoff: React.FC<FileHandoffProps> = ({ initialType = null, on
                         <input
                             type="file"
                             className="hidden-input"
-                            accept={handoffType === 'upload' ? ".pdf,.jpg,.jpeg,.png,image/*" : "image/*"}
+                            accept={handoffType === 'upload' ? FILE_CONSTRAINTS.ACCEPT_ATTR : "image/*"}
                             capture={handoffType === 'scan' ? "environment" : undefined}
                             multiple={handoffType === 'upload'}
                             onChange={handleFileChange}

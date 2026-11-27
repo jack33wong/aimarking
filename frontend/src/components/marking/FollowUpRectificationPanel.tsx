@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Paperclip, Link2, RefreshCw, X, Check, Brain, Sparkles } from 'lucide-react';
 import { usePaperSearch } from '../../hooks/usePaperSearch';
 import apiClient from '../../services/apiClient';
+import { FILE_CONSTRAINTS } from '../../utils/fileUtils';
 import '../chat/UnifiedChatInput.css';
 
 interface PaperQuestionItem {
@@ -208,7 +209,7 @@ export const FollowUpRectificationPanel: React.FC<FollowUpRectificationPanelProp
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".pdf,application/pdf,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+        accept={FILE_CONSTRAINTS.ACCEPT_ATTR}
         style={{ display: 'none' }}
         onChange={(e) => {
           if (e.target.files && e.target.files.length > 0) {

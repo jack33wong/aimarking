@@ -68,9 +68,21 @@ jest.mock('../../services/MobileUploadService', () => ({
 
 jest.mock('../../utils/funnelTracker', () => ({
   trackFunnelEvent: jest.fn(),
+  getLatestPreInspectSessionId: jest.fn(() => null),
+  setLatestPreInspectSessionId: jest.fn(),
+}));
+
+jest.mock('../../services/preInspectService', () => ({
+  preInspectUploadedFiles: jest.fn().mockResolvedValue(null),
+  recomputePreInspectFromSummaries: jest.fn(() => null),
+  setPendingPreInspectContext: jest.fn(),
 }));
 
 jest.mock('browser-image-compression', () => jest.fn((file) => Promise.resolve(file)));
+jest.mock('heic2any', () => ({
+  __esModule: true,
+  default: jest.fn(() => Promise.resolve(new Blob([new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0])], { type: 'image/jpeg' }))),
+}));
 
 jest.mock('../common/LandingPageUploadWidget', () => () => null);
 jest.mock('../upload/MobileUploadModal', () => () => null);
@@ -104,6 +116,13 @@ const renderInput = (overrides: Partial<React.ComponentProps<typeof UnifiedChatI
 
 const createMockFile = (name: string, type = '', size = 1024): File => {
   const content = new Uint8Array(size);
+  if (/\.pdf$/i.test(name) || type === 'application/pdf') {
+    content.set([0x25, 0x50, 0x44, 0x46, 0x2D]); // %PDF-
+  } else if (/\.png$/i.test(name) || type === 'image/png') {
+    content.set([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+  } else if (/\.(jpe?g)$/i.test(name) || type === 'image/jpeg') {
+    content.set([0xFF, 0xD8, 0xFF, 0xE0]);
+  }
   return new File([content], name, { type, lastModified: 1700000000000 });
 };
 
@@ -130,10 +149,27 @@ describe('UnifiedChatInput — Multi-File Finder Paste, Local Path Interception 
     class MockFileReader {
       result: string | ArrayBuffer | null = 'data:image/jpeg;base64,MOCK';
       onload: ((this: FileReader, ev: ProgressEvent<FileReader>) => any) | null = null;
+      onerror: ((this: FileReader, ev: ProgressEvent<FileReader>) => any) | null = null;
       readAsDataURL() {
+        this.result = 'data:image/jpeg;base64,MOCK';
         if (this.onload) {
           this.onload.call(this as unknown as FileReader, {} as ProgressEvent<FileReader>);
         }
+      }
+      readAsArrayBuffer(blob: Blob) {
+        const nativeReader = new originalFileReader();
+        nativeReader.onload = () => {
+          this.result = nativeReader.result;
+          if (this.onload) {
+            this.onload.call(this as unknown as FileReader, {} as ProgressEvent<FileReader>);
+          }
+        };
+        nativeReader.onerror = (ev) => {
+          if (this.onerror) {
+            this.onerror.call(this as unknown as FileReader, ev);
+          }
+        };
+        nativeReader.readAsArrayBuffer(blob);
       }
     }
     (window as any).FileReader = MockFileReader;
@@ -167,7 +203,7 @@ describe('UnifiedChatInput — Multi-File Finder Paste, Local Path Interception 
     expect(textarea.value).toBe('');
 
     await waitFor(() => {
-      expect(container.querySelectorAll('.multi-image-item').length).toBe(14);
+      expect(container.querySelectorAll('.attachment-tile.image-tile').length).toBe(14);
     });
   });
 
@@ -194,7 +230,7 @@ describe('UnifiedChatInput — Multi-File Finder Paste, Local Path Interception 
 
     expect(pasteEvent.defaultPrevented).toBe(true);
     await waitFor(() => {
-      expect(container.querySelectorAll('.multi-image-item').length).toBe(2);
+      expect(container.querySelectorAll('.attachment-tile.image-tile').length).toBe(2);
     });
   });
 
@@ -300,8 +336,8 @@ describe('UnifiedChatInput — Multi-File Finder Paste, Local Path Interception 
 
     expect(dropZone.classList.contains('drag-over')).toBe(false);
     await waitFor(() => {
-      expect(container.querySelectorAll('.multi-image-item').length).toBe(1);
-      expect(container.querySelectorAll('.pdf-preview-container').length).toBe(1);
+      expect(container.querySelectorAll('.attachment-tile.image-tile').length).toBe(1);
+      expect(container.querySelectorAll('.attachment-tile.pdf-tile').length).toBe(1);
     });
   });
 
@@ -343,7 +379,7 @@ describe('UnifiedChatInput — Multi-File Finder Paste, Local Path Interception 
 
       expect(pasteEvent.defaultPrevented).toBe(false);
       expect(dropZone.classList.contains('drag-over')).toBe(false);
-      expect(container.querySelectorAll('.multi-image-item').length).toBe(0);
+      expect(container.querySelectorAll('.attachment-tile.image-tile').length).toBe(0);
       expect(container.querySelectorAll('.followup-preview-image').length).toBe(0);
       unmount();
     }
@@ -356,7 +392,8 @@ describe('UnifiedChatInput — Multi-File Finder Paste, Local Path Interception 
     const mixed = [
       createMockFile('notes.txt', 'text/plain', 512),
       createMockFile('PAGE_1.JPG', '', 2048),
-      createMockFile('PAGE_2.HEIC', '', 2048),
+      createMockFile('PAGE_2.PNG', '', 2048),
+      createMockFile('PAGE_3.HEIC', '', 2048),
     ];
 
     await act(async () => {
@@ -364,7 +401,7 @@ describe('UnifiedChatInput — Multi-File Finder Paste, Local Path Interception 
     });
 
     await waitFor(() => {
-      expect(container.querySelectorAll('.multi-image-item').length).toBe(2);
+      expect(container.querySelectorAll('.attachment-tile.image-tile').length).toBe(2);
     });
   });
 
@@ -379,5 +416,154 @@ describe('UnifiedChatInput — Multi-File Finder Paste, Local Path Interception 
     const { container } = renderInput({ mode: 'first-time', contextQuestionId: '3' });
     expect(container.querySelector('.context-chip-container')).not.toBeInTheDocument();
     expect(screen.queryByText('Question 3 Focused')).not.toBeInTheDocument();
+  });
+
+  test('tracks file_attached when a valid file is selected via file input', async () => {
+    const { trackFunnelEvent } = require('../../utils/funnelTracker');
+    const { container } = renderInput();
+    const fileInput = container.querySelector('#unified-file-input') as HTMLInputElement;
+
+    // Minimal valid JPEG magic bytes (FF D8 FF E0)
+    const jpegBytes = new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]);
+    const validJpeg = new File([jpegBytes], 'homework.jpg', { type: 'image/jpeg' });
+
+    await act(async () => {
+      fireEvent.change(fileInput, { target: { files: [validJpeg] } });
+    });
+
+    await waitFor(() => {
+      expect(trackFunnelEvent).toHaveBeenCalledWith(
+        'file_attached',
+        expect.objectContaining({
+          source: 'unified_chat_input',
+          mode: 'first-time',
+          fileCount: 1,
+          totalFileCount: 1,
+        }),
+        'test-user'
+      );
+    });
+  });
+
+  test('auto-converts a valid HEIC file to JPEG and tracks file_attached', async () => {
+    const { trackFunnelEvent } = require('../../utils/funnelTracker');
+    const heic2any = require('heic2any').default;
+    heic2any.mockResolvedValueOnce(
+      new Blob([new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10])], { type: 'image/jpeg' })
+    );
+
+    const { container } = renderInput();
+    const fileInput = container.querySelector('#unified-file-input') as HTMLInputElement;
+
+    // Real ISO BMFF ftyp + 'heic' brand header (bytes 4..11)
+    const heicBytes = new Uint8Array([
+      0x00, 0x00, 0x00, 0x18,
+      0x66, 0x74, 0x79, 0x70, // 'ftyp'
+      0x68, 0x65, 0x69, 0x63, // 'heic'
+      0x00, 0x00, 0x00, 0x00,
+    ]);
+    const heicFile = new File([heicBytes], 'IMG_0001.heic', { type: 'image/heic' });
+
+    await act(async () => {
+      fireEvent.change(fileInput, { target: { files: [heicFile] } });
+    });
+
+    await waitFor(() => {
+      expect(trackFunnelEvent).toHaveBeenCalledWith(
+        'file_attached',
+        expect.objectContaining({
+          source: 'unified_chat_input',
+          mode: 'first-time',
+          fileCount: 1,
+          totalFileCount: 1,
+          fileTypes: ['image/jpeg'],
+        }),
+        'test-user'
+      );
+    });
+  });
+
+  test('accepts a PDF with leading BOM/whitespace before %PDF- header', async () => {
+    const { trackFunnelEvent } = require('../../utils/funnelTracker');
+    const { container } = renderInput();
+    const fileInput = container.querySelector('#unified-file-input') as HTMLInputElement;
+
+    const pdfWithLeadingBytes = new Uint8Array([
+      0xEF, 0xBB, 0xBF, 0x20, 0x0A, // UTF-8 BOM + whitespace
+      0x25, 0x50, 0x44, 0x46, 0x2D, 0x31, 0x2E, 0x37, // %PDF-1.7
+    ]);
+    const pdfFile = new File([pdfWithLeadingBytes], 'scan.pdf', { type: 'application/pdf' });
+
+    await act(async () => {
+      fireEvent.change(fileInput, { target: { files: [pdfFile] } });
+    });
+
+    await waitFor(() => {
+      expect(trackFunnelEvent).toHaveBeenCalledWith(
+        'file_attached',
+        expect.objectContaining({
+          source: 'unified_chat_input',
+          mode: 'first-time',
+          fileCount: 1,
+          fileTypes: ['application/pdf'],
+        }),
+        'test-user'
+      );
+    });
+  });
+
+  test('tracks client_file_rejected when an unsupported or empty file is selected via file input', async () => {
+    const { trackFunnelEvent } = require('../../utils/funnelTracker');
+    const { container } = renderInput();
+    const fileInput = container.querySelector('#unified-file-input') as HTMLInputElement;
+
+    // ZIP/DOCX magic bytes (PK\x03\x04)
+    const docxBytes = new Uint8Array([0x50, 0x4B, 0x03, 0x04, 0x14, 0x00]);
+    const unsupportedFile = new File(
+      [docxBytes],
+      'essay.docx',
+      { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }
+    );
+
+    await act(async () => {
+      fireEvent.change(fileInput, { target: { files: [unsupportedFile] } });
+    });
+
+    await waitFor(() => {
+      expect(trackFunnelEvent).toHaveBeenCalledWith(
+        'client_file_rejected',
+        expect.objectContaining({
+          source: 'unified_chat_input',
+          mode: 'first-time',
+          reason: 'unsupported_format',
+          fileName: 'essay.docx',
+        }),
+        'test-user'
+      );
+    });
+  });
+
+  test('tracks client_file_rejected when dropping only unsupported files', async () => {
+    const { trackFunnelEvent } = require('../../utils/funnelTracker');
+    const { container } = renderInput();
+    const dropZone = container.querySelector('.followup-single-line-container') as HTMLDivElement;
+
+    const unsupported = [createMockFile('essay.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 2048)];
+    await act(async () => {
+      fireEvent.drop(dropZone, {
+        dataTransfer: { files: unsupported },
+      });
+    });
+
+    expect(trackFunnelEvent).toHaveBeenCalledWith(
+      'client_file_rejected',
+      expect.objectContaining({
+        source: 'unified_chat_input',
+        mode: 'first-time',
+        reason: 'unsupported_drop_format',
+        fileName: 'essay.docx',
+      }),
+      'test-user'
+    );
   });
 });
